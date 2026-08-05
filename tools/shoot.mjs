@@ -57,6 +57,16 @@ const keepOpen = args.includes('--keep-open');
  * the scenario do its own asserting instead of the blanket console gate.
  */
 const allowErrors = args.includes('--allow-errors');
+/**
+ * Adaptive quality is switched off for captures.
+ *
+ * This container has no GPU, so the software rasterizer misses the frame budget
+ * permanently and the governor — correctly — drops to its floor. Every
+ * screenshot would then be at half resolution, and would change depending on
+ * how slow the machine felt that second. Scenarios that want to test the
+ * governor turn it back on themselves.
+ */
+const autoQuality = args.includes('--auto-quality');
 
 const log = (...m) => console.log('[shoot]', ...m);
 
@@ -156,6 +166,11 @@ try {
   await page
     .waitForFunction(() => Boolean(window.__maker?.ready), null, { timeout: 60_000 })
     .catch(() => log('WARNING: window.__maker.ready never became true'));
+
+  if (!autoQuality) {
+    await page.evaluate(() => window.__maker?.setAutoQuality?.(false));
+    log('adaptive quality off for a fixed-resolution capture (--auto-quality to keep it)');
+  }
 
   await page.waitForTimeout(settleMs);
 

@@ -138,6 +138,10 @@ export interface DebugState {
   triangles: number;
   playerY: number;
   onGround: boolean;
+  /** Effective render scale, which may be below the player's setting. */
+  renderScale: number;
+  /** True when the governor has pulled it below what the player asked for. */
+  throttled: boolean;
 }
 
 const key = (label: string) => `<span class="maker-key">${label}</span>`;
@@ -356,6 +360,9 @@ export class Hud {
       `tris       ${state.triangles.toLocaleString()}`,
       `player y   ${state.playerY.toFixed(2)}`,
       `grounded   ${state.onGround}`,
+      // Flagged when it is not the player's own choice, so a soft-looking image
+      // has a visible reason rather than being a mystery.
+      `scale      ${Math.round(state.renderScale * 100)}%${state.throttled ? ' (auto)' : ''}`,
     ].join('<br>');
   }
 }

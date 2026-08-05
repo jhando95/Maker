@@ -56,6 +56,12 @@ jobs:
       - name: Controller scenario
         run: node tools/shoot.mjs --scenario scenarios/gamepad.mjs --out /tmp/ci-gamepad.png
 
+      # A CI runner has no GPU either, so it is a genuine instance of the case
+      # adaptive quality exists for. The decision logic is unit-tested; this
+      # checks the decision reaches the drawing buffer.
+      - name: Adaptive quality scenario
+        run: node tools/shoot.mjs --scenario scenarios/quality.mjs --auto-quality --out /tmp/ci-quality.png
+
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -64,6 +70,7 @@ jobs:
             /tmp/ci-smoke.png
             /tmp/ci-crash.png
             /tmp/ci-gamepad.png
+            /tmp/ci-quality.png
           if-no-files-found: ignore
 
   benchmark:

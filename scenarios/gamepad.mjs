@@ -54,14 +54,15 @@ const yaw = (page) => page.evaluate(() => window.__maker.getCameraYaw());
 export default async function (page) {
   await page.evaluate(() => window.__maker.hideOverlay());
   await installFakePad(page);
-  await page.waitForTimeout(300);
 
-  const seen = await page.evaluate(() => ({
-    count: window.__maker.padCount(),
-    raw: navigator.getGamepads().length,
-    connected: navigator.getGamepads()[0]?.connected,
-  }));
-  assert(seen.count === 1, `the pad should be seen: ${JSON.stringify(seen)}`);
+  // Pads are read on the render frame, and software GL renders a handful of
+  // frames a second. Wait for the count rather than for a duration, or this
+  // races the frame loop and fails whenever the machine is having a bad moment.
+  await page
+    .waitForFunction(() => window.__maker.padCount() === 1, null, { timeout: 20_000 })
+    .catch(() => {
+      throw new Error('gamepad scenario: the fake pad was never picked up');
+    });
 
   // ── The left stick moves the player ────────────────────────────────────────
   //

@@ -32,6 +32,7 @@ import { BuildStore } from './app/buildStore.ts';
 import { Menu } from './ui/menu.ts';
 import { CrashHandler } from './app/crashHandler.ts';
 import { GamepadManager } from './core/gamepadManager.ts';
+import { PerformanceGovernor } from './app/performanceGovernor.ts';
 
 const app = document.getElementById('app')!;
 app.style.cssText = 'position:fixed;inset:0;overflow:hidden;';
@@ -128,6 +129,26 @@ const audio = new AudioBus();
 const sounds = new GameSounds(audio, world);
 
 const settings = new SettingsStore();
+/**
+ * Resolution is the one quality lever the game is allowed to move on its own.
+ *
+ * Simulation cost is measured and bounded (`npm run bench`); GPU cost depends on
+ * a machine this code will never see. Shadows and outlines are how the game
+ * looks and stay with the player — nobody picks a resolution for its own sake.
+ */
+const governor = new PerformanceGovernor();
+
+function applyRenderScale(): void {
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2) * governor.currentScale);
+  renderer.setSize(window.innerWidth, window.innerHeight);
+}
+
+governor.onChange = () => {
+  applyRenderScale();
+  // Shadows are drawn on demand, and the map is sized off the drawing buffer.
+  renderer.shadowMap.needsUpdate = true;
+};
+
 // ── Mode plumbing ────────────────────────────────────────────────────────────
 const projectiles = new ProjectileSystem(world);
 const modeRenderer = new ModeRenderer();
@@ -148,9 +169,11 @@ settings.subscribe((s) => {
   renderer.shadowMap.enabled = s.shadows;
   renderer.shadowMap.needsUpdate = true;
   // Render scale trades resolution for fill rate without touching layout: the
-  // canvas keeps its CSS size and only its backing store shrinks.
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2) * s.renderScale);
-  renderer.setSize(window.innerWidth, window.innerHeight);
+  // canvas keeps its CSS size and only its backing store shrinks. The player's
+  // value is a ceiling; the governor may be rendering below it.
+  governor.enabled = s.autoQuality;
+  governor.setCeiling(s.renderScale);
+  applyRenderScale();
   const g = ghostColors(s.colorblindGhost);
   build.setGhostColors(g.valid, g.invalid);
   gamepad.enabled = s.gamepadEnabled;
@@ -621,6 +644,10 @@ function draw(alpha: number, frameDt: number): void {
   // is what lets Start reopen the game.
   gamepad.poll();
 
+  // Measured on the frame, not the tick: the tick rate is fixed and says
+  // nothing about whether the machine is keeping up.
+  governor.frame(frameDt);
+
   const state = player.sample(alpha);
   const speedFraction = Math.min(1, player.speed / 7.4);
   camera.update(frameDt, state.x, state.y + state.eyeHeight, state.z, speedFraction);
@@ -655,6 +682,8 @@ function draw(alpha: number, frameDt: number): void {
     triangles: renderer.info.render.triangles,
     playerY: state.y,
     onGround: state.onGround,
+    renderScale: governor.currentScale,
+    throttled: governor.isThrottling,
   });
 }
 
@@ -687,7 +716,7 @@ loop.start();
 enterMenu('title');
 
 window.addEventListener('resize', () => {
-  renderer.setSize(window.innerWidth, window.innerHeight);
+  applyRenderScale();
   camera.setAspect(window.innerWidth / window.innerHeight);
   parts.setViewportHeight(window.innerHeight);
   scenery.setViewportHeight(window.innerHeight);
@@ -785,6 +814,16 @@ window.__maker = {
    * by the very next frame, and would prove nothing about readPads.
    */
   padCount: () => gamepad.padCount,
+  /**
+   * Adaptive quality, which the screenshot harness turns off so captures are a
+   * fixed resolution rather than one that depends on how the software
+   * rasterizer felt that second.
+   */
+  setAutoQuality: (enabled: boolean) => {
+    governor.enabled = enabled;
+    applyRenderScale();
+  },
+  renderScale: () => ({ effective: governor.currentScale, throttled: governor.isThrottling }),
   inputDevice: () => input.lastDevice,
   getCameraYaw: () => camera.yaw,
   menu,

@@ -108,11 +108,11 @@ node tools/shoot.mjs --out shots/x.png   # boot headless, screenshot, fail on an
 node tools/shoot.mjs --scenario scenarios/gamepad.mjs   # drive a synthetic controller
 ```
 
-CI runs all of the above on every push. Two of those scenarios exist because
-some things cannot be honestly unit-tested: whether a throw inside the render
-loop actually produces a crash screen, and whether a stick push actually reaches
-the character controller. Both only happen in a browser, so both are checked in
-one.
+CI runs all of the above on every push. The scenarios exist because some things
+cannot be honestly unit-tested: whether a throw inside the render loop actually
+produces a crash screen, whether a stick push actually reaches the character
+controller, whether a resolution decision actually reaches the drawing buffer.
+All three only happen in a browser, so all three are checked in one.
 
 ## Design notes
 
@@ -173,6 +173,19 @@ compounds rotation, so any turn between two parts makes the chain spiral.
 **Nothing is an audio file either.** Every sound is oscillators, filtered noise
 and envelopes built at runtime. Beyond shipping zero bytes, it lets a footstep
 shift pitch with surface and speed because it is being *built*, not played back.
+
+**The game gives up resolution before it gives up frame rate.** Simulation cost
+is measured and bounded — `npm run bench` reports it per tick, and the heaviest
+line is a few percent of the budget at three thousand parts. GPU cost is not
+knowable here, so render scale adapts: two bad seconds steps it down, and
+stepping back up is refused unless the frames being measured *now* would still
+fit the budget with the extra pixels. That prediction is the load-bearing part.
+Waiting longer to recover than to degrade sounds sufficient and is not, because
+the measurement changes when the scale does: a machine slow at 100% and
+comfortable at 90% would be judged comfortable, restored, found slow, dropped,
+and around forever — every decision right, the result unusable. Shadows and
+outlines are never touched; they are how the game looks, and that is the
+player's call.
 
 **Multiplayer is not built, but it is not blocked.** Simulation runs on a fixed
 timestep with no `Math.random` in anything affecting world state. Placement is

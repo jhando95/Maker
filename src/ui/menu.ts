@@ -326,8 +326,13 @@ export class Menu {
 
     this.toggle('Shadows', 'shadows', s.shadows);
     this.toggle('Outlines', 'outlines', s.outlines);
-    this.slider('Render scale', 'renderScale', s.renderScale, 0.5, 1, 0.05,
+    this.slider(s.autoQuality ? 'Render scale (maximum)' : 'Render scale',
+      'renderScale', s.renderScale, 0.5, 1, 0.05,
       (v) => `${Math.round(v * 100)}%`);
+    // Re-rendered on change so the slider above relabels itself, which is the
+    // only way the ceiling-versus-fixed distinction is visible.
+    this.toggle('Lower resolution automatically if frames drop', 'autoQuality', s.autoQuality,
+      () => this.render());
 
     this.slider('Master volume', 'masterVolume', s.masterVolume, 0, 1, 0.05,
       (v) => `${Math.round(v * 100)}%`);
@@ -471,7 +476,14 @@ export class Menu {
     this.card.appendChild(row);
   }
 
-  private toggle<K extends keyof Settings>(label: string, key: K, value: boolean): void {
+  /**
+   * `afterChange` is for the rare toggle that changes how another row reads.
+   * Re-rendering on every toggle would tear the screen out from under whoever
+   * is clicking through it.
+   */
+  private toggle<K extends keyof Settings>(
+    label: string, key: K, value: boolean, afterChange?: () => void,
+  ): void {
     const row = document.createElement('div');
     row.className = 'mk-row';
 
@@ -484,6 +496,7 @@ export class Menu {
     input.checked = value;
     input.addEventListener('change', () => {
       this.settings.set(key, input.checked as Settings[K]);
+      afterChange?.();
     });
     row.appendChild(input);
 

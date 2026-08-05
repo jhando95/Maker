@@ -18,8 +18,15 @@ export interface Settings {
   fov: number;
   shadows: boolean;
   outlines: boolean;
-  /** Render scale, 0.5 to 1. Below 1 renders smaller and upscales. */
+  /**
+   * Render scale, 0.5 to 1. Below 1 renders smaller and upscales.
+   *
+   * With `autoQuality` on this is a ceiling rather than a fixed value: the
+   * governor picks something at or below it.
+   */
   renderScale: number;
+  /** Let the game lower the render scale by itself when frames are being missed. */
+  autoQuality: boolean;
   masterVolume: number;
   sfxVolume: number;
   /**
@@ -46,6 +53,7 @@ export const DEFAULT_SETTINGS: Settings = {
   shadows: true,
   outlines: true,
   renderScale: 1,
+  autoQuality: true,
   masterVolume: 0.7,
   sfxVolume: 1,
   colorblindGhost: false,
