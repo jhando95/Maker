@@ -78,7 +78,7 @@ export const PART_KINDS: readonly PartKind[] = [
   part(2, 'plank_short', 'Short Plank', 0.5, BOARD_THICKNESS, MODULE),
   part(3, 'beam', 'Beam', 2.0, 0.1, 0.1, { chamfer: 0.012 }),
   part(4, 'post', 'Post', 1.5, 0.1, 0.1, { chamfer: 0.012 }),
-  part(5, 'panel', 'Panel', 1.0, 0.02, 1.0, { chamfer: 0.006, material: 'ply' }),
+  part(5, 'panel', 'Panel', 1.0, BOARD_THICKNESS, 1.0, { chamfer: 0.006, material: 'ply' }),
   part(6, 'ramp', 'Ramp', 1.0, 0.5, MODULE, { isWedge: true, chamfer: 0.01 }),
   part(7, 'block', 'Block', MODULE, MODULE, MODULE, { chamfer: 0.015 }),
 ];

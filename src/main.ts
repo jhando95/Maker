@@ -51,8 +51,27 @@ scene.add(parts.group);
 const build = new BuildSystem(world, parts);
 scene.add(build.ghostGroup);
 
-/** Rebuild the static shadow map after the world changes. */
+/**
+ * Mark the shadow map stale after the world changes.
+ *
+ * Debounced rather than immediate. Holding the place button lays a part every
+ * ten ticks, and rebuilding a 2048² shadow map that often — re-rendering every
+ * caster in the yard each time — costs far more than the parts being added.
+ * Collapsing a burst of placements into one rebuild is invisible: the shadow is
+ * at most a fraction of a second behind the geometry that casts it.
+ */
+let shadowsDirty = false;
+let shadowsLastRebuild = 0;
+const SHADOW_REBUILD_INTERVAL = 0.25;
+
 function worldChanged(): void {
+  shadowsDirty = true;
+}
+
+function flushShadows(nowSeconds: number): void {
+  if (!shadowsDirty || nowSeconds - shadowsLastRebuild < SHADOW_REBUILD_INTERVAL) return;
+  shadowsDirty = false;
+  shadowsLastRebuild = nowSeconds;
   invalidateShadows();
   renderer.shadowMap.needsUpdate = true;
 }
@@ -69,7 +88,10 @@ const hud = new Hud(app);
 const input = new Input(renderer.domElement);
 
 parts.setViewportHeight(window.innerHeight);
-worldChanged();
+// The starter structures are already in; draw their shadows on the first frame
+// rather than a quarter second later.
+invalidateShadows();
+renderer.shadowMap.needsUpdate = true;
 
 // ── Player avatar, visible in third person ───────────────────────────────────
 const avatar = new THREE.Group();
@@ -181,6 +203,7 @@ function render(alpha: number, frameDt: number): void {
   avatar.position.set(state.x, state.y, state.z);
   avatar.rotation.y = camera.yaw;
 
+  flushShadows(performance.now() / 1000);
   renderer.render(scene, camera.camera);
 
   hud.update({

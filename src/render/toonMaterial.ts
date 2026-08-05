@@ -190,9 +190,13 @@ export function createOutlineMaterial(color: number, worldThickness: number): TH
       }
     `,
     fragmentShader: /* glsl */ `
+      #include <common>
       uniform vec3 outlineColor;
       void main() {
         gl_FragColor = vec4( outlineColor, 1.0 );
+        // Without this the ink renders darker than intended and drifts away
+        // from the outline colors the palette actually specifies.
+        #include <colorspace_fragment>
       }
     `,
     side: THREE.BackSide,

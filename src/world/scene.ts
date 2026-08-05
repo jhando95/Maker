@@ -105,6 +105,10 @@ function addSky(scene: THREE.Scene): void {
         // tone, which keeps the scene feeling open rather than heavy.
         float t = smoothstep( 0.0, 0.55, h );
         gl_FragColor = vec4( mix( horizonColor, topColor, t ), 1.0 );
+        // Three's own materials end with this; a custom shader that writes
+        // gl_FragColor directly skips the linear-to-sRGB conversion and comes
+        // out visibly darker than everything around it.
+        #include <colorspace_fragment>
       }
     `,
     side: THREE.BackSide,
@@ -118,7 +122,7 @@ function addSky(scene: THREE.Scene): void {
 }
 
 function addLights(scene: THREE.Scene): void {
-  const sun = new THREE.DirectionalLight(0xfff4d6, 3.0);
+  const sun = new THREE.DirectionalLight(0xfff4d6, 2.6);
   sun.name = 'sun';
   sun.position.copy(SUN_DIRECTION).multiplyScalar(60);
   sun.target.position.set(0, 0, 0);
@@ -153,7 +157,7 @@ function addLights(scene: THREE.Scene): void {
   // The green ground bounce is the single highest-value light here: it tints
   // every downward-facing surface with grass, and the scene immediately reads
   // as outdoors on a lawn rather than in a void.
-  scene.add(new THREE.HemisphereLight(0xbfe6ff, 0x7fa84a, 0.55));
+  scene.add(new THREE.HemisphereLight(0xbfe6ff, 0x7fa84a, 0.5));
 }
 
 function addGround(scene: THREE.Scene): void {
