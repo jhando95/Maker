@@ -10,3 +10,7 @@ coverage/
 .env
 .env.*
 !.env.example
+
+# Verification screenshots are regenerated on demand; keep only the checked-in preview.
+shots/*
+!shots/build-preview.png

@@ -34,7 +34,7 @@ export const LATCH_MARGIN = 0.8;
 /** Overlap tolerance. Flush parts touch exactly, so this must be forgiving. */
 export const OVERLAP_EPS = 0.004;
 /** How many ranked candidates get the full overlap check each frame. */
-export const MAX_VALIDATED = 8;
+export const MAX_VALIDATED = 12;
 
 export type CandidateKind = 'stack' | 'butt' | 'side' | 'ground' | 'free';
 
@@ -173,14 +173,26 @@ export class Snapper {
     // every overlapping neighbour, and a dense fort generates well over a
     // hundred candidates per frame — validating them all costs far more than
     // generating them, to decide the fate of options the player will never see.
-    const toValidate = Math.min(this.candidates.length, MAX_VALIDATED);
-    for (let i = 0; i < toValidate; i++) {
-      this.candidates[i]!.valid = this.validate(this.candidates[i]!, input);
+    // Ground and free placement are always checked whatever they scored. They
+    // are the fallbacks that guarantee the player can put the part *somewhere*,
+    // and burying them past the window turns a workable aim into a red ghost.
+    for (let i = 0; i < this.candidates.length; i++) {
+      const c = this.candidates[i]!;
+      if (i < MAX_VALIDATED || c.kind === 'free' || c.kind === 'ground') {
+        c.valid = this.validate(c, input);
+      } else {
+        // Not checked; still reachable by cycling, which validates on demand.
+        c.valid = false;
+      }
     }
-    // Unvalidated candidates stay selectable by cycling, and are checked then.
-    for (let i = toValidate; i < this.candidates.length; i++) {
-      this.candidates[i]!.valid = false;
-    }
+
+    // Valid beats high-scoring. The best-scoring placement is often one that
+    // overlaps something, and showing a red ghost when a perfectly good
+    // placement was available one rank down makes the game feel broken — the
+    // player sees "no" without being offered the "yes" sitting right there.
+    // Ties within each group keep their score order, so this only ever promotes
+    // a placement that can actually be made.
+    this.candidates.sort((a, b) => (a.valid === b.valid ? 0 : a.valid ? -1 : 1));
 
     // Cycling: the player has explicitly asked for the Nth alternative, so
     // stickiness does not apply.
