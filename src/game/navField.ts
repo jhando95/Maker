@@ -102,20 +102,37 @@ export class NavField {
         const cz = this.originZ + j * CELL + half;
         // Query the hash directly: CollisionWorld.queryAabb allocates a fresh
         // array per call, which at a few thousand cells per rebuild is real.
+        const probeMinX = cx - half + inset;
+        const probeMaxX = cx + half - inset;
+        const probeMinY = world.groundY + STEP_HEIGHT + 0.02;
+        const probeMaxY = world.groundY + CAP_HEIGHT - 0.1;
+        const probeMinZ = cz - half + inset;
+        const probeMaxZ = cz + half - inset;
+
         const hits = world.hash.queryAabb({
-          minX: cx - half + inset,
-          minY: world.groundY + STEP_HEIGHT + 0.02,
-          minZ: cz - half + inset,
-          maxX: cx + half - inset,
-          maxY: world.groundY + CAP_HEIGHT - 0.1,
-          maxZ: cz + half - inset,
+          minX: probeMinX, minY: probeMinY, minZ: probeMinZ,
+          maxX: probeMaxX, maxY: probeMaxY, maxZ: probeMaxZ,
         });
 
-        let solid = 0;
+        // The hash answers with everything sharing a CELL, not everything
+        // overlapping. Treating that as the answer massively over-blocks: one
+        // 0.1m post reported ~5 square metres solid, and a doorway needed to be
+        // two metres wide before any route through it could be found. A real
+        // AABB test against each candidate is what makes the field mean
+        // anything.
+        //
         // The hash's result buffer is reused by the next query, so it must be
         // consumed before anything else touches the hash.
+        let solid = 0;
         for (let k = 0; k < hits.length; k++) {
-          if (world.store.isAlive(hits[k]!)) {
+          const id = hits[k]!;
+          if (!world.store.isAlive(id)) continue;
+          const box = world.store.readAabb(id);
+          if (
+            probeMinX < box.maxX && probeMaxX > box.minX &&
+            probeMinY < box.maxY && probeMaxY > box.minY &&
+            probeMinZ < box.maxZ && probeMaxZ > box.minZ
+          ) {
             solid = 1;
             break;
           }

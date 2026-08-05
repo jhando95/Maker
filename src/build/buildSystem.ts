@@ -39,6 +39,16 @@ export const GHOST_INVALID = 0xff6b6b;
 /** Beyond this the ghost teleports instead of easing — damping reads as lag. */
 const GHOST_TELEPORT_DISTANCE = 0.6;
 
+/**
+ * Caps on one repeat chain.
+ *
+ * Without them, holding the repeat key with a two-metre delta on open lawn lays
+ * parts at seven a second until the world is full — nothing stops it, because
+ * open ground never fails validation.
+ */
+export const REPEAT_MAX_CHAIN = 64;
+export const REPEAT_MAX_SPAN = 24;
+
 export class BuildSystem {
   private readonly world: CollisionWorld;
   private readonly renderer: PartRenderer;
@@ -83,6 +93,9 @@ export class BuildSystem {
    */
   private lastPlacement: PlacementRecord | null = null;
   private previousPlacement: PlacementRecord | null = null;
+  /** Parts laid by the current chain, and where it started. */
+  private repeatCount = 0;
+  private repeatOrigin: { x: number; y: number; z: number } | null = null;
 
   constructor(world: CollisionWorld, renderer: PartRenderer) {
     this.world = world;
@@ -281,6 +294,10 @@ export class BuildSystem {
         ? this.lastPlacement
         : null;
     this.lastPlacement = record;
+    // A manual placement begins a new chain; repeatPlace restores its own
+    // counters immediately afterwards.
+    this.repeatOrigin = null;
+    this.repeatCount = 0;
 
     return handle.id;
   }
@@ -365,12 +382,36 @@ export class BuildSystem {
   repeatPlace(): PlacementRecord | null {
     const next = this.nextRepeat();
     if (next === null) return null;
-    if (!this.canPlaceAt(next)) {
-      // Break the chain so a blocked repeat does not retry forever.
-      this.previousPlacement = null;
+
+    if (this.repeatOrigin === null) {
+      this.repeatOrigin = {
+        x: this.lastPlacement!.x, y: this.lastPlacement!.y, z: this.lastPlacement!.z,
+      };
+      this.repeatCount = 0;
+    }
+
+    const span = Math.hypot(
+      next.x - this.repeatOrigin.x,
+      next.y - this.repeatOrigin.y,
+      next.z - this.repeatOrigin.z,
+    );
+    if (this.repeatCount >= REPEAT_MAX_CHAIN || span > REPEAT_MAX_SPAN) {
+      this.clearRepeat();
       return null;
     }
+
+    if (!this.canPlaceAt(next)) {
+      // Break the chain so a blocked repeat does not retry forever.
+      this.clearRepeat();
+      return null;
+    }
+
+    // applyPlace advances the chain head, so the counters are restored after.
+    const origin = this.repeatOrigin;
+    const count = this.repeatCount;
     this.applyPlace(next);
+    this.repeatOrigin = origin;
+    this.repeatCount = count + 1;
     return next;
   }
 
@@ -416,6 +457,8 @@ export class BuildSystem {
   /** Drop the repeat chain, e.g. when the player changes what they are doing. */
   clearRepeat(): void {
     this.previousPlacement = null;
+    this.repeatOrigin = null;
+    this.repeatCount = 0;
   }
 
   /** Serialize every placed part. Same shape the network would carry. */

@@ -319,37 +319,60 @@ export function segmentHitsCapsule(
   radius: number,
   height: number,
 ): number {
-  // Solve in the XZ plane against the cylinder's circular cross-section.
+  // Solved as an interval intersection rather than as a boundary crossing.
+  //
+  // The obvious version — solve the quadratic for where the segment crosses the
+  // cylinder wall, keep roots in [0,1] — is wrong whenever the segment does not
+  // cross that wall inside the tick. A balloon falling almost straight down has
+  // a tiny horizontal component, so it starts and ends inside the cylinder's
+  // circular cross-section, both roots land far outside [0,1], and the hit is
+  // dropped. Measured: perfectly vertical hit, but 0.05 m/s of drift missed, and
+  // so did 0.5, 2 and 5. Non-monotone in speed, which is the worst possible
+  // signature — it looked like the fast shots were the broken ones.
+  //
+  // Intersecting the inside-the-cylinder interval with the inside-the-height
+  // interval has no such special cases, and start-inside falls out for free.
   const ox = sx - cx;
   const oz = sz - cz;
   const a = dx * dx + dz * dz;
   const b = 2 * (ox * dx + oz * dz);
   const c = ox * ox + oz * oz - radius * radius;
 
+  // The span of t for which the segment is within `radius` horizontally.
+  let tEnter = 0;
+  let tExit = 1;
+
   if (a < 1e-12) {
-    // Travelling straight up or down. Inside the circle already, so the answer
-    // is entirely about whether the segment's vertical span crosses the
-    // capsule's — testing only the start point misses a balloon dropped from
-    // directly overhead, which is the whole reason to fire straight down.
+    // No horizontal motion: either inside the circle for the whole tick or not
+    // at all.
     if (c > 0) return -1;
-    const loY = cy - radius;
-    const hiY = cy + height + radius;
-    if (Math.abs(dy) < 1e-12) return sy >= loY && sy <= hiY ? 0 : -1;
-    const t0 = (loY - sy) / dy;
-    const t1 = (hiY - sy) / dy;
-    const enter = Math.max(0, Math.min(t0, t1));
-    const exit = Math.min(1, Math.max(t0, t1));
-    return enter <= exit ? enter : -1;
+  } else {
+    const disc = b * b - 4 * a * c;
+    if (disc < 0) return -1;
+    const root = Math.sqrt(disc);
+    const t0 = (-b - root) / (2 * a);
+    const t1 = (-b + root) / (2 * a);
+    tEnter = Math.max(tEnter, Math.min(t0, t1));
+    tExit = Math.min(tExit, Math.max(t0, t1));
+    if (tEnter > tExit) return -1;
   }
 
-  const disc = b * b - 4 * a * c;
-  if (disc < 0) return -1;
-  const root = Math.sqrt(disc);
+  // The span of t for which the segment is within the capped height band. The
+  // caps are treated as flat rather than hemispherical: for a projectile against
+  // an upright character the difference is a radius at the very crown and the
+  // very feet, and counting those as hits is the forgiving direction.
+  const loY = cy - radius;
+  const hiY = cy + height + radius;
 
-  for (const t of [(-b - root) / (2 * a), (-b + root) / (2 * a)]) {
-    if (t < 0 || t > 1) continue;
-    const y = sy + dy * t;
-    if (y >= cy - radius && y <= cy + height + radius) return t;
+  if (Math.abs(dy) < 1e-12) {
+    if (sy < loY || sy > hiY) return -1;
+  } else {
+    const ty0 = (loY - sy) / dy;
+    const ty1 = (hiY - sy) / dy;
+    tEnter = Math.max(tEnter, Math.min(ty0, ty1));
+    tExit = Math.min(tExit, Math.max(ty0, ty1));
+    if (tEnter > tExit) return -1;
   }
-  return -1;
+
+  return tEnter <= tExit ? Math.max(0, tEnter) : -1;
 }

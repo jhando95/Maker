@@ -64,7 +64,7 @@ tools/
 ```
 
 ```bash
-npm test         # 240 unit tests
+npm test         # 245 unit tests
 npm run typecheck
 node tools/shoot.mjs --out shots/x.png   # boot headless, screenshot, fail on any console error
 ```
@@ -145,6 +145,12 @@ auto-downgrade to a shorter part, or surfacing *why* it is blocked.
 SwiftShader and reports single-digit FPS; that says nothing about real hardware.
 Draw calls (~60 with scenery instanced, down from ~340) and triangle counts are
 the numbers worth watching.
+
+**Step-up's effective height is 0.25m, not the 0.55m the constant advertises.**
+A design review measured it: rises of 0.20 and 0.25 climb, 0.30 through 0.55 all
+fail. The vertical assist raises the capsule but does not advance it, so the feet
+can settle back off the new surface. Players building half-metre steps will find
+them unclimbable. Not yet fixed.
 
 **Nav routing is 2D.** Bots walk on the ground toward a ground-level objective,
 so the grid has one layer. A mode whose objective sits on top of a structure

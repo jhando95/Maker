@@ -62,6 +62,23 @@ describe('segmentHitsCapsule', () => {
     expect(segmentHitsCapsule(9, 5, 0, 0, -10, 0, 0, 0, 0, 0.4, 1.7)).toBe(-1);
   });
 
+  it('hits at every horizontal speed, not only when perfectly vertical', () => {
+    // The measured regression: a balloon falling almost straight down starts and
+    // ends inside the cylinder's cross-section, so a boundary-crossing solve
+    // finds no root in [0,1] and drops the hit. Pure vertical worked; 0.05 m of
+    // drift did not, nor did 0.5, 2 or 5 — non-monotone in speed.
+    for (const drift of [0, 0.001, 0.05, 0.5, 2, 5]) {
+      const t = segmentHitsCapsule(0, 1.2, 0, drift * 0.016, -0.5, 0, 0, 0, 0, 0.46, 1.7);
+      expect(t, `drift ${drift}`).toBeGreaterThanOrEqual(0);
+      expect(t, `drift ${drift}`).toBeLessThanOrEqual(1);
+    }
+  });
+
+  it('reports a hit when the segment starts inside the capsule', () => {
+    const t = segmentHitsCapsule(0, 1.0, 0, 0.2, 0, 0, 0, 0, 0, 0.5, 1.7);
+    expect(t).toBe(0);
+  });
+
   it('returns the nearer of two intersections', () => {
     const t = segmentHitsCapsule(-10, 1, 0, 20, 0, 0, 0, 0, 0, 0.5, 1.7);
     // Enters at x = -0.5, which is 9.5 of the 20 travelled.

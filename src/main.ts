@@ -393,6 +393,13 @@ function fixedUpdate(dt: number): void {
     crouch: crouchLatched,
     climb: axis.z,
   };
+  // Being soaked slows the player. Without this the mode's incoming fire is
+  // toothless and building cover is decoration.
+  if (mode !== null && mode.playerSpeedScale < 1) {
+    intent.right *= mode.playerSpeedScale;
+    intent.forward *= mode.playerSpeedScale;
+    intent.sprint = false;
+  }
   player.step(dt, intent);
   sounds.update(dt, player, camera);
 
