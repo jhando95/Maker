@@ -883,6 +883,16 @@ window.__maker = {
   selectPart: (i: number) => build.selectKind(i),
   getSelectedPart: () => build.selectedKind,
   actionDown: (a: string) => input.isDown(a as Action),
+  /**
+   * Movement intent this frame, stick and keys summed.
+   *
+   * Exposed for the controller scenario, which needs to check that unplugging a
+   * pad leaves nothing held. Watching the player's feet instead cannot tell a
+   * released stick from one still pushed into a fence.
+   */
+  moveAxis: () => input.moveAxis,
+  /** Stick look rate this frame, for the same reason as moveAxis. */
+  padLook: () => input.padLook,
   bindingFor: (code: string) => input.getBindings()[code] ?? null,
   /** Move the mouse, for scenarios that cannot hold pointer lock. */
   look: (dx: number, dy: number) => input.injectLook(dx, dy),
