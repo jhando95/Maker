@@ -29,6 +29,16 @@ export interface PartHandle {
   generation: number;
 }
 
+/**
+ * A collision shape that differs from the part's own box, expressed in the
+ * part's local frame. Used for parts whose drawn shape is not a box.
+ */
+export interface LocalCollisionProxy {
+  ox: number; oy: number; oz: number;
+  qx: number; qy: number; qz: number; qw: number;
+  hx: number; hy: number; hz: number;
+}
+
 export class PartStore {
   private capacity: number;
 
@@ -49,6 +59,15 @@ export class PartStore {
   alive: Uint8Array;
   /** Bumped whenever a slot is reused, so stale handles can be spotted. */
   generation: Uint32Array;
+  /**
+   * The part's own orientation, 4 floats per slot.
+   *
+   * Kept alongside the collision basis because they are not always the same: a
+   * wedge collides as a slab lying along its slope, so `axes` holds the proxy's
+   * orientation while this holds the part's. Serialization and rendering must
+   * use this one, or a saved ramp would reload rotated onto its own slope.
+   */
+  visualQuat: Float64Array;
 
   /** Slots freed by removal, reused before growing. */
   private freeList: PartId[] = [];
@@ -68,6 +87,7 @@ export class PartStore {
     this.colorway = new Uint8Array(initialCapacity);
     this.alive = new Uint8Array(initialCapacity);
     this.generation = new Uint32Array(initialCapacity);
+    this.visualQuat = new Float64Array(initialCapacity * 4);
   }
 
   private grow(): void {
@@ -86,6 +106,7 @@ export class PartStore {
     this.colorway = copy(this.colorway, 1);
     this.alive = copy(this.alive, 1);
     this.generation = copy(this.generation, 1);
+    this.visualQuat = copy(this.visualQuat, 4);
     this.capacity = next;
   }
 
@@ -105,6 +126,11 @@ export class PartStore {
     cx: number, cy: number, cz: number,
     qx: number, qy: number, qz: number, qw: number,
     hx: number, hy: number, hz: number,
+    /**
+     * Optional collision shape in the part's local frame, for parts whose
+     * collision differs from their drawn box.
+     */
+    proxy?: LocalCollisionProxy | null,
   ): PartHandle {
     let id = this.freeList.pop();
     if (id === undefined) {
@@ -112,15 +138,34 @@ export class PartStore {
       id = this.highWater++;
     }
 
-    this.center[id * 3] = cx;
-    this.center[id * 3 + 1] = cy;
-    this.center[id * 3 + 2] = cz;
+    // The part's own orientation, whatever the collision shape turns out to be.
+    this.visualQuat[id * 4] = qx;
+    this.visualQuat[id * 4 + 1] = qy;
+    this.visualQuat[id * 4 + 2] = qz;
+    this.visualQuat[id * 4 + 3] = qw;
 
-    this.halfExtent[id * 3] = hx;
-    this.halfExtent[id * 3 + 1] = hy;
-    this.halfExtent[id * 3 + 2] = hz;
-
-    this.setAxesFromQuaternion(id, qx, qy, qz, qw);
+    if (proxy == null) {
+      this.center[id * 3] = cx;
+      this.center[id * 3 + 1] = cy;
+      this.center[id * 3 + 2] = cz;
+      this.halfExtent[id * 3] = hx;
+      this.halfExtent[id * 3 + 1] = hy;
+      this.halfExtent[id * 3 + 2] = hz;
+      this.setAxesFromQuaternion(id, qx, qy, qz, qw);
+    } else {
+      // Compose part rotation with the proxy's, and rotate the proxy's local
+      // offset into world space. Done once at placement so the collision hot
+      // path never pays for it.
+      const cq = multiplyQuat(qx, qy, qz, qw, proxy.qx, proxy.qy, proxy.qz, proxy.qw);
+      const off = rotateVec(proxy.ox, proxy.oy, proxy.oz, qx, qy, qz, qw);
+      this.center[id * 3] = cx + off[0];
+      this.center[id * 3 + 1] = cy + off[1];
+      this.center[id * 3 + 2] = cz + off[2];
+      this.halfExtent[id * 3] = proxy.hx;
+      this.halfExtent[id * 3 + 1] = proxy.hy;
+      this.halfExtent[id * 3 + 2] = proxy.hz;
+      this.setAxesFromQuaternion(id, cq[0], cq[1], cq[2], cq[3]);
+    }
 
     this.kind[id] = kind;
     this.colorway[id] = colorway;
@@ -251,6 +296,35 @@ export class PartStore {
     this.highWater = 0;
     this.count = 0;
   }
+}
+
+/** Hamilton product, a*b. */
+function multiplyQuat(
+  ax: number, ay: number, az: number, aw: number,
+  bx: number, by: number, bz: number, bw: number,
+): [number, number, number, number] {
+  return [
+    aw * bx + ax * bw + ay * bz - az * by,
+    aw * by - ax * bz + ay * bw + az * bx,
+    aw * bz + ax * by - ay * bx + az * bw,
+    aw * bw - ax * bx - ay * by - az * bz,
+  ];
+}
+
+/** Rotate a vector by a unit quaternion. */
+function rotateVec(
+  x: number, y: number, z: number,
+  qx: number, qy: number, qz: number, qw: number,
+): [number, number, number] {
+  // v + 2 * cross(q.xyz, cross(q.xyz, v) + q.w * v)
+  const tx = 2 * (qy * z - qz * y);
+  const ty = 2 * (qz * x - qx * z);
+  const tz = 2 * (qx * y - qy * x);
+  return [
+    x + qw * tx + (qy * tz - qz * ty),
+    y + qw * ty + (qz * tx - qx * tz),
+    z + qw * tz + (qx * ty - qy * tx),
+  ];
 }
 
 /** An OBB scratch object, for callers that need one to pass to readObb. */

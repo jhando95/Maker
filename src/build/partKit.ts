@@ -93,6 +93,72 @@ export function getPartKind(id: PartKindId): PartKind {
   return kind;
 }
 
+/**
+ * Collision shape for a part, expressed in the part's own local frame.
+ *
+ * Every part in the collision world is an oriented box, but the ramp renders as
+ * a wedge. Colliding it as its bounding box puts an invisible wall over the
+ * slope — you can see the ramp and cannot walk up it.
+ *
+ * The fix is a proxy: a thin slab lying along the slope face, so the walkable
+ * surface matches what is drawn. The wedge's slope runs corner to corner through
+ * the local origin, from (-hx, +hy) to (+hx, -hy), so the slab is that segment
+ * rotated about Z, pushed half its thickness below the slope plane so its top
+ * face lands exactly on it.
+ *
+ * The space underneath the slab is not solid. For a ramp resting on the ground
+ * that is unreachable; for one placed in mid-air you can pass beneath it, which
+ * is the honest behaviour for a thin ramp anyway.
+ */
+export interface CollisionProxy {
+  /** Offset from the part's centre, in the part's local frame. */
+  ox: number; oy: number; oz: number;
+  /** Rotation relative to the part's own orientation. */
+  qx: number; qy: number; qz: number; qw: number;
+  hx: number; hy: number; hz: number;
+}
+
+/** Thickness of the slab standing in for a wedge's slope. */
+export const WEDGE_PROXY_THICKNESS = 0.1;
+
+/**
+ * The collision proxy for a kind, or null when the part collides as its own box
+ * (which is every kind except the wedge).
+ */
+export function collisionProxy(kind: PartKind): CollisionProxy | null {
+  if (!kind.isWedge) return null;
+
+  const hx = kind.length / 2;
+  const hy = kind.thickness / 2;
+  const hz = kind.width / 2;
+
+  // Half the slope's length, and the angle it makes with +X.
+  const half = Math.hypot(hx, hy);
+  const theta = -Math.atan2(hy, hx);
+
+  // Outward normal of the slope face, pointing up and along +X.
+  const nx = hy / half;
+  const ny = hx / half;
+
+  const t = Math.min(WEDGE_PROXY_THICKNESS, kind.thickness * 0.5);
+  const halfT = t / 2;
+
+  return {
+    // Sunk half a thickness along -normal, so the slab's top face is the slope.
+    ox: -nx * halfT,
+    oy: -ny * halfT,
+    oz: 0,
+    // Rotation about Z only.
+    qx: 0,
+    qy: 0,
+    qz: Math.sin(theta / 2),
+    qw: Math.cos(theta / 2),
+    hx: half,
+    hy: halfT,
+    hz,
+  };
+}
+
 /** Half-extents, the form the collision world and snapping both want. */
 export function halfExtents(kind: PartKind): { hx: number; hy: number; hz: number } {
   return { hx: kind.length / 2, hy: kind.thickness / 2, hz: kind.width / 2 };

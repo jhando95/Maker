@@ -7,7 +7,7 @@
  */
 
 import { SpatialHash, type Aabb } from './spatialHash.ts';
-import { PartStore, makeObb, type PartHandle } from './partStore.ts';
+import { PartStore, makeObb, type PartHandle, type LocalCollisionProxy } from './partStore.ts';
 import { capsuleVsObb } from './capsuleObb.ts';
 import { Feature, makeContact, type Capsule, type Contact, type Obb, type PartId } from './types.ts';
 import {
@@ -148,8 +148,10 @@ export class CollisionWorld {
     cx: number, cy: number, cz: number,
     qx: number, qy: number, qz: number, qw: number,
     hx: number, hy: number, hz: number,
+    /** Collision shape in the part's local frame, when it differs from its box. */
+    proxy?: LocalCollisionProxy | null,
   ): PartHandle {
-    const handle = this.store.add(kind, colorway, cx, cy, cz, qx, qy, qz, qw, hx, hy, hz);
+    const handle = this.store.add(kind, colorway, cx, cy, cz, qx, qy, qz, qw, hx, hy, hz, proxy);
     this.hash.insert(handle.id, this.store.readAabb(handle.id));
     return handle;
   }
@@ -591,4 +593,4 @@ export class CollisionWorld {
 }
 
 export { makeObb };
-export type { Capsule, Contact, Obb, PartId, PartHandle };
+export type { Capsule, Contact, Obb, PartId, PartHandle, LocalCollisionProxy };

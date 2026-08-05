@@ -102,12 +102,11 @@ are the save format.
 
 ## Known limitations
 
-**The ramp collides as a box, not as a wedge.** `PART_KINDS[6]` renders as a
-tapered prism but every part in the collision world is an oriented box, so you
-walk into an invisible wall where the slope should be. Either give wedges a
-collision proxy (a rotated thin box along the slope, which is what most games
-do) or cut the part until that exists. Everything else in the kit is a true box,
-so this is the only shape where visuals and collision disagree.
+**A ramp is hollow underneath.** The wedge collides as a thin slab lying along
+its slope, so the walkable surface matches what is drawn — but the triangular
+space beneath the slab is not solid. For a ramp on the ground that is
+unreachable; for one placed in mid-air you can pass under it, which is arguably
+the right behaviour for a thin ramp anyway.
 
 **Snapping can show a red ghost with no valid alternative** when a long part is
 aimed into a dense cluster — every candidate genuinely overlaps something. That

@@ -12,7 +12,7 @@
 
 import * as THREE from 'three';
 import { CollisionWorld } from '../physics/collisionWorld.ts';
-import { PART_KINDS, COLORWAYS, getPartKind, halfExtents } from './partKit.ts';
+import { PART_KINDS, COLORWAYS, getPartKind, halfExtents, collisionProxy } from './partKit.ts';
 import { Snapper, type Candidate, type SnapResult, ROT_STEP_DEG } from './snapping.ts';
 import { PartRenderer } from '../render/partRenderer.ts';
 import { chamferedBox, wedge } from '../render/geometry.ts';
@@ -239,6 +239,8 @@ export class BuildSystem {
       record.x, record.y, record.z,
       q.x, q.y, q.z, q.w,
       h.hx, h.hy, h.hz,
+      // A wedge collides as a slab along its slope, not as its bounding box.
+      collisionProxy(kind),
     );
     this.renderer.add(
       handle.id, record.kind, record.colorway,
@@ -296,24 +298,37 @@ export class BuildSystem {
     const out: PlacementRecord[] = [];
     const store = this.world.store;
     for (const id of store.live()) {
+      const v = id * 4;
+      // The part's own orientation, not the collision basis — for a wedge those
+      // differ, and saving the collision basis would reload the ramp rotated
+      // onto its own slope.
+      const qx = store.visualQuat[v]!;
+      const qy = store.visualQuat[v + 1]!;
+      const qz = store.visualQuat[v + 2]!;
+      const qw = store.visualQuat[v + 3]!;
+
+      // Likewise the centre: a proxy is offset from the part's own centre, so
+      // undo that offset to recover where the part was actually placed.
+      const kind = getPartKind(store.kind[id]!);
+      const proxy = collisionProxy(kind);
       const c = id * 3;
-      const o = id * 9;
-      // Rebuild a quaternion from the stored basis.
-      const m = new THREE.Matrix4().set(
-        store.axes[o]!, store.axes[o + 3]!, store.axes[o + 6]!, 0,
-        store.axes[o + 1]!, store.axes[o + 4]!, store.axes[o + 7]!, 0,
-        store.axes[o + 2]!, store.axes[o + 5]!, store.axes[o + 8]!, 0,
-        0, 0, 0, 1,
-      );
-      const q = new THREE.Quaternion().setFromRotationMatrix(m);
+      let x = store.center[c]!;
+      let y = store.center[c + 1]!;
+      let z = store.center[c + 2]!;
+      if (proxy !== null) {
+        const off = new THREE.Vector3(proxy.ox, proxy.oy, proxy.oz)
+          .applyQuaternion(new THREE.Quaternion(qx, qy, qz, qw));
+        x -= off.x;
+        y -= off.y;
+        z -= off.z;
+      }
+
       out.push({
         kind: store.kind[id]!,
         colorway: store.colorway[id]!,
-        x: quantize(store.center[c]!),
-        y: quantize(store.center[c + 1]!),
-        z: quantize(store.center[c + 2]!),
-        qx: quantize(q.x, 1e-4), qy: quantize(q.y, 1e-4),
-        qz: quantize(q.z, 1e-4), qw: quantize(q.w, 1e-4),
+        x: quantize(x), y: quantize(y), z: quantize(z),
+        qx: quantize(qx, 1e-4), qy: quantize(qy, 1e-4),
+        qz: quantize(qz, 1e-4), qw: quantize(qw, 1e-4),
       });
     }
     return out;
