@@ -122,6 +122,8 @@ export interface HudState {
   partsPlaced: number;
   cameraMode: string;
   climbing: boolean;
+  /** True when a repeat step is available, so the hint can be offered. */
+  canRepeat: boolean;
   /** Null when no mode is running. */
   mode: ModeHud | null;
 }
@@ -188,7 +190,7 @@ export class Hud {
       '<span class="maker-key">WASD</span> move &nbsp; <span class="maker-key">Space</span> jump &nbsp; <span class="maker-key">Shift</span> sprint',
       '<span class="maker-key">LMB</span> place &nbsp; <span class="maker-key">RMB</span> remove &nbsp; <span class="maker-key">Alt</span> free aim',
       '<span class="maker-key">Q</span><span class="maker-key">E</span> turn &nbsp; <span class="maker-key">Z</span><span class="maker-key">X</span> tilt &nbsp; <span class="maker-key">T</span> reset',
-      '<span class="maker-key">R</span> next snap &nbsp; <span class="maker-key">Wheel</span> part &nbsp; <span class="maker-key">V</span> camera',
+      '<span class="maker-key">R</span> next snap &nbsp; <span class="maker-key">G</span> repeat &nbsp; <span class="maker-key">V</span> camera',
       '<span class="maker-key">1-8</span> pick part &nbsp; <span class="maker-key">`</span> debug',
     ].join('<br>');
     this.root.appendChild(help);
@@ -253,7 +255,9 @@ export class Hud {
       `snap: <b>${state.snapKind}</b>${state.candidateCount > 1 ? ` (${state.candidateCount})` : ''}`,
       `rotation: ${rotText}`,
       `built: ${state.partsPlaced}`,
-      state.climbing ? '<b>climbing</b>' : `camera: ${state.cameraMode}`,
+      state.canRepeat
+        ? '<b>hold G</b> to repeat that step'
+        : state.climbing ? '<b>climbing</b>' : `camera: ${state.cameraMode}`,
     ].join('<br>');
   }
 

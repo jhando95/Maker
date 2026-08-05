@@ -333,6 +333,17 @@ let modeOverTimer = 0;
 /** Stance latches, so hold-vs-toggle is a setting rather than two code paths. */
 let crouchLatched = false;
 let sprintLatched = false;
+let repeatHeldTicks = 0;
+
+function doRepeat(): void {
+  const placed = build.repeatPlace();
+  if (placed === null) {
+    sounds.invalid();
+    return;
+  }
+  worldChanged();
+  sounds.placed(placed.x, placed.y, placed.z, camera, player);
+}
 
 /** Place, and make a sound about it. Returns whether anything was placed. */
 function tryPlaceWithFeedback(): boolean {
@@ -469,6 +480,19 @@ function fixedUpdate(dt: number): void {
     }
   }
 
+  // Repeat the last step. Held, it runs a chain — two rungs become a ladder.
+  if (canBuild) {
+    if (input.wasPressed('repeatPlace')) {
+      repeatHeldTicks = 0;
+      doRepeat();
+    } else if (input.isDown('repeatPlace')) {
+      repeatHeldTicks++;
+      // About eight a second: fast enough to feel like drawing, slow enough to
+      // watch where the chain is going and let go.
+      if (repeatHeldTicks % 8 === 0) doRepeat();
+    }
+  }
+
   if (input.wasPressed('removePart')) {
     const aimed = build.lastSnap?.hitPart ?? -1;
     let px = 0, py = 0, pz = 0;
@@ -512,6 +536,7 @@ function render(alpha: number, frameDt: number): void {
     snapKind: snapKindLabel,
     candidateCount,
     rotation: build.rotationDegrees,
+    canRepeat: build.repeatDelta !== null,
     partsPlaced: build.placedCount,
     cameraMode: camera.mode,
     climbing: state.climbing,

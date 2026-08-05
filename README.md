@@ -32,6 +32,8 @@ npm run dev      # http://localhost:5173
 | `1`–`8`, wheel | choose a part |
 | `Shift` + wheel | change colour |
 | `V` | first ⇄ third person |
+| `G` | repeat the last step — hold to run a chain |
+| `Esc` | pause |
 | `F` | undo |
 | `` ` `` | debug overlay |
 
@@ -62,7 +64,7 @@ tools/
 ```
 
 ```bash
-npm test         # 205 unit tests
+npm test         # 240 unit tests
 npm run typecheck
 node tools/shoot.mjs --out shots/x.png   # boot headless, screenshot, fail on any console error
 ```
@@ -109,6 +111,12 @@ second; local steering only handles the last two metres. That matters beyond bot
 looking stupid — the mode exists to show you where your fort failed, and if a gap
 is never found, a leaky fort scores as a perfect one.
 
+**Repeat the last step.** After two parts, the offset between them is almost
+always what you want again — two rungs describe a ladder, two treads a
+staircase. Hold `G` and it runs the chain, past where you could reach by aiming.
+The delta is taken in world space, not the part's local frame: local stepping
+compounds rotation, so any turn between two parts makes the chain spiral.
+
 **Nothing is an audio file either.** Every sound is oscillators, filtered noise
 and envelopes built at runtime. Beyond shipping zero bytes, it lets a footstep
 shift pitch with surface and speed because it is being *built*, not played back.
@@ -138,9 +146,6 @@ SwiftShader and reports single-digit FPS; that says nothing about real hardware.
 Draw calls (~60 with scenery instanced, down from ~340) and triangle counts are
 the numbers worth watching.
 
-**There is no menu yet.** The game boots straight into the sandbox; a round is
-started from the debug API. Settings exist and persist but have no UI.
-
 **Nav routing is 2D.** Bots walk on the ground toward a ground-level objective,
 so the grid has one layer. A mode whose objective sits on top of a structure
 would need a layered grid — one flood per standable height per column.
@@ -150,11 +155,10 @@ would need a layered grid — one flood per standable height per column.
 1. **Play Fort Defense and tune it.** Every number in it — build time, wave
    sizes, stash supplies, throw arc — is a first guess. This is the cheapest and
    most valuable next step, and it needs a human, not more code.
-2. **Menu and settings UI**, plus save slots for builds. The store and the
-   serialization already exist; only the screens are missing.
-3. **Construction ergonomics.** Repeat-last-placement is the big one: after two
-   parts, a key repeats the offset, turning two rungs into a twenty-rung ladder.
-   Under a build timer this is the difference between a fort and a fence.
+2. **Key rebinding and gamepad support.** The input layer already maps devices
+   to named actions, so both are wiring rather than redesign.
+3. **More construction tools**: blueprints, line-drag fill, an eyedropper, and
+   moving a placed part instead of delete-and-replace.
 4. **Netcode** — server-authoritative, client prediction, `PlacePart` intents
    replicated. The seams exist for this.
 5. **More modes**, then woods survival, which wants resource gathering and

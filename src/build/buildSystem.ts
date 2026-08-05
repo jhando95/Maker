@@ -73,6 +73,17 @@ export class BuildSystem {
   private ghostValidColor = GHOST_VALID;
   private ghostInvalidColor = GHOST_INVALID;
 
+  /**
+   * The last two placements, which together define a repeatable step.
+   *
+   * Placing parts one at a time is fine for a sandbox and miserable under a
+   * build timer. Once two parts exist, the offset between them is almost always
+   * the thing the player wants again: two rungs describe a ladder, two treads
+   * describe a staircase, two planks describe a wall.
+   */
+  private lastPlacement: PlacementRecord | null = null;
+  private previousPlacement: PlacementRecord | null = null;
+
   constructor(world: CollisionWorld, renderer: PartRenderer) {
     this.world = world;
     this.renderer = renderer;
@@ -105,6 +116,7 @@ export class BuildSystem {
     if (index < 0 || index >= PART_KINDS.length) return;
     if (index === this.selectedKind) return;
     this.selectedKind = index;
+    this.clearRepeat();
     this.ghostMesh.geometry = this.ghostGeometries[index]!;
     // A different part has different snap frames, so the sticky choice from the
     // old one is meaningless.
@@ -261,6 +273,15 @@ export class BuildSystem {
     this.placedCount++;
     this.snapper.reset();
     this.cycleIndex = 0;
+
+    // A repeat is only meaningful between two parts of the same kind; a step
+    // from a post to a plank describes nothing the player meant.
+    this.previousPlacement =
+      this.lastPlacement !== null && this.lastPlacement.kind === record.kind
+        ? this.lastPlacement
+        : null;
+    this.lastPlacement = record;
+
     return handle.id;
   }
 
@@ -300,6 +321,101 @@ export class BuildSystem {
       }
     }
     return false;
+  }
+
+  /**
+   * Is there a step to repeat, and what is it?
+   *
+   * The delta is taken in world space rather than in the part's local frame.
+   * Local-frame stepping compounds rotation, so a chain of parts placed with any
+   * turn between them spirals; world-space stepping repeats exactly the
+   * displacement the player just made, which is what they watched happen.
+   */
+  get repeatDelta(): { dx: number; dy: number; dz: number } | null {
+    if (this.lastPlacement === null || this.previousPlacement === null) return null;
+    const dx = this.lastPlacement.x - this.previousPlacement.x;
+    const dy = this.lastPlacement.y - this.previousPlacement.y;
+    const dz = this.lastPlacement.z - this.previousPlacement.z;
+    // Two parts in the same place describe no step.
+    if (Math.hypot(dx, dy, dz) < 1e-4) return null;
+    return { dx, dy, dz };
+  }
+
+  /** The transform the next repeat would produce, or null if there is none. */
+  nextRepeat(): PlacementRecord | null {
+    const delta = this.repeatDelta;
+    const last = this.lastPlacement;
+    if (delta === null || last === null) return null;
+    return {
+      ...last,
+      x: quantize(last.x + delta.dx),
+      y: quantize(last.y + delta.dy),
+      z: quantize(last.z + delta.dz),
+    };
+  }
+
+  /**
+   * Place the next part in the repeat chain.
+   *
+   * Validated the same way any placement is: overlapping something, or leaving
+   * the world, ends the chain rather than stacking parts inside each other.
+   * Reach is deliberately *not* checked — the whole point is to run a ladder up
+   * past where the player could aim.
+   */
+  repeatPlace(): PlacementRecord | null {
+    const next = this.nextRepeat();
+    if (next === null) return null;
+    if (!this.canPlaceAt(next)) {
+      // Break the chain so a blocked repeat does not retry forever.
+      this.previousPlacement = null;
+      return null;
+    }
+    this.applyPlace(next);
+    return next;
+  }
+
+  /** Would this record be a legal placement? Overlap and bounds only. */
+  private canPlaceAt(record: PlacementRecord): boolean {
+    const kind = getPartKind(record.kind);
+    const h = halfExtents(kind);
+    const q = new THREE.Quaternion(record.qx, record.qy, record.qz, record.qw).normalize();
+
+    // World-axis extents of the rotated box, for the broadphase probe.
+    const m = new THREE.Matrix4().makeRotationFromQuaternion(q);
+    const e = m.elements;
+    const ex = Math.abs(e[0]!) * h.hx + Math.abs(e[4]!) * h.hy + Math.abs(e[8]!) * h.hz;
+    const ey = Math.abs(e[1]!) * h.hx + Math.abs(e[5]!) * h.hy + Math.abs(e[9]!) * h.hz;
+    const ez = Math.abs(e[2]!) * h.hx + Math.abs(e[6]!) * h.hy + Math.abs(e[10]!) * h.hz;
+
+    if (record.y - ey < this.world.groundY - 0.02) return false;
+
+    // Shrunk, because parts placed flush touch exactly and must not read as
+    // overlapping — the most common legitimate placement in the game.
+    const shrink = 0.006;
+    const probe = {
+      minX: record.x - ex + shrink, minY: record.y - ey + shrink, minZ: record.z - ez + shrink,
+      maxX: record.x + ex - shrink, maxY: record.y + ey - shrink, maxZ: record.z + ez - shrink,
+    };
+
+    // queryAabb is a BROADPHASE: it returns everything sharing a hash cell, not
+    // everything actually overlapping. Treating a non-empty result as a
+    // collision rejects every placement within a metre of anything.
+    for (const id of this.world.queryAabb(probe)) {
+      const other = this.world.store.readAabb(id);
+      if (
+        probe.minX < other.maxX && probe.maxX > other.minX &&
+        probe.minY < other.maxY && probe.maxY > other.minY &&
+        probe.minZ < other.maxZ && probe.maxZ > other.minZ
+      ) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  /** Drop the repeat chain, e.g. when the player changes what they are doing. */
+  clearRepeat(): void {
+    this.previousPlacement = null;
   }
 
   /** Serialize every placed part. Same shape the network would carry. */
@@ -350,6 +466,9 @@ export class BuildSystem {
     this.history.length = 0;
     this.placedCount = 0;
     for (const r of records) this.applyPlace(r);
+    // Loaded parts are not a step the player just made.
+    this.lastPlacement = null;
+    this.previousPlacement = null;
   }
 
   get rotationDegrees(): { yaw: number; pitch: number; roll: number } {

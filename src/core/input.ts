@@ -31,6 +31,7 @@ export const ACTIONS = [
   'rotatePitch',
   'rotateRoll',
   'resetRotation',
+  'repeatPlace',
 
   'nextPart',
   'prevPart',
@@ -78,6 +79,7 @@ export const DEFAULT_BINDINGS: Record<string, Action> = {
   KeyZ: 'rotatePitch',
   KeyX: 'rotateRoll',
   KeyT: 'resetRotation',
+  KeyG: 'repeatPlace',
 
   Digit1: 'hotbar1',
   Digit2: 'hotbar2',
