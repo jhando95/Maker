@@ -439,6 +439,21 @@ export class BuildSystem {
     return handle.id;
   }
 
+  /**
+   * Apply a record only if the space is free.
+   *
+   * applyPlace deliberately does not validate — it is the authority side of the
+   * intent/apply split, and a server that has already authorised a placement
+   * should not re-litigate it. Seeding a map is the other case: a fixed list of
+   * records authored against one layout will quietly embed itself in whatever
+   * the layout became, so those go through here instead.
+   */
+  applyPlaceIfClear(record: PlacementRecord): boolean {
+    if (!this.canPlaceAt(record)) return false;
+    this.applyPlace(record);
+    return true;
+  }
+
   /** Place what the preview currently shows, if it is legal. */
   tryPlace(): boolean {
     const record = this.place();

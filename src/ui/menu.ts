@@ -263,7 +263,7 @@ export class Menu {
 
     const tag = document.createElement('p');
     tag.className = 'mk-tag';
-    tag.textContent = 'Build a fort. Defend it. Get soaked.';
+    tag.textContent = 'Build it yourself. Then find out if it holds.';
     this.card.appendChild(tag);
 
     // One button per mode, each with a line saying what it is. A menu that

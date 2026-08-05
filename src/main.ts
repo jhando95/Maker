@@ -19,7 +19,7 @@ import { CharacterController, type MoveIntent } from './player/controller.ts';
 import { CameraRig } from './player/cameraRig.ts';
 import { Hud } from './ui/hud.ts';
 import { MAX_REACH } from './build/snapping.ts';
-import { seedStarterStructures } from './world/starter.ts';
+import { seedStarterStructures, STARTER_ORIGIN } from './world/starter.ts';
 import { AudioBus } from './audio/audioBus.ts';
 import { GameSounds } from './audio/gameSounds.ts';
 import { Rng } from './core/rng.ts';
@@ -143,9 +143,11 @@ function flushShadows(nowSeconds: number): void {
 // game is for rather than an empty lawn.
 seedStarterStructures(build);
 
-const player = new CharacterController(world, -3, 0.5, -6);
+// On the back lawn, facing the starter structures. The old spawn was the
+// origin, which the house now occupies.
+const player = new CharacterController(world, STARTER_ORIGIN.x, 0.5, STARTER_ORIGIN.z - 9);
 const camera = new CameraRig(world, window.innerWidth / window.innerHeight);
-camera.yaw = Math.PI * 0.15;
+camera.yaw = Math.PI;
 
 const hud = new Hud(app);
 const input = new Input(renderer.domElement);
@@ -269,8 +271,8 @@ function resetPlayerToSpawn(id: ModeId = lastModeId): void {
   // Capture the Flag starts you in your own yard; everything else starts you
   // where the starter structures are, which is what the sandbox wants.
   if (id === 'captureTheFlag') player.teleport(LEFT_SPAWN.x, LEFT_SPAWN.y, LEFT_SPAWN.z);
-  else player.teleport(-3, 0.5, -7);
-  camera.yaw = Math.PI * 0.15;
+  else player.teleport(STARTER_ORIGIN.x, 0.5, STARTER_ORIGIN.z - 9);
+  camera.yaw = id === 'captureTheFlag' ? Math.PI * 0.5 : Math.PI;
   camera.pitch = -0.05;
 }
 
