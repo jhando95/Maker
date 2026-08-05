@@ -1,0 +1,30 @@
+{
+  "name": "maker",
+  "version": "0.0.1",
+  "description": "A cel-shaded freeform-building party game",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jhando95/Maker.git"
+  },
+  "bugs": {
+    "url": "https://github.com/jhando95/Maker/issues"
+  },
+  "homepage": "https://github.com/jhando95/Maker#readme",
+  "dependencies": {
+    "three": "^0.185.1"
+  },
+  "devDependencies": {
+    "@types/three": "^0.185.4",
+    "playwright": "^1.62.1",
+    "typescript": "^7.0.2",
+    "vite": "^8.2.0"
+  },
+  "private": true,
+  "type": "module"
+}
