@@ -94,6 +94,13 @@ const STYLE = `
 .mk-stats { text-align: center; opacity: 0.85; font-size: 14px; margin: 0 0 20px; line-height: 1.6; }
 
 .mk-hint { text-align: center; font-size: 11.5px; opacity: 0.55; margin-top: 14px; }
+.mk-btn.mk-mode { margin-bottom: 3px; }
+/* Sits directly under its button and is deliberately quiet: the name is the
+   choice, this is the reason. */
+.mk-blurb {
+  font-size: 12px; opacity: 0.6; line-height: 1.4;
+  margin: 0 0 12px; padding: 0 4px; text-align: center;
+}
 .mk-bind {
   display: flex; align-items: center; gap: 10px;
   padding: 7px 0; border-bottom: 1px solid rgba(255,255,255,0.08);
@@ -126,7 +133,9 @@ export interface MenuCallbacks {
   /** Returns false if the key could not be bound. */
   rebind(action: string, code: string): boolean;
   resetBindings(): void;
-  onPlayMode(): void;
+  onPlayMode(id: string): void;
+  /** The modes the title screen should offer, in the order to show them. */
+  listModes(): ReadonlyArray<{ id: string; name: string; blurb: string }>;
   onPlaySandbox(): void;
   onResume(): void;
   onRestart(): void;
@@ -139,9 +148,9 @@ export interface MenuCallbacks {
 
 export interface ResultInfo {
   won: boolean;
-  wavesHeld: number;
-  partsPlaced: number;
-  suppliesLeft: number;
+  /** The mode's own headline and figures, so this screen states no rules. */
+  headline: string;
+  lines: ReadonlyArray<{ label: string; value: string }>;
 }
 
 export class Menu {
@@ -257,7 +266,18 @@ export class Menu {
     tag.textContent = 'Build a fort. Defend it. Get soaked.';
     this.card.appendChild(tag);
 
-    this.button('Fort Defense', () => this.callbacks.onPlayMode());
+    // One button per mode, each with a line saying what it is. A menu that
+    // lists two names and no explanation makes the player pick blind and find
+    // out ninety seconds later.
+    for (const m of this.callbacks.listModes()) {
+      const button = this.button(m.name, () => this.callbacks.onPlayMode(m.id));
+      const blurb = document.createElement('div');
+      blurb.className = 'mk-blurb';
+      blurb.textContent = m.blurb;
+      this.card.appendChild(blurb);
+      button.classList.add('mk-mode');
+    }
+
     this.button('Free Build', () => this.callbacks.onPlaySandbox(), 'mk-secondary');
     this.button('Saved Builds', () => {
       this.returnTo = 'title';
@@ -293,16 +313,14 @@ export class Menu {
     const r = this.result;
     const big = document.createElement('div');
     big.className = `mk-result-big ${r?.won === true ? 'win' : 'lose'}`;
-    big.textContent = r?.won === true ? 'The fort held!' : 'They got the stash';
+    big.textContent = r?.headline ?? '';
     this.card.appendChild(big);
 
     const stats = document.createElement('div');
     stats.className = 'mk-stats';
-    stats.innerHTML = [
-      `waves held: <b>${r?.wavesHeld ?? 0}</b>`,
-      `parts placed: <b>${r?.partsPlaced ?? 0}</b>`,
-      `supplies left: <b>${r?.suppliesLeft ?? 0}</b>`,
-    ].join('<br>');
+    stats.innerHTML = (r?.lines ?? [])
+      .map((l) => `${l.label}: <b>${l.value}</b>`)
+      .join('<br>');
     this.card.appendChild(stats);
 
     this.button('Play Again', () => this.callbacks.onRestart());

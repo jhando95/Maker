@@ -18,7 +18,7 @@
 
 import { Bot, BOT_TIERS, type BotConfig } from './bot.ts';
 import { ProjectileSystem, type BalloonTarget } from './projectiles.ts';
-import type { GameMode, ModeContext, ModeHud, ModeInput } from './gameMode.ts';
+import type { GameMode, Marker, ModeContext, ModeHud, ModeInput, ModeSummary } from './gameMode.ts';
 import { CAP_HEIGHT, CAP_RADIUS } from '../physics/constants.ts';
 import { NavField } from './navField.ts';
 import { FORT_YARD } from '../world/neighborhood.ts';
@@ -516,5 +516,32 @@ export class FortDefenseMode implements GameMode {
       ammo: this.buildingAllowed ? null : { current: this.ammo, max: PLAYER_AMMO_MAX },
       refill: this.atBucket >= 0 && this.ammo < PLAYER_AMMO_MAX ? this.refillProgress : null,
     };
+  }
+
+  /**
+   * Reused rather than rebuilt, because this runs every frame and the contents
+   * only change when the active bucket does.
+   */
+  private readonly markerList: Marker[] = [
+    { kind: 'stash', x: STASH_POSITION.x, y: STASH_POSITION.y, z: STASH_POSITION.z, color: 0xd8564f },
+    ...BUCKETS.map((b): Marker => ({ kind: 'bucket', x: b.x, y: 0, z: b.z, color: 0x4f8fd8 })),
+  ];
+
+  summary(): ModeSummary {
+    const held = this.won ? this.wave : Math.max(0, this.wave - 1);
+    return {
+      headline: this.won ? 'The fort held!' : 'They got the stash',
+      lines: [
+        { label: 'waves held', value: String(held) },
+        { label: 'supplies left', value: String(this.stash.supplies) },
+      ],
+    };
+  }
+
+  markers(): readonly Marker[] {
+    for (let i = 0; i < BUCKETS.length; i++) {
+      this.markerList[i + 1]!.active = this.atBucket === i;
+    }
+    return this.markerList;
   }
 }

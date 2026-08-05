@@ -26,7 +26,9 @@ import { Rng } from './core/rng.ts';
 import { ProjectileSystem } from './game/projectiles.ts';
 import { ModeRenderer } from './game/modeRenderer.ts';
 import { FortDefenseMode } from './game/fortDefense.ts';
-import type { GameEvent, ModeContext, ModeInput } from './game/gameMode.ts';
+import { CaptureTheFlagMode } from './game/captureTheFlag.ts';
+import { LEFT_SPAWN } from './world/neighborhood.ts';
+import type { GameEvent, GameMode, ModeContext, ModeInput } from './game/gameMode.ts';
 import { SettingsStore, ghostColors, loadBindings, saveBindings, clearBindings } from './app/settings.ts';
 import { BINDABLE, describeKey, type Action } from './core/input.ts';
 import { BuildStore } from './app/buildStore.ts';
@@ -34,6 +36,32 @@ import { Menu } from './ui/menu.ts';
 import { CrashHandler } from './app/crashHandler.ts';
 import { GamepadManager } from './core/gamepadManager.ts';
 import { PerformanceGovernor } from './app/performanceGovernor.ts';
+
+/**
+ * The modes a player can start.
+ *
+ * A registry rather than a `new FortDefenseMode()` at the one call site, because
+ * the menu, the restart path and the debug API all need to name a mode and none
+ * of them should be able to name one that does not exist.
+ */
+export type ModeId = 'fortDefense' | 'captureTheFlag';
+
+export const MODES: ReadonlyArray<{ id: ModeId; name: string; blurb: string }> = [
+  {
+    id: 'captureTheFlag',
+    name: 'Capture the Flag',
+    blurb: 'Their flag is past the house. Build a way over, and a way to stop them.',
+  },
+  {
+    id: 'fortDefense',
+    name: 'Fort Defense',
+    blurb: 'Build a fort around the stash, then hold five waves of neighbourhood kids.',
+  },
+];
+
+function createMode(id: ModeId): GameMode {
+  return id === 'captureTheFlag' ? new CaptureTheFlagMode() : new FortDefenseMode();
+}
 
 const app = document.getElementById('app')!;
 app.style.cssText = 'position:fixed;inset:0;overflow:hidden;';
@@ -48,8 +76,7 @@ app.style.cssText = 'position:fixed;inset:0;overflow:hidden;';
 const crash = new CrashHandler(() => ({
   parts: world.partCount,
   mode: mode?.id ?? 'none',
-  phase: mode?.phase ?? null,
-  wave: mode?.wave ?? null,
+  phase: mode?.hud().phase ?? null,
   player: { x: +player.x.toFixed(2), y: +player.y.toFixed(2), z: +player.z.toFixed(2) },
   screen: menu.current,
   tick: loop.tick,
@@ -203,17 +230,20 @@ const modeContext: ModeContext = {
 };
 
 /** null means free build with no rules. */
-let mode: FortDefenseMode | null = null;
+let mode: GameMode | null = null;
 
 /** The world as it was when the round began, for restarts. */
 let roundSnapshot: ReturnType<typeof build.serialize> | null = null;
+/** Which mode a restart should rebuild. */
+let lastModeId: ModeId = 'fortDefense';
 
-function startRound(): void {
+function startRound(id: ModeId = lastModeId): void {
+  lastModeId = id;
   roundSnapshot = build.serialize();
-  mode = new FortDefenseMode();
+  mode = createMode(id);
   mode.start(modeContext);
   audio.play('roundStart', { volume: 0.6 });
-  resetPlayerToSpawn();
+  resetPlayerToSpawn(id);
 }
 
 function stopRound(): void {
@@ -231,12 +261,15 @@ function restartRound(): void {
     build.deserialize(roundSnapshot);
     worldChanged();
   }
-  startRound();
+  startRound(lastModeId);
   enterPlay();
 }
 
-function resetPlayerToSpawn(): void {
-  player.teleport(-3, 0.5, -7);
+function resetPlayerToSpawn(id: ModeId = lastModeId): void {
+  // Capture the Flag starts you in your own yard; everything else starts you
+  // where the starter structures are, which is what the sandbox wants.
+  if (id === 'captureTheFlag') player.teleport(LEFT_SPAWN.x, LEFT_SPAWN.y, LEFT_SPAWN.z);
+  else player.teleport(-3, 0.5, -7);
   camera.yaw = Math.PI * 0.15;
   camera.pitch = -0.05;
 }
@@ -250,8 +283,9 @@ function resetPlayerToSpawn(): void {
 const buildStore = new BuildStore();
 
 const menu = new Menu(app, settings, {
-  onPlayMode: () => {
-    startRound();
+  listModes: () => MODES,
+  onPlayMode: (id: string) => {
+    startRound(id as ModeId);
     enterPlay();
   },
   onPlaySandbox: () => {
@@ -373,6 +407,24 @@ function drainEvents(): void {
         break;
       case 'phaseChange':
         audio.play('roundStart', { volume: 0.45 });
+        break;
+      case 'flagTaken':
+        // Higher and brighter when it is your grab, so a pickup across the map
+        // does not sound like the one in your hands.
+        audio.play('roundStart', {
+          ...spatialAt(e.x, e.y, e.z),
+          volume: 0.7,
+          pitch: e.byPlayer ? 1.35 : 0.85,
+        });
+        break;
+      case 'flagDropped':
+        audio.play('invalid', { ...spatialAt(e.x, e.y, e.z), volume: 0.7, pitch: 0.9 });
+        break;
+      case 'flagReturned':
+        audio.play('uiClick', { ...spatialAt(e.x, e.y, e.z), volume: 0.7, pitch: 1.15 });
+        break;
+      case 'captured':
+        audio.play(e.byPlayer ? 'roundWin' : 'roundLose', { volume: 0.65 });
         break;
     }
   }
@@ -596,13 +648,14 @@ function simulate(dt: number): void {
   if (modeOverTimer > 0) {
     modeOverTimer -= dt;
     if (modeOverTimer <= 0 && mode !== null) {
-      const summary = {
+      const s = mode.summary();
+      enterMenu('result', {
         won: mode.won,
-        wavesHeld: mode.won ? mode.wave : Math.max(0, mode.wave - 1),
-        partsPlaced: build.placedCount,
-        suppliesLeft: mode.stash.supplies,
-      };
-      enterMenu('result', summary);
+        headline: s.headline,
+        // Parts placed belongs to the shell, not the mode — it is the same
+        // number whatever is being played.
+        lines: [...s.lines, { label: 'parts placed', value: String(build.placedCount) }],
+      });
     }
   }
 
@@ -849,10 +902,10 @@ window.__maker = {
     const noFire = { fire: false, firePressed: false, fireReleased: false };
     for (let i = 0; i < ticks; i++) {
       mode.fixedUpdate(DT, modeContext, noFire);
-      if (until !== undefined && mode.phase === until) break;
+      if (until !== undefined && mode.hud().phase === until) break;
     }
     drainEvents();
-    return { phase: mode.phase, wave: mode.wave, bots: mode.bots.length };
+    return { phase: mode.hud().phase, bots: mode.bots.length };
   },
   projectiles,
   world,
