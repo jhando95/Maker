@@ -99,6 +99,8 @@ export const PLAYER_SOAKED_TIME = 3.5;
 export const RESPAWN_TANK = TANK_MAX * 0.5;
 
 export const NAV_REBUILD_INTERVAL = 0.25;
+/** Seconds between splashes while a stream is landing on something. */
+export const SPLASH_INTERVAL = 0.125;
 /** How far a stream reaches out from the eye before the world stops it. */
 const EYE_HEIGHT = CAP_HEIGHT * 0.8;
 
@@ -142,6 +144,7 @@ export class WaterWarMode implements GameMode {
   /** Set while the stream is firing, for the renderer. */
   streamTo: { x: number; y: number; z: number } | null = null;
   private streamHitSomething = false;
+  private splashTimer = 0;
 
   private nextBotId = 1;
   /**
@@ -500,8 +503,21 @@ export class WaterWarMode implements GameMode {
       if (landed > 0 && isSoaked(w)) this.soakKid(ctx, bot);
     }
 
-    if (this.streamHitSomething && ctx.rng.chance(dt * 8)) {
-      ctx.emit({ type: 'splash', x: this.streamTo.x, y: this.streamTo.y, z: this.streamTo.z });
+    // Splashes on a fixed cadence rather than a random chance per tick. Two
+    // reasons, and the second is the one that matters: a continuous jet with
+    // randomly spaced splashes sounds like it is stuttering, and drawing from
+    // ctx.rng here would spend simulation randomness — the same stream that
+    // picks bot tiers and spawn angles — on a decision that is purely cosmetic.
+    if (this.streamHitSomething) {
+      this.splashTimer -= dt;
+      if (this.splashTimer <= 0) {
+        this.splashTimer = SPLASH_INTERVAL;
+        ctx.emit({ type: 'splash', x: this.streamTo.x, y: this.streamTo.y, z: this.streamTo.z });
+      }
+    } else {
+      // Reset, so re-acquiring a target splashes immediately rather than
+      // finishing a countdown started on the last one.
+      this.splashTimer = 0;
     }
   }
 

@@ -175,7 +175,7 @@ scenarios/     scripted checks driven through the harness
 ```
 
 ```bash
-npm test         # 475 unit tests
+npm test         # 476 unit tests
 npm run typecheck
 npm run bench    # what a tick costs, as a share of the 16.67ms budget
 node tools/shoot.mjs --out shots/x.png   # boot headless, screenshot, fail on any console error

@@ -375,6 +375,35 @@ describe('WaterWarMode', () => {
       if (other !== undefined) expect(mode.wetnessOf(other.id)).toBe(0);
     });
 
+    it('splashes on a steady beat while the stream connects, and stops when it does not', () => {
+      // Cosmetic, but it is the only feedback saying the jet is landing rather
+      // than sailing past — and it must not be a coin flip per tick, or a
+      // continuous stream sounds like it is stuttering.
+      const bot = mode.bots[0]!;
+      stand(ctx, 0, 0);
+      ctx.camera.yaw = 0;
+      ctx.camera.pitch = 0;
+
+      events.length = 0;
+      for (let i = 0; i < 30; i++) {
+        bot.controller.teleport(0, 0.5, -3);
+        mode.fixedUpdate(DT, ctx, firing);
+      }
+      const hitting = events.filter((e) => e.type === 'splash').length;
+      // Half a second at one per eighth of a second.
+      expect(hitting).toBeGreaterThanOrEqual(3);
+      expect(hitting).toBeLessThanOrEqual(5);
+
+      // Turn to face nothing: the splashes should stop.
+      ctx.camera.yaw = Math.PI;
+      events.length = 0;
+      for (let i = 0; i < 30; i++) {
+        bot.controller.teleport(0, 0.5, -3);
+        mode.fixedUpdate(DT, ctx, firing);
+      }
+      expect(events.filter((e) => e.type === 'splash').length).toBe(0);
+    });
+
     it('a wall stops the stream, which is why a wall is worth building', () => {
       // The one role split the arsenal leans on. If cover did not stop a stream
       // there would be no reason to build anything in a fight.
