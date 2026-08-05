@@ -123,6 +123,16 @@ export class CollisionWorld {
   readonly store: PartStore;
   readonly hash: SpatialHash;
 
+  /**
+   * Bumped on every add or remove.
+   *
+   * Lets derived structures — the navigation grid, anything else that scans the
+   * whole world — skip work when nothing has changed. During a wave the world is
+   * frozen because building is disabled, so this is the difference between
+   * rescanning five thousand cells five times a second and doing nothing.
+   */
+  version = 0;
+
   /** Height of the implicit flat ground plane. */
   groundY = 0;
   /** When false, the ground plane is ignored entirely (useful for tests). */
@@ -153,12 +163,14 @@ export class CollisionWorld {
   ): PartHandle {
     const handle = this.store.add(kind, colorway, cx, cy, cz, qx, qy, qz, qw, hx, hy, hz, proxy);
     this.hash.insert(handle.id, this.store.readAabb(handle.id));
+    this.version++;
     return handle;
   }
 
   removePart(id: PartId): boolean {
     if (!this.store.isAlive(id)) return false;
     this.hash.remove(id);
+    this.version++;
     return this.store.remove(id);
   }
 
@@ -169,6 +181,7 @@ export class CollisionWorld {
   clear(): void {
     this.store.clear();
     this.hash.clear();
+    this.version++;
   }
 
   /**

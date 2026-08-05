@@ -232,3 +232,67 @@ describe('Bot routing', () => {
     expect((CELL / 0.25) % 1).toBeCloseTo(0, 9);
   });
 });
+
+describe('NavField rebuild caching', () => {
+  it('re-derives when a part is added', () => {
+    const world = new CollisionWorld();
+    const nav = new NavField(12);
+    nav.rebuild(world, 0, 0);
+    expect(nav.isBlocked(0, 3)).toBe(false);
+
+    wall(world, -4, 3, 4, 3);
+    nav.rebuild(world, 0, 0);
+    // A cache that ignored the new wall would still report this open.
+    expect(nav.isBlocked(0, 3)).toBe(true);
+  });
+
+  it('re-derives when a part is removed', () => {
+    const world = new CollisionWorld();
+    wall(world, -4, 3, 4, 3);
+    const nav = new NavField(12);
+    nav.rebuild(world, 0, 0);
+    expect(nav.isBlocked(0, 3)).toBe(true);
+
+    for (const id of [...world.store.live()]) world.removePart(id);
+    nav.rebuild(world, 0, 0);
+    expect(nav.isBlocked(0, 3)).toBe(false);
+  });
+
+  it('re-floods when the objective moves', () => {
+    const world = new CollisionWorld();
+    const nav = new NavField(14);
+    nav.rebuild(world, 0, 0);
+    expect(nav.costAt(0, 0)).toBe(0);
+
+    nav.rebuild(world, 8, 8);
+    expect(nav.costAt(8, 8)).toBe(0);
+    expect(nav.costAt(0, 0)).toBeGreaterThan(0);
+  });
+
+  it('a redundant rebuild is nearly free', () => {
+    const world = new CollisionWorld();
+    for (let i = 0; i < 600; i++) {
+      world.addPart(0, 0, (i % 25) - 12, 1.0, Math.floor(i / 25) - 12, ...I, 0.16, 1.0, 0.16);
+    }
+    const nav = new NavField(26);
+    nav.rebuild(world, 0, 0);
+
+    // The first rebuild scans every cell; repeats with an unchanged world and a
+    // fixed objective must not, or the field spikes a quarter of a tick every
+    // time it refreshes.
+    const start = performance.now();
+    for (let i = 0; i < 200; i++) nav.rebuild(world, 0, 0);
+    const msEach = (performance.now() - start) / 200;
+    expect(msEach).toBeLessThan(0.05);
+  });
+
+  it('invalidate forces a full re-derive', () => {
+    const world = new CollisionWorld();
+    const nav = new NavField(12);
+    nav.rebuild(world, 0, 0);
+    nav.invalidate();
+    // Must not throw, and must produce the same answer.
+    nav.rebuild(world, 0, 0);
+    expect(nav.costAt(0, 0)).toBe(0);
+  });
+});

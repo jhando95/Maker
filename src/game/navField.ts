@@ -55,6 +55,19 @@ export class NavField {
   private goalI = -1;
   private goalJ = -1;
 
+  /**
+   * World version and goal the blocked grid was last derived from.
+   *
+   * Scanning every cell costs about 4.4ms at three thousand parts — a quarter of
+   * a 60Hz tick, spiking every time the field refreshes. During a wave the world
+   * cannot change at all, because building is disabled, so nearly all of that
+   * work was being repeated for nothing.
+   */
+  private blockedVersion = -1;
+  private floodedVersion = -1;
+  private floodedGoalX = NaN;
+  private floodedGoalZ = NaN;
+
   constructor(halfExtent = 26) {
     this.cells = Math.ceil((halfExtent * 2) / CELL);
     this.originX = -halfExtent;
@@ -91,6 +104,36 @@ export class NavField {
    * instead of treating it as a wall.
    */
   rebuild(world: CollisionWorld, goalX: number, goalZ: number): void {
+    // Nothing placed or removed and the objective has not moved: the field is
+    // already correct, and both passes can be skipped entirely.
+    if (
+      this.blockedVersion === world.version &&
+      this.floodedVersion === world.version &&
+      this.floodedGoalX === goalX &&
+      this.floodedGoalZ === goalZ
+    ) {
+      return;
+    }
+
+    if (this.blockedVersion !== world.version) {
+      this.rebuildBlocked(world);
+      this.blockedVersion = world.version;
+    }
+
+    this.flood(goalX, goalZ);
+    this.floodedVersion = world.version;
+    this.floodedGoalX = goalX;
+    this.floodedGoalZ = goalZ;
+  }
+
+  /** Force a full re-derive, e.g. after the world is replaced wholesale. */
+  invalidate(): void {
+    this.blockedVersion = -1;
+    this.floodedVersion = -1;
+  }
+
+  /** Which cells a bot cannot stand in. The expensive half of a rebuild. */
+  private rebuildBlocked(world: CollisionWorld): void {
     const half = CELL * 0.5;
     // Shrink slightly so a part that merely touches a boundary does not block
     // both cells it borders.
@@ -140,8 +183,6 @@ export class NavField {
         this.blocked[this.index(i, j)] = solid;
       }
     }
-
-    this.flood(goalX, goalZ);
   }
 
   /** Breadth-first cost from the goal outward. */

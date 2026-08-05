@@ -9,7 +9,8 @@
     "typecheck": "tsc --noEmit",
     "shoot": "node tools/shoot.mjs",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "bench": "vite-node tools/bench.ts"
   },
   "repository": {
     "type": "git",
@@ -27,6 +28,7 @@
     "playwright": "^1.62.1",
     "typescript": "^7.0.2",
     "vite": "^8.2.0",
+    "vite-node": "^6.0.0",
     "vitest": "^4.1.10"
   },
   "private": true,
