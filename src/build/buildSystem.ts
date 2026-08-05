@@ -49,6 +49,17 @@ const GHOST_TELEPORT_DISTANCE = 0.6;
 export const REPEAT_MAX_CHAIN = 64;
 export const REPEAT_MAX_SPAN = 24;
 
+/**
+ * How many links of the chain to draw ahead.
+ *
+ * Not the same as REPEAT_MAX_CHAIN, and deliberately much smaller. Sixty-four
+ * translucent boards is a wall you cannot see the world through, and the useful
+ * information — which way this is going and where it stops — is all in the
+ * first few. They fade along the run so a chain that continues past the preview
+ * reads as continuing rather than as ending there.
+ */
+export const REPEAT_PREVIEW_LINKS = 10;
+
 export class BuildSystem {
   private readonly world: CollisionWorld;
   private readonly renderer: PartRenderer;
@@ -67,6 +78,19 @@ export class BuildSystem {
   private ghostMesh: THREE.Mesh;
   private readonly ghostMaterial: THREE.MeshBasicMaterial;
   private readonly ghostGeometries: THREE.BufferGeometry[] = [];
+
+  /** Preview of where holding repeat would lay the next few parts. */
+  private readonly chainMeshes: THREE.Mesh[] = [];
+  private readonly chainMaterials: THREE.MeshBasicMaterial[] = [];
+  /**
+   * What the visible chain was computed from.
+   *
+   * The projection walks the chain running a real overlap test per link, which
+   * is cheap but pointless to redo sixty times a second for a chain that cannot
+   * have changed. It can only change when the world does or when the chain head
+   * moves, and both of those are countable.
+   */
+  private chainKey = '';
 
   private lastResult: SnapResult | null = null;
   /** Damped ghost transform, so the preview glides rather than snapping. */
@@ -123,6 +147,23 @@ export class BuildSystem {
     this.ghostMesh.frustumCulled = false;
     this.ghostGroup.add(this.ghostMesh);
     this.ghostGroup.name = 'ghost';
+
+    // One material per link, because each carries its own opacity — the fade
+    // along the chain is what tells you it keeps going.
+    for (let i = 0; i < REPEAT_PREVIEW_LINKS; i++) {
+      const material = new THREE.MeshBasicMaterial({
+        color: GHOST_VALID,
+        transparent: true,
+        opacity: 0,
+        depthWrite: false,
+      });
+      const mesh = new THREE.Mesh(this.ghostGeometries[0], material);
+      mesh.frustumCulled = false;
+      mesh.visible = false;
+      this.chainMaterials.push(material);
+      this.chainMeshes.push(mesh);
+      this.ghostGroup.add(mesh);
+    }
   }
 
   selectKind(index: number): void {
@@ -198,15 +239,111 @@ export class BuildSystem {
 
     this.lastResult = result;
     this.updateGhost(dt, result.candidate);
+    this.updateChainPreview();
     return result;
   }
 
-  private updateGhost(dt: number, candidate: Candidate | null): void {
-    if (candidate === null) {
-      this.ghostGroup.visible = false;
+  /**
+   * Where the repeat chain would go, drawn ahead of running it.
+   *
+   * Holding the repeat key can lay sixty-four parts past where you could aim,
+   * which is the feature — and until you can see where they land, using it is a
+   * guess you find out about afterwards. The projection runs the same rules
+   * repeatPlace does, including the overlap test, so the preview stops exactly
+   * where the chain would: a run of stair treads visibly ends at the wall it
+   * would hit rather than implying it continues through.
+   */
+  /**
+   * The records holding the repeat key would actually lay, up to `limit`.
+   *
+   * Runs the same rules repeatPlace does — the span cap and the overlap test —
+   * against a world it pretends already contains the earlier links. Anything
+   * less would preview a chain that does not happen: without treating each
+   * projected part as solid, a chain stepping half a part's length would show
+   * ten links where only the first is real.
+   */
+  projectRepeatChain(limit = REPEAT_PREVIEW_LINKS): PlacementRecord[] {
+    const head = this.lastPlacement;
+    const delta = this.repeatDelta;
+    if (head === null || delta === null) return [];
+
+    const out: PlacementRecord[] = [];
+    let record = head;
+
+    for (let i = 0; i < limit && i < REPEAT_MAX_CHAIN; i++) {
+      const next: PlacementRecord = {
+        ...record,
+        x: quantize(record.x + delta.dx),
+        y: quantize(record.y + delta.dy),
+        z: quantize(record.z + delta.dz),
+      };
+      const span = Math.hypot(next.x - head.x, next.y - head.y, next.z - head.z);
+      if (span > REPEAT_MAX_SPAN) break;
+      if (!this.canPlaceAt(next, out)) break;
+
+      out.push(next);
+      record = next;
+    }
+    return out;
+  }
+
+  private updateChainPreview(): void {
+    const head = this.lastPlacement;
+    const delta = this.repeatDelta;
+    if (head === null || delta === null) {
+      if (this.chainKey !== '') this.hideChainPreview();
       return;
     }
-    this.ghostGroup.visible = true;
+
+    const key = `${this.world.version}|${head.x},${head.y},${head.z},${head.kind},${head.qx},${head.qy},${head.qz},${head.qw}|${delta.dx},${delta.dy},${delta.dz}`;
+    if (key === this.chainKey) return;
+    this.chainKey = key;
+
+    const chain = this.projectRepeatChain();
+    const geometry = this.ghostGeometries[head.kind] ?? this.ghostGeometries[0]!;
+
+    for (let i = 0; i < this.chainMeshes.length; i++) {
+      const mesh = this.chainMeshes[i]!;
+      const next = chain[i];
+      if (next === undefined) {
+        mesh.visible = false;
+        continue;
+      }
+      mesh.geometry = geometry;
+      mesh.position.set(next.x, next.y, next.z);
+      mesh.quaternion.set(next.qx, next.qy, next.qz, next.qw);
+      mesh.visible = true;
+      // Fainter with distance, and never as solid as the ghost being aimed —
+      // this is what *would* happen, not what is about to. The floor matters:
+      // a pale green ghost over a green lawn at very low opacity is invisible,
+      // and an invisible preview is worse than none because the hint says it
+      // is there.
+      this.chainMaterials[i]!.color.setHex(this.ghostValidColor);
+      this.chainMaterials[i]!.opacity = 0.38 - 0.026 * i;
+    }
+  }
+
+  private hideChainPreview(): void {
+    for (const mesh of this.chainMeshes) mesh.visible = false;
+    this.chainKey = '';
+  }
+
+  /** How many links the preview is currently drawing. */
+  get chainPreviewLength(): number {
+    let n = 0;
+    for (const mesh of this.chainMeshes) if (mesh.visible) n++;
+    return n;
+  }
+
+  private updateGhost(dt: number, candidate: Candidate | null): void {
+    // Only the aimed ghost is hidden, not the whole group. The chain preview
+    // describes the last part placed, not where the player is currently
+    // pointing, and aiming at the sky is no reason for it to disappear.
+    if (candidate === null) {
+      this.ghostMesh.visible = false;
+      return;
+    }
+    this.ghostMesh.visible = true;
 
     if (!this.ghostInitialized) {
       this.ghostPos.copy(candidate.position);
@@ -415,27 +552,23 @@ export class BuildSystem {
     return next;
   }
 
-  /** Would this record be a legal placement? Overlap and bounds only. */
-  private canPlaceAt(record: PlacementRecord): boolean {
-    const kind = getPartKind(record.kind);
-    const h = halfExtents(kind);
-    const q = new THREE.Quaternion(record.qx, record.qy, record.qz, record.qw).normalize();
-
-    // World-axis extents of the rotated box, for the broadphase probe.
-    const m = new THREE.Matrix4().makeRotationFromQuaternion(q);
-    const e = m.elements;
-    const ex = Math.abs(e[0]!) * h.hx + Math.abs(e[4]!) * h.hy + Math.abs(e[8]!) * h.hz;
-    const ey = Math.abs(e[1]!) * h.hx + Math.abs(e[5]!) * h.hy + Math.abs(e[9]!) * h.hz;
-    const ez = Math.abs(e[2]!) * h.hx + Math.abs(e[6]!) * h.hy + Math.abs(e[10]!) * h.hz;
-
-    if (record.y - ey < this.world.groundY - 0.02) return false;
+  /**
+   * Would this record be a legal placement? Overlap and bounds only.
+   *
+   * `pending` is for projecting a chain that has not been placed yet: each link
+   * has to see the ones before it as solid, or a chain stepping less than a
+   * part's length would preview ten links where only the first can exist.
+   */
+  private canPlaceAt(record: PlacementRecord, pending: readonly PlacementRecord[] = []): boolean {
+    const box = worldAabb(record);
+    if (box.minY < this.world.groundY - 0.02) return false;
 
     // Shrunk, because parts placed flush touch exactly and must not read as
     // overlapping — the most common legitimate placement in the game.
     const shrink = 0.006;
     const probe = {
-      minX: record.x - ex + shrink, minY: record.y - ey + shrink, minZ: record.z - ez + shrink,
-      maxX: record.x + ex - shrink, maxY: record.y + ey - shrink, maxZ: record.z + ez - shrink,
+      minX: box.minX + shrink, minY: box.minY + shrink, minZ: box.minZ + shrink,
+      maxX: box.maxX - shrink, maxY: box.maxY - shrink, maxZ: box.maxZ - shrink,
     };
 
     // queryAabb is a BROADPHASE: it returns everything sharing a hash cell, not
@@ -451,6 +584,17 @@ export class BuildSystem {
         return false;
       }
     }
+
+    for (const other of pending) {
+      const b = worldAabb(other);
+      if (
+        probe.minX < b.maxX && probe.maxX > b.minX &&
+        probe.minY < b.maxY && probe.maxY > b.minY &&
+        probe.minZ < b.maxZ && probe.maxZ > b.minZ
+      ) {
+        return false;
+      }
+    }
     return true;
   }
 
@@ -459,6 +603,7 @@ export class BuildSystem {
     this.previousPlacement = null;
     this.repeatOrigin = null;
     this.repeatCount = 0;
+    this.hideChainPreview();
   }
 
   /** Serialize every placed part. Same shape the network would carry. */
@@ -525,4 +670,29 @@ export class BuildSystem {
   get lastSnap(): SnapResult | null {
     return this.lastResult;
   }
+}
+
+/**
+ * World-axis bounding box of a part at a given placement.
+ *
+ * A rotated box's world extent is the rotation matrix's absolute values applied
+ * to its half-extents — the same arithmetic the collision world does when a part
+ * is added, done here for parts that do not exist yet.
+ */
+function worldAabb(record: PlacementRecord): {
+  minX: number; minY: number; minZ: number;
+  maxX: number; maxY: number; maxZ: number;
+} {
+  const h = halfExtents(getPartKind(record.kind));
+  const q = new THREE.Quaternion(record.qx, record.qy, record.qz, record.qw).normalize();
+  const e = new THREE.Matrix4().makeRotationFromQuaternion(q).elements;
+
+  const ex = Math.abs(e[0]!) * h.hx + Math.abs(e[4]!) * h.hy + Math.abs(e[8]!) * h.hz;
+  const ey = Math.abs(e[1]!) * h.hx + Math.abs(e[5]!) * h.hy + Math.abs(e[9]!) * h.hz;
+  const ez = Math.abs(e[2]!) * h.hx + Math.abs(e[6]!) * h.hy + Math.abs(e[10]!) * h.hz;
+
+  return {
+    minX: record.x - ex, minY: record.y - ey, minZ: record.z - ez,
+    maxX: record.x + ex, maxY: record.y + ey, maxZ: record.z + ez,
+  };
 }

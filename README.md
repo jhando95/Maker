@@ -170,6 +170,13 @@ staircase. Hold `G` and it runs the chain, past where you could reach by aiming.
 The delta is taken in world space, not the part's local frame: local stepping
 compounds rotation, so any turn between two parts makes the chain spiral.
 
+The chain is drawn before you run it, fading along the way. The projection uses
+the same rules the chain itself does, including the overlap test — and each
+projected link is treated as solid so the ones behind it see it, or a step
+shorter than the part would preview ten treads where only the first can exist.
+That is the whole value: a run that would stop at a wall visibly stops there,
+rather than being something you find out about after committing to it.
+
 **Nothing is an audio file either.** Every sound is oscillators, filtered noise
 and envelopes built at runtime. Beyond shipping zero bytes, it lets a footstep
 shift pitch with surface and speed because it is being *built*, not played back.

@@ -565,6 +565,9 @@ function simulate(dt: number): void {
   // During a wave the mouse throws balloons instead of placing parts, so the
   // player is never fumbling between two things bound to the same button.
   const canBuild = mode === null || mode.buildingAllowed;
+  // No previews while building is off. A ghost you cannot place, and a chain
+  // preview showing where parts would go, are both lying during a wave.
+  build.ghostGroup.visible = canBuild;
   if (canBuild) {
     if (input.wasPressed('placePart')) {
       placeHeldTicks = 0;
