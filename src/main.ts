@@ -27,6 +27,8 @@ import { ModeRenderer } from './game/modeRenderer.ts';
 import { FortDefenseMode } from './game/fortDefense.ts';
 import type { GameEvent, ModeContext, ModeInput } from './game/gameMode.ts';
 import { SettingsStore, ghostColors } from './app/settings.ts';
+import { BuildStore } from './app/buildStore.ts';
+import { Menu } from './ui/menu.ts';
 
 const app = document.getElementById('app')!;
 app.style.cssText = 'position:fixed;inset:0;overflow:hidden;';
@@ -101,21 +103,32 @@ const audio = new AudioBus();
 const sounds = new GameSounds(audio, world);
 
 const settings = new SettingsStore();
-settings.subscribe((s) => {
-  camera.sensitivity = s.sensitivity;
-  audio.setMasterVolume(s.masterVolume);
-  audio.setSfxVolume(s.sfxVolume);
-  parts.setOutlinesVisible(s.outlines);
-  scenery.setOutlinesVisible(s.outlines);
-  renderer.shadowMap.enabled = s.shadows;
-  const g = ghostColors(s.colorblindGhost);
-  build.setGhostColors(g.valid, g.invalid);
-});
-
 // ── Mode plumbing ────────────────────────────────────────────────────────────
 const projectiles = new ProjectileSystem(world);
 const modeRenderer = new ModeRenderer();
 scene.add(modeRenderer.group);
+
+// Applied only after every system it touches exists — the subscription fires
+// immediately so defaults land without a separate apply step, which means
+// declaration order here is load-bearing.
+settings.subscribe((s) => {
+  camera.sensitivity = s.sensitivity;
+  camera.invertY = s.invertY;
+  camera.baseFov = s.fov;
+  audio.setMasterVolume(s.masterVolume);
+  audio.setSfxVolume(s.sfxVolume);
+  parts.setOutlinesVisible(s.outlines);
+  scenery.setOutlinesVisible(s.outlines);
+  modeRenderer.setOutlinesVisible(s.outlines);
+  renderer.shadowMap.enabled = s.shadows;
+  renderer.shadowMap.needsUpdate = true;
+  // Render scale trades resolution for fill rate without touching layout: the
+  // canvas keeps its CSS size and only its backing store shrinks.
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2) * s.renderScale);
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  const g = ghostColors(s.colorblindGhost);
+  build.setGhostColors(g.valid, g.invalid);
+});
 
 /**
  * Events raised by simulation and drained here. Keeping presentation on this
@@ -133,10 +146,15 @@ const modeContext: ModeContext = {
 /** null means free build with no rules. */
 let mode: FortDefenseMode | null = null;
 
+/** The world as it was when the round began, for restarts. */
+let roundSnapshot: ReturnType<typeof build.serialize> | null = null;
+
 function startRound(): void {
+  roundSnapshot = build.serialize();
   mode = new FortDefenseMode();
   mode.start(modeContext);
   audio.play('roundStart', { volume: 0.6 });
+  resetPlayerToSpawn();
 }
 
 function stopRound(): void {
@@ -145,6 +163,92 @@ function stopRound(): void {
   projectiles.clear();
   modeRenderer.clear();
 }
+
+function restartRound(): void {
+  stopRound();
+  // Put the yard back the way it was, so a retry starts from the same problem
+  // rather than from whatever the last attempt left standing.
+  if (roundSnapshot !== null) {
+    build.deserialize(roundSnapshot);
+    worldChanged();
+  }
+  startRound();
+  enterPlay();
+}
+
+function resetPlayerToSpawn(): void {
+  player.teleport(-3, 0.5, -7);
+  camera.yaw = Math.PI * 0.15;
+  camera.pitch = -0.05;
+}
+
+// ── Application state ────────────────────────────────────────────────────────
+//
+// One place decides whether the simulation runs and whether the mouse is
+// captured. Menus, pause and the result screen are all the same mechanism:
+// a screen is open, so the world is frozen and the cursor is free.
+
+const buildStore = new BuildStore();
+
+const menu = new Menu(app, settings, {
+  onPlayMode: () => {
+    startRound();
+    enterPlay();
+  },
+  onPlaySandbox: () => {
+    stopRound();
+    resetPlayerToSpawn();
+    enterPlay();
+  },
+  onResume: () => enterPlay(),
+  onRestart: () => restartRound(),
+  onQuitToTitle: () => {
+    stopRound();
+    enterMenu('title');
+  },
+  onSaveBuild: (name) => buildStore.save(name, build.serialize(), Date.now()) !== null,
+  onLoadBuild: (id) => {
+    const parts = buildStore.load(id);
+    if (parts === null) return false;
+    build.deserialize(parts);
+    worldChanged();
+    return true;
+  },
+  onDeleteBuild: (id) => buildStore.remove(id),
+  listBuilds: () => buildStore.list(),
+});
+
+function enterPlay(): void {
+  menu.show('none');
+  loop.setPaused(false);
+  hud.root.style.display = '';
+  input.setEnabled(true);
+  void input.requestPointerLock();
+  void audio.unlock().then(() => audio.startAmbient());
+}
+
+function enterMenu(screen: 'title' | 'pause' | 'result', result?: Parameters<Menu['show']>[1]): void {
+  menu.show(screen, result);
+  loop.setPaused(true);
+  // The HUD is about the world, and the world is not running.
+  hud.root.style.display = screen === 'pause' ? '' : 'none';
+  input.setEnabled(false);
+  input.exitPointerLock();
+}
+
+// Losing pointer lock — Escape, or alt-tab — is the player leaving the game.
+// Treating it as a pause is what stops the world running behind a lost cursor.
+input.onPointerLockChange = (locked) => {
+  hud.setPointerLocked(locked || menu.isOpen);
+  if (!locked && !menu.isOpen) enterMenu('pause');
+};
+
+window.addEventListener('keydown', (e) => {
+  if (e.code !== 'Escape') return;
+  e.preventDefault();
+  if (menu.isOpen) menu.handleEscape();
+  else enterMenu('pause');
+});
 
 function drainEvents(): void {
   for (const e of events) {
@@ -215,14 +319,7 @@ const avatar = new THREE.Group();
 scene.add(avatar);
 
 // ── Input plumbing ───────────────────────────────────────────────────────────
-input.onPointerLockChange = (locked) => hud.setPointerLocked(locked);
-hud.onLockClick(() => {
-  void input.requestPointerLock();
-  void audio.unlock().then(() => {
-    audio.play('uiClick', { volume: 0.5 });
-    audio.startAmbient();
-  });
-});
+hud.onLockClick(() => enterPlay());
 
 let snapKindLabel = 'none';
 let candidateCount = 0;
@@ -233,6 +330,9 @@ let placeHeldTicks = 0;
 let lastSnapKey = '';
 /** Seconds left on the end-of-round screen before the world is handed back. */
 let modeOverTimer = 0;
+/** Stance latches, so hold-vs-toggle is a setting rather than two code paths. */
+let crouchLatched = false;
+let sprintLatched = false;
 
 /** Place, and make a sound about it. Returns whether anything was placed. */
 function tryPlaceWithFeedback(): boolean {
@@ -254,14 +354,32 @@ function fixedUpdate(dt: number): void {
 
   // Movement intent is expressed in the camera's ground basis, which is what
   // makes W mean "the way I am facing" rather than "world -Z".
+  // Hold-vs-toggle for crouch and sprint. Toggling is an accessibility need as
+  // much as a preference: holding a key for a whole round is genuinely painful
+  // for some players.
+  const cfg = settings.current;
+  if (cfg.toggleCrouch) {
+    if (input.wasPressed('crouch')) crouchLatched = !crouchLatched;
+  } else {
+    crouchLatched = input.isDown('crouch');
+  }
+  if (cfg.toggleSprint) {
+    if (input.wasPressed('sprint')) sprintLatched = !sprintLatched;
+    // Coming to a stop cancels a latched sprint, or it silently persists into
+    // the next time the player moves and feels like a stuck key.
+    if (input.moveAxis.x === 0 && input.moveAxis.z === 0) sprintLatched = false;
+  } else {
+    sprintLatched = input.isDown('sprint');
+  }
+
   const axis = input.moveAxis;
   const basis = camera.getMoveBasis();
   const intent: MoveIntent = {
     right: axis.z * basis.fx + axis.x * basis.rx,
     forward: axis.z * basis.fz + axis.x * basis.rz,
     jump: input.isDown('jump'),
-    sprint: input.isDown('sprint'),
-    crouch: input.isDown('crouch'),
+    sprint: sprintLatched,
+    crouch: crouchLatched,
     climb: axis.z,
   };
   player.step(dt, intent);
@@ -294,8 +412,9 @@ function fixedUpdate(dt: number): void {
     ray.ox, ray.oy, ray.oz,
     ray.dx, ray.dy, ray.dz,
     input.isDown('freeAim'),
-    // Crouch doubles as the fine-placement modifier while building.
-    input.isDown('crouch'),
+    // Crouch doubles as the fine-placement modifier while building, so it must
+    // follow the latch rather than the raw key.
+    crouchLatched,
   );
 
   snapKindLabel = snap.candidate?.kind ?? 'none';
@@ -339,7 +458,15 @@ function fixedUpdate(dt: number): void {
   }
   if (modeOverTimer > 0) {
     modeOverTimer -= dt;
-    if (modeOverTimer <= 0) stopRound();
+    if (modeOverTimer <= 0 && mode !== null) {
+      const summary = {
+        won: mode.won,
+        wavesHeld: mode.won ? mode.wave : Math.max(0, mode.wave - 1),
+        partsPlaced: build.placedCount,
+        suppliesLeft: mode.stash.supplies,
+      };
+      enterMenu('result', summary);
+    }
   }
 
   if (input.wasPressed('removePart')) {
@@ -402,6 +529,10 @@ function render(alpha: number, frameDt: number): void {
 
 const loop = new GameLoop({ fixedUpdate, render }, { tickRate: TICK_RATE });
 loop.start();
+
+// Boot into the title screen through the same path everything else uses, so the
+// HUD and pointer-lock state cannot start out disagreeing with the menu.
+enterMenu('title');
 
 window.addEventListener('resize', () => {
   renderer.setSize(window.innerWidth, window.innerHeight);
@@ -469,6 +600,8 @@ window.__maker = {
   },
   audio,
   settings,
+  isPaused: () => loop.isPaused,
+  menu,
   startRound,
   stopRound,
   getMode: () => mode,

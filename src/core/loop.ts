@@ -50,6 +50,14 @@ export class GameLoop {
   /** Number of simulation steps taken since start. */
   tick = 0;
 
+  /**
+   * When paused, frames keep rendering but no simulation runs.
+   *
+   * Rendering must continue so a menu drawn over the world is not sitting on a
+   * frozen, stale frame — and so the camera can keep drifting behind it.
+   */
+  private paused = false;
+
   /** Rolling render-frame timing, for the debug overlay. */
   private frameTimes: number[] = [];
 
@@ -92,12 +100,14 @@ export class GameLoop {
     this.frameTimes.push(frameTime);
     if (this.frameTimes.length > 120) this.frameTimes.shift();
 
-    this.accumulator += frameTime;
+    if (!this.paused) {
+      this.accumulator += frameTime;
 
-    while (this.accumulator >= this.fixedDt) {
-      this.callbacks.fixedUpdate(this.fixedDt, this.tick);
-      this.tick++;
-      this.accumulator -= this.fixedDt;
+      while (this.accumulator >= this.fixedDt) {
+        this.callbacks.fixedUpdate(this.fixedDt, this.tick);
+        this.tick++;
+        this.accumulator -= this.fixedDt;
+      }
     }
 
     // Leftover time as a fraction of a tick: how far the render sits between
@@ -113,6 +123,28 @@ export class GameLoop {
     if (this.frameTimes.length === 0) return 0;
     const sum = this.frameTimes.reduce((a, b) => a + b, 0);
     return this.frameTimes.length / sum;
+  }
+
+  /**
+   * Pause or resume simulation.
+   *
+   * Resuming drops the accumulator rather than carrying it. Time spent in a
+   * menu is not time the world owes: carrying it would fire a burst of catch-up
+   * ticks the instant play resumes, teleporting the player and any bots. The
+   * clock is also re-based, or the first frame back would report the entire
+   * paused duration as one enormous frame.
+   */
+  setPaused(paused: boolean): void {
+    if (this.paused === paused) return;
+    this.paused = paused;
+    if (!paused) {
+      this.accumulator = 0;
+      this.lastTime = performance.now() / 1000;
+    }
+  }
+
+  get isPaused(): boolean {
+    return this.paused;
   }
 
   /**

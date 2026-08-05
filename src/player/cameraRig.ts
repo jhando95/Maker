@@ -27,6 +27,9 @@ export class CameraRig {
 
   mode: CameraMode = 'first';
   sensitivity = 0.0022;
+  invertY = false;
+  /** First-person FOV; third person subtracts from this. */
+  baseFov = 72;
 
   /**
    * Third-person boom length and shoulder offset.
@@ -45,7 +48,6 @@ export class CameraRig {
   /** Blended 0 (first person) to 1 (third), so toggling is a move not a cut. */
   private modeBlend = 0;
 
-  private fovBase = 72;
   private fovCurrent = 72;
 
   private readonly world: CollisionWorld;
@@ -56,13 +58,13 @@ export class CameraRig {
 
   constructor(world: CollisionWorld, aspect = 1) {
     this.world = world;
-    this.camera = new THREE.PerspectiveCamera(this.fovBase, aspect, 0.1, 1000);
+    this.camera = new THREE.PerspectiveCamera(this.baseFov, aspect, 0.1, 1000);
   }
 
   /** Apply a mouse delta in pixels. */
   look(dx: number, dy: number): void {
     this.yaw -= dx * this.sensitivity;
-    this.pitch -= dy * this.sensitivity;
+    this.pitch -= dy * this.sensitivity * (this.invertY ? -1 : 1);
     this.pitch = clamp(this.pitch, -PITCH_LIMIT, PITCH_LIMIT);
     // Keep yaw bounded so it never loses float precision in a long session.
     if (this.yaw > Math.PI) this.yaw -= Math.PI * 2;
@@ -107,7 +109,7 @@ export class CameraRig {
 
     // Speed widens the view a little. It is a small effect that does most of
     // the work of making sprinting feel faster than it numerically is.
-    const targetFov = this.fovBase - (this.mode === 'third' ? 10 : 0) + speedFraction * 6;
+    const targetFov = this.baseFov - (this.mode === 'third' ? 10 : 0) + speedFraction * 6;
     this.fovCurrent = damp(this.fovCurrent, targetFov, 0.12, dt);
     if (Math.abs(this.camera.fov - this.fovCurrent) > 0.01) {
       this.camera.fov = this.fovCurrent;

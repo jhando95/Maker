@@ -255,6 +255,14 @@ export class ModeRenderer {
     this.splashMesh.instanceMatrix.needsUpdate = true;
   }
 
+  setOutlinesVisible(visible: boolean): void {
+    for (const child of this.stash.children) {
+      if (child instanceof THREE.Mesh && child.material === this.outlineMaterials[0]) {
+        child.visible = visible;
+      }
+    }
+  }
+
   setViewportHeight(height: number): void {
     for (const m of this.outlineMaterials) m.uniforms.viewportHeight!.value = height;
   }
