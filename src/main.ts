@@ -19,6 +19,8 @@ import { CameraRig } from './player/cameraRig.ts';
 import { Hud } from './ui/hud.ts';
 import { MAX_REACH } from './build/snapping.ts';
 import { seedStarterStructures } from './world/starter.ts';
+import { AudioBus } from './audio/audioBus.ts';
+import { GameSounds } from './audio/gameSounds.ts';
 
 const app = document.getElementById('app')!;
 app.style.cssText = 'position:fixed;inset:0;overflow:hidden;';
@@ -87,6 +89,11 @@ camera.yaw = Math.PI * 0.15;
 const hud = new Hud(app);
 const input = new Input(renderer.domElement);
 
+// Audio cannot start without a user gesture, so it rides the same click that
+// grabs pointer lock. Until then every play() is a no-op rather than an error.
+const audio = new AudioBus();
+const sounds = new GameSounds(audio, world);
+
 parts.setViewportHeight(window.innerHeight);
 scenery.setViewportHeight(window.innerHeight);
 // The starter structures are already in; draw their shadows on the first frame
@@ -116,13 +123,31 @@ scene.add(avatar);
 
 // ── Input plumbing ───────────────────────────────────────────────────────────
 input.onPointerLockChange = (locked) => hud.setPointerLocked(locked);
-hud.onLockClick(() => void input.requestPointerLock());
+hud.onLockClick(() => {
+  void input.requestPointerLock();
+  void audio.unlock().then(() => {
+    audio.play('uiClick', { volume: 0.5 });
+    audio.startAmbient();
+  });
+});
 
 let snapKindLabel = 'none';
 let candidateCount = 0;
 let validPlacement = false;
 /** Ticks the place button has been held, for sticky repeat. */
 let placeHeldTicks = 0;
+/** Identity of the snap target the ghost is latched to, for the snap tick. */
+let lastSnapKey = '';
+
+/** Place, and make a sound about it. Returns whether anything was placed. */
+function tryPlaceWithFeedback(): boolean {
+  const record = build.place();
+  if (record === null) return false;
+  build.applyPlace(record);
+  worldChanged();
+  sounds.placed(record.x, record.y, record.z, camera, player);
+  return true;
+}
 
 function fixedUpdate(dt: number): void {
   input.beginTick();
@@ -145,6 +170,7 @@ function fixedUpdate(dt: number): void {
     climb: axis.z,
   };
   player.step(dt, intent);
+  sounds.update(dt, player, camera);
 
   // ── Build actions ──────────────────────────────────────────────────────────
   const hotbar = input.hotbarPressed;
@@ -181,18 +207,45 @@ function fixedUpdate(dt: number): void {
   candidateCount = snap.count;
   validPlacement = snap.candidate?.valid ?? false;
 
+  // A tick when the ghost latches onto a different target. Keyed on the target
+  // rather than the position, or sliding along one face would chatter.
+  const snapKey = snap.candidate === null
+    ? ''
+    : `${snap.candidate.kind}:${snap.candidate.host}`;
+  if (snapKey !== lastSnapKey) {
+    lastSnapKey = snapKey;
+    if (snap.candidate !== null && snap.candidate.valid) sounds.snapped();
+  }
+
   // Sticky repeat while held: the difference between building a 20-rung ladder
   // and giving up on one.
   if (input.wasPressed('placePart')) {
     placeHeldTicks = 0;
-    if (build.tryPlace()) worldChanged();
+    if (!tryPlaceWithFeedback()) sounds.invalid();
   } else if (input.isDown('placePart')) {
     placeHeldTicks++;
-    if (placeHeldTicks % 10 === 0 && build.tryPlace()) worldChanged();
+    if (placeHeldTicks % 10 === 0) tryPlaceWithFeedback();
   }
 
-  if (input.wasPressed('removePart') && build.removeAimed()) worldChanged();
-  if (input.wasPressed('interact') && build.undo()) worldChanged();
+  if (input.wasPressed('removePart')) {
+    const aimed = build.lastSnap?.hitPart ?? -1;
+    let px = 0, py = 0, pz = 0;
+    if (aimed >= 0 && world.store.isAlive(aimed)) {
+      const c = aimed * 3;
+      px = world.store.center[c]!;
+      py = world.store.center[c + 1]!;
+      pz = world.store.center[c + 2]!;
+    }
+    if (build.removeAimed()) {
+      worldChanged();
+      sounds.removed(px, py, pz, camera, player);
+    }
+  }
+
+  if (input.wasPressed('interact') && build.undo()) {
+    worldChanged();
+    sounds.removed(player.x, player.y + 1, player.z, camera, player);
+  }
 }
 
 function render(alpha: number, frameDt: number): void {
@@ -295,6 +348,7 @@ window.__maker = {
     build.deserialize(records);
     worldChanged();
   },
+  audio,
   world,
   build,
   player,
