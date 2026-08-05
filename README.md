@@ -37,6 +37,8 @@ npm run dev      # http://localhost:5173
 | `F` | undo |
 | `` ` `` | debug overlay |
 
+Every binding above is remappable in Settings → Controls.
+
 During a wave the mouse throws balloons instead of placing parts — you are never
 fumbling between two things on one button.
 
@@ -64,7 +66,7 @@ tools/
 ```
 
 ```bash
-npm test         # 251 unit tests
+npm test         # 256 unit tests
 npm run typecheck
 node tools/shoot.mjs --out shots/x.png   # boot headless, screenshot, fail on any console error
 ```
@@ -164,8 +166,8 @@ would need a layered grid — one flood per standable height per column.
    0.6s channel are guesses, and the whole balance of turtling versus running
    turns on them. Every other number — build time, wave sizes, stash supplies,
    throw arc — is a first guess too. It needs a human, not more code.
-2. **Key rebinding and gamepad support.** The input layer already maps devices
-   to named actions, so both are wiring rather than redesign.
+2. **Gamepad support.** The input layer already maps devices to named actions
+   and rebinding is in, so this is wiring rather than redesign.
 3. **More construction tools**: blueprints, line-drag fill, an eyedropper, and
    moving a placed part instead of delete-and-replace.
 4. **Netcode** — server-authoritative, client prediction, `PlacePart` intents

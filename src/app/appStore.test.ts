@@ -1,5 +1,8 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { SettingsStore, DEFAULT_SETTINGS, ghostColors } from './settings.ts';
+import {
+  SettingsStore, DEFAULT_SETTINGS, ghostColors,
+  loadBindings, saveBindings, clearBindings,
+} from './settings.ts';
 import { BuildStore, MAX_SLOTS } from './buildStore.ts';
 import type { PlacementRecord } from '../build/buildSystem.ts';
 
@@ -211,5 +214,39 @@ describe('BuildStore', () => {
     expect(store.list()).toEqual([]);
     expect(store.save('x', [part(0)], 1)).toBeNull();
     expect(() => store.remove('x')).not.toThrow();
+  });
+});
+
+describe('key bindings', () => {
+  beforeEach(() => installStorage());
+
+  it('round-trips through storage', () => {
+    expect(loadBindings()).toBeNull();
+    saveBindings({ KeyK: 'moveForward', Mouse0: 'placePart' });
+    expect(loadBindings()).toEqual({ KeyK: 'moveForward', Mouse0: 'placePart' });
+  });
+
+  it('survives a corrupt blob', () => {
+    const map = installStorage();
+    map.set('maker.bindings.v1', 'not json');
+    expect(loadBindings()).toBeNull();
+  });
+
+  it('rejects a non-object blob rather than handing back nonsense', () => {
+    const map = installStorage();
+    map.set('maker.bindings.v1', JSON.stringify(['KeyW']));
+    expect(loadBindings()).toBeNull();
+  });
+
+  it('drops entries that are not string pairs', () => {
+    const map = installStorage();
+    map.set('maker.bindings.v1', JSON.stringify({ KeyK: 'moveForward', KeyJ: 42 }));
+    expect(loadBindings()).toEqual({ KeyK: 'moveForward' });
+  });
+
+  it('clearing removes the stored map', () => {
+    saveBindings({ KeyK: 'moveForward' });
+    clearBindings();
+    expect(loadBindings()).toBeNull();
   });
 });

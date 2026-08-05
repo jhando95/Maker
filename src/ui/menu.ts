@@ -13,7 +13,7 @@
 import { SettingsStore, type Settings } from '../app/settings.ts';
 import type { BuildSlot } from '../app/buildStore.ts';
 
-export type Screen = 'none' | 'title' | 'settings' | 'builds' | 'pause' | 'result';
+export type Screen = 'none' | 'title' | 'settings' | 'builds' | 'pause' | 'result' | 'controls';
 
 const STYLE = `
 .mk-menu {
@@ -94,6 +94,19 @@ const STYLE = `
 .mk-stats { text-align: center; opacity: 0.85; font-size: 14px; margin: 0 0 20px; line-height: 1.6; }
 
 .mk-hint { text-align: center; font-size: 11.5px; opacity: 0.55; margin-top: 14px; }
+.mk-bind {
+  display: flex; align-items: center; gap: 10px;
+  padding: 7px 0; border-bottom: 1px solid rgba(255,255,255,0.08);
+}
+.mk-bind label { flex: 1; font-size: 13.5px; }
+.mk-bind button {
+  min-width: 108px; padding: 6px 12px;
+  font: inherit; font-size: 12.5px; font-weight: 700;
+  border: none; border-radius: 8px; cursor: pointer;
+  background: rgba(255,255,255,0.13); color: #fff;
+}
+.mk-bind button:hover { background: rgba(255,255,255,0.22); }
+.mk-bind button.listening { background: #f4a259; color: #3a2c2a; }
 .mk-name-input {
   width: 100%; box-sizing: border-box; margin-bottom: 10px;
   padding: 10px 12px; font: inherit; font-size: 14px;
@@ -102,7 +115,17 @@ const STYLE = `
 }
 `;
 
+export interface BindingRow {
+  action: string;
+  label: string;
+  key: string;
+}
+
 export interface MenuCallbacks {
+  listBindings(): BindingRow[];
+  /** Returns false if the key could not be bound. */
+  rebind(action: string, code: string): boolean;
+  resetBindings(): void;
   onPlayMode(): void;
   onPlaySandbox(): void;
   onResume(): void;
@@ -178,6 +201,9 @@ export class Menu {
       case 'pause':
         this.callbacks.onResume();
         break;
+      case 'controls':
+        this.show('settings');
+        break;
       case 'settings':
       case 'builds':
         this.show(this.returnTo);
@@ -196,6 +222,7 @@ export class Menu {
       case 'builds': this.renderBuilds(); break;
       case 'pause': this.renderPause(); break;
       case 'result': this.renderResult(); break;
+      case 'controls': this.renderControls(); break;
       case 'none': break;
     }
   }
@@ -315,11 +342,88 @@ export class Menu {
     spacer.style.height = '16px';
     this.card.appendChild(spacer);
 
+    this.button('Controls', () => this.show('controls'), 'mk-secondary');
     this.button('Back', () => this.show(this.returnTo));
     this.button('Reset to defaults', () => {
       this.settings.reset();
       this.render();
     }, 'mk-secondary');
+  }
+
+  /**
+   * Key rebinding.
+   *
+   * Clicking a row arms a one-shot capture. The capture listens on the window
+   * in the capture phase so it sees the key before anything else can act on it
+   * — otherwise binding Escape would close the menu, and binding a movement key
+   * would walk the player around behind the screen.
+   */
+  private renderControls(): void {
+    this.heading('Controls');
+
+    for (const row of this.callbacks.listBindings()) {
+      const el = document.createElement('div');
+      el.className = 'mk-bind';
+
+      const label = document.createElement('label');
+      label.textContent = row.label;
+      el.appendChild(label);
+
+      const btn = document.createElement('button');
+      btn.textContent = row.key;
+      btn.addEventListener('click', () => {
+        if (this.listening !== null) return;
+        btn.classList.add('listening');
+        btn.textContent = 'press a key…';
+        this.beginCapture(row.action, () => this.render());
+      });
+      el.appendChild(btn);
+
+      this.card.appendChild(el);
+    }
+
+    const spacer = document.createElement('div');
+    spacer.style.height = '14px';
+    this.card.appendChild(spacer);
+
+    this.button('Back', () => this.show('settings'));
+    this.button('Reset controls', () => {
+      this.callbacks.resetBindings();
+      this.render();
+    }, 'mk-secondary');
+  }
+
+  private listening: (() => void) | null = null;
+
+  private beginCapture(action: string, done: () => void): void {
+    const finish = (): void => {
+      window.removeEventListener('keydown', onKey, true);
+      window.removeEventListener('mousedown', onMouse, true);
+      this.listening = null;
+      done();
+    };
+
+    const onKey = (e: KeyboardEvent): void => {
+      e.preventDefault();
+      e.stopPropagation();
+      // Escape cancels rather than binding; a player who has bound Escape to
+      // something has no way back out of a menu.
+      if (e.code !== 'Escape') this.callbacks.rebind(action, e.code);
+      finish();
+    };
+
+    const onMouse = (e: MouseEvent): void => {
+      // Only inside the card, or clicking Back would bind a mouse button.
+      if (!(e.target instanceof Node) || !this.card.contains(e.target)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      this.callbacks.rebind(action, `Mouse${e.button}`);
+      finish();
+    };
+
+    this.listening = finish;
+    window.addEventListener('keydown', onKey, true);
+    window.addEventListener('mousedown', onMouse, true);
   }
 
   private slider<K extends keyof Settings>(

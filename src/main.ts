@@ -26,7 +26,8 @@ import { ProjectileSystem } from './game/projectiles.ts';
 import { ModeRenderer } from './game/modeRenderer.ts';
 import { FortDefenseMode } from './game/fortDefense.ts';
 import type { GameEvent, ModeContext, ModeInput } from './game/gameMode.ts';
-import { SettingsStore, ghostColors } from './app/settings.ts';
+import { SettingsStore, ghostColors, loadBindings, saveBindings, clearBindings } from './app/settings.ts';
+import { BINDABLE, describeKey, type Action } from './core/input.ts';
 import { BuildStore } from './app/buildStore.ts';
 import { Menu } from './ui/menu.ts';
 
@@ -96,6 +97,9 @@ camera.yaw = Math.PI * 0.15;
 
 const hud = new Hud(app);
 const input = new Input(renderer.domElement);
+// Restore saved bindings before anything reads input.
+const savedBindings = loadBindings();
+if (savedBindings !== null) input.setBindings(savedBindings as Record<string, Action>);
 
 // Audio cannot start without a user gesture, so it rides the same click that
 // grabs pointer lock. Until then every play() is a no-op rather than an error.
@@ -216,6 +220,24 @@ const menu = new Menu(app, settings, {
   },
   onDeleteBuild: (id) => buildStore.remove(id),
   listBuilds: () => buildStore.list(),
+
+  listBindings: () => BINDABLE.map(({ action, label }) => {
+    const codes = input.codesFor(action);
+    return {
+      action,
+      label,
+      key: codes.length > 0 ? codes.map(describeKey).join(' / ') : 'unbound',
+    };
+  }),
+  rebind: (action, code) => {
+    input.setBinding(action as Action, code);
+    saveBindings(input.getBindings());
+    return true;
+  },
+  resetBindings: () => {
+    input.resetBindings();
+    clearBindings();
+  },
 });
 
 function enterPlay(): void {

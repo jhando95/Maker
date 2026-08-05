@@ -139,6 +139,48 @@ export class SettingsStore {
   }
 }
 
+const BINDINGS_KEY = 'maker.bindings.v1';
+
+/**
+ * Key bindings persist separately from settings.
+ *
+ * They are a map of arbitrary key codes rather than a fixed set of fields, so
+ * the type-checked key-by-key validation the settings store uses does not
+ * apply. Keeping them apart means a bad bindings blob cannot take the settings
+ * with it.
+ */
+export function loadBindings(): Record<string, string> | null {
+  try {
+    const raw = localStorage.getItem(BINDINGS_KEY);
+    if (raw === null) return null;
+    const parsed: unknown = JSON.parse(raw);
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return null;
+    const out: Record<string, string> = {};
+    for (const [code, action] of Object.entries(parsed)) {
+      if (typeof code === 'string' && typeof action === 'string') out[code] = action;
+    }
+    return Object.keys(out).length > 0 ? out : null;
+  } catch {
+    return null;
+  }
+}
+
+export function saveBindings(bindings: Record<string, string>): void {
+  try {
+    localStorage.setItem(BINDINGS_KEY, JSON.stringify(bindings));
+  } catch {
+    // Storage unavailable; bindings simply do not persist this session.
+  }
+}
+
+export function clearBindings(): void {
+  try {
+    localStorage.removeItem(BINDINGS_KEY);
+  } catch {
+    /* nothing useful to do */
+  }
+}
+
 /** Ghost colours, swapped for a colourblind-safe pair when requested. */
 export function ghostColors(colorblind: boolean): { valid: number; invalid: number } {
   return colorblind

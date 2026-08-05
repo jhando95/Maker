@@ -107,8 +107,49 @@ interface ActionState {
   released: boolean;
 }
 
+/** Actions a player can rebind, in the order the settings screen lists them. */
+export const BINDABLE: ReadonlyArray<{ action: Action; label: string }> = [
+  { action: 'moveForward', label: 'Move forward' },
+  { action: 'moveBack', label: 'Move back' },
+  { action: 'moveLeft', label: 'Move left' },
+  { action: 'moveRight', label: 'Move right' },
+  { action: 'jump', label: 'Jump' },
+  { action: 'sprint', label: 'Sprint' },
+  { action: 'crouch', label: 'Crouch' },
+  { action: 'placePart', label: 'Place / throw' },
+  { action: 'removePart', label: 'Remove part' },
+  { action: 'freeAim', label: 'Free aim' },
+  { action: 'cycleSnap', label: 'Next snap' },
+  { action: 'repeatPlace', label: 'Repeat step' },
+  { action: 'rotateCCW', label: 'Turn left' },
+  { action: 'rotateCW', label: 'Turn right' },
+  { action: 'rotatePitch', label: 'Tilt' },
+  { action: 'rotateRoll', label: 'Roll' },
+  { action: 'resetRotation', label: 'Reset rotation' },
+  { action: 'toggleCamera', label: 'Camera' },
+  { action: 'interact', label: 'Undo' },
+];
+
+/** Human-readable name for a key code or mouse button. */
+export function describeKey(code: string): string {
+  if (code.startsWith('Mouse')) {
+    const n = Number(code.slice(5));
+    return n === 0 ? 'Left Mouse' : n === 1 ? 'Middle Mouse' : n === 2 ? 'Right Mouse' : `Mouse ${n}`;
+  }
+  if (code.startsWith('Key')) return code.slice(3);
+  if (code.startsWith('Digit')) return code.slice(5);
+  if (code.startsWith('Arrow')) return `${code.slice(5)} Arrow`;
+  const named: Record<string, string> = {
+    Space: 'Space', ShiftLeft: 'L Shift', ShiftRight: 'R Shift',
+    ControlLeft: 'L Ctrl', ControlRight: 'R Ctrl',
+    AltLeft: 'L Alt', AltRight: 'R Alt',
+    Tab: 'Tab', Backquote: '`', Enter: 'Enter',
+  };
+  return named[code] ?? code;
+}
+
 export class Input {
-  private readonly bindings: Record<string, Action>;
+  private bindings: Record<string, Action>;
   private readonly state = new Map<Action, ActionState>();
 
   /** Device events land here and are folded in at the next tick boundary. */
@@ -137,7 +178,7 @@ export class Input {
 
   constructor(element: HTMLElement, bindings: Record<string, Action> = DEFAULT_BINDINGS) {
     this.element = element;
-    this.bindings = bindings;
+    this.bindings = { ...bindings };
     for (const action of ACTIONS) {
       this.state.set(action, { down: false, pressed: false, released: false });
     }
@@ -331,6 +372,40 @@ export class Input {
   setEnabled(enabled: boolean): void {
     this.enabled = enabled;
     if (!enabled) this.releaseAll();
+  }
+
+  /** Every code currently bound to an action. */
+  codesFor(action: Action): string[] {
+    return Object.keys(this.bindings).filter((code) => this.bindings[code] === action);
+  }
+
+  /**
+   * Bind a key to an action, replacing whatever that action was on.
+   *
+   * A code already used by a *different* action is released first: two actions
+   * on one key means pressing it does both, which is never what someone
+   * rebinding intended and is invisible until they hit the key.
+   */
+  setBinding(action: Action, code: string): void {
+    for (const existing of this.codesFor(action)) delete this.bindings[existing];
+    delete this.bindings[code];
+    this.bindings[code] = action;
+    // Whatever was held under the old binding must not stay stuck down.
+    this.releaseAll();
+  }
+
+  /** The full map, for persistence. */
+  getBindings(): Record<string, Action> {
+    return { ...this.bindings };
+  }
+
+  setBindings(bindings: Record<string, Action>): void {
+    this.bindings = { ...bindings };
+    this.releaseAll();
+  }
+
+  resetBindings(): void {
+    this.setBindings(DEFAULT_BINDINGS);
   }
 
   dispose(): void {
