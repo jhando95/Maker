@@ -1,75 +1,278 @@
+/**
+ * Entry point. Builds the world, wires the systems together, and runs the loop.
+ *
+ * Simulation runs on a fixed timestep; rendering runs per frame and interpolates
+ * between the last two simulation states. Input edges are resolved at tick
+ * boundaries so a fast click is never doubled or swallowed.
+ */
+
 import * as THREE from 'three';
-import { createScene, PALETTE } from './world/scene.ts';
-import { PartRenderer } from './render/partRenderer.ts';
+import { GameLoop } from './core/loop.ts';
+import { Input } from './core/input.ts';
 import { CollisionWorld } from './physics/collisionWorld.ts';
-import { PART_KINDS, halfExtents } from './build/partKit.ts';
+import { TICK_RATE, DT } from './physics/constants.ts';
+import { createScene } from './world/scene.ts';
+import { PartRenderer } from './render/partRenderer.ts';
+import { BuildSystem, type PlacementRecord } from './build/buildSystem.ts';
+import { CharacterController, type MoveIntent } from './player/controller.ts';
+import { CameraRig } from './player/cameraRig.ts';
+import { Hud } from './ui/hud.ts';
+import { MAX_REACH } from './build/snapping.ts';
+import { seedStarterStructures } from './world/starter.ts';
 
 const app = document.getElementById('app')!;
-const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance', stencil: false });
-renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
-renderer.setSize(innerWidth, innerHeight);
+app.style.cssText = 'position:fixed;inset:0;overflow:hidden;';
+
+// ── Renderer ─────────────────────────────────────────────────────────────────
+const renderer = new THREE.WebGLRenderer({
+  antialias: true,
+  powerPreference: 'high-performance',
+  stencil: false,
+});
+// Cap the pixel ratio: 3x on a dense display costs 2.25x the fill rate of 2x
+// for no visible gain, and cel shading needs the MSAA more than the resolution.
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFShadowMap;
+// The world only changes when someone builds, so regenerating the shadow map
+// every frame is pure waste — and holding it still also removes the shimmer a
+// per-frame regeneration causes.
 renderer.shadowMap.autoUpdate = false;
 renderer.shadowMap.needsUpdate = true;
 app.appendChild(renderer.domElement);
 
-const { scene, sun } = createScene('backyard-01');
-const camera = new THREE.PerspectiveCamera(62, innerWidth / innerHeight, 0.1, 1000);
-camera.position.set(-7, 4.2, -9);
-camera.lookAt(1, 1.4, 1);
-
+// ── World ────────────────────────────────────────────────────────────────────
+const { scene, invalidateShadows } = createScene('backyard-01');
+const world = new CollisionWorld(1.0, 4096);
 const parts = new PartRenderer();
 scene.add(parts.group);
-parts.setViewportHeight(innerHeight);
 
-// A demo structure so the instanced path, outlines and shadows are all exercised.
-const world = new CollisionWorld();
-const q = new THREE.Quaternion();
-const e = new THREE.Euler();
-let placed = 0;
-function place(kindId: number, colorway: number, x: number, y: number, z: number, rx=0, ry=0, rz=0) {
-  const k = PART_KINDS[kindId]!;
-  const h = halfExtents(k);
-  q.setFromEuler(e.set(rx, ry, rz));
-  const handle = world.addPart(kindId, colorway, x, y, z, q.x, q.y, q.z, q.w, h.hx, h.hy, h.hz);
-  parts.add(handle.id, kindId, colorway, x, y, z, q.x, q.y, q.z, q.w);
-  placed++;
+const build = new BuildSystem(world, parts);
+scene.add(build.ghostGroup);
+
+/** Rebuild the static shadow map after the world changes. */
+function worldChanged(): void {
+  invalidateShadows();
+  renderer.shadowMap.needsUpdate = true;
 }
 
-// Platform floor of planks.
-for (let i = 0; i < 8; i++) place(0, 0, 0, 1.0, -0.875 + i * 0.25);
-// Four posts.
-for (const [px, pz] of [[-0.4,-0.9],[0.4,-0.9],[-0.4,0.9],[0.4,0.9]]) place(4, 1, px, 0.5, pz, 0, 0, Math.PI/2);
-// Ladder: two rails plus rungs at one module pitch.
-for (const rz of [-0.3, 0.3]) place(1, 2, -0.6, 1.0, rz, 0, 0, Math.PI/2);
-for (let i = 0; i < 5; i++) place(2, 3, -0.6, 0.25 + i * 0.25, 0, 0, Math.PI/2, 0);
-// Staircase, 0.25 rise over 0.5 run.
-for (let i = 0; i < 5; i++) place(0, 4 + (i%4), 1.2 + i*0.5, 0.25*(i+1), 0);
-// A wall of panels.
-for (let i = 0; i < 3; i++) place(5, 5, 0.5, 1.5, 2.2 + i*1.0, 0, 0, Math.PI/2);
-// A ramp.
-place(6, 6, -2.2, 0.25, -2.0);
+// A few things already standing, so the first thing a player sees is what the
+// game is for rather than an empty lawn.
+seedStarterStructures(build);
 
-renderer.shadowMap.needsUpdate = true;
-sun.shadow.needsUpdate = true;
+const player = new CharacterController(world, -3, 0.5, -6);
+const camera = new CameraRig(world, window.innerWidth / window.innerHeight);
+camera.yaw = Math.PI * 0.15;
 
-let frames = 0;
-renderer.setAnimationLoop(() => {
-  frames++;
-  renderer.render(scene, camera);
+const hud = new Hud(app);
+const input = new Input(renderer.domElement);
+
+parts.setViewportHeight(window.innerHeight);
+worldChanged();
+
+// ── Player avatar, visible in third person ───────────────────────────────────
+const avatar = new THREE.Group();
+{
+  const body = new THREE.Mesh(
+    new THREE.CapsuleGeometry(0.32, 1.06, 4, 10),
+    new THREE.MeshToonMaterial({ color: 0x4f8fd8 }),
+  );
+  body.position.y = 0.85;
+  body.castShadow = true;
+  avatar.add(body);
+  const cap = new THREE.Mesh(
+    new THREE.SphereGeometry(0.2, 10, 8),
+    new THREE.MeshToonMaterial({ color: 0xe8d44f }),
+  );
+  cap.position.y = 1.62;
+  cap.castShadow = true;
+  avatar.add(cap);
+}
+scene.add(avatar);
+
+// ── Input plumbing ───────────────────────────────────────────────────────────
+input.onPointerLockChange = (locked) => hud.setPointerLocked(locked);
+hud.onLockClick(() => void input.requestPointerLock());
+
+let snapKindLabel = 'none';
+let candidateCount = 0;
+let validPlacement = false;
+/** Ticks the place button has been held, for sticky repeat. */
+let placeHeldTicks = 0;
+
+function fixedUpdate(dt: number): void {
+  input.beginTick();
+
+  // Look is sampled per tick from accumulated mouse movement, so a 1000Hz mouse
+  // and a 60Hz simulation agree on how far the view turned.
+  const look = input.lookDelta;
+  if (look.x !== 0 || look.y !== 0) camera.look(look.x, look.y);
+
+  // Movement intent is expressed in the camera's ground basis, which is what
+  // makes W mean "the way I am facing" rather than "world -Z".
+  const axis = input.moveAxis;
+  const basis = camera.getMoveBasis();
+  const intent: MoveIntent = {
+    right: axis.z * basis.fx + axis.x * basis.rx,
+    forward: axis.z * basis.fz + axis.x * basis.rz,
+    jump: input.isDown('jump'),
+    sprint: input.isDown('sprint'),
+    crouch: input.isDown('crouch'),
+    climb: axis.z,
+  };
+  player.step(dt, intent);
+
+  // ── Build actions ──────────────────────────────────────────────────────────
+  const hotbar = input.hotbarPressed;
+  if (hotbar >= 0) build.selectKind(hotbar);
+
+  const wheel = input.wheel;
+  if (wheel !== 0) {
+    if (input.isDown('sprint')) build.cycleColorway(wheel > 0 ? 1 : -1);
+    else build.cycleKind(wheel > 0 ? 1 : -1);
+  }
+
+  if (input.wasPressed('rotateCW')) build.rotateYaw(1);
+  if (input.wasPressed('rotateCCW')) build.rotateYaw(-1);
+  if (input.wasPressed('rotatePitch')) build.rotatePitch(1);
+  if (input.wasPressed('rotateRoll')) build.rotateRoll(1);
+  if (input.wasPressed('resetRotation')) build.resetRotation();
+  if (input.wasPressed('cycleSnap')) build.cycleSnapCandidate();
+  if (input.wasPressed('toggleCamera')) camera.toggleMode();
+  if (input.wasPressed('debugToggle')) hud.toggleDebug();
+
+  const state = player.sample(1);
+  const ray = camera.getAimRay(state.x, state.y + state.eyeHeight, state.z, MAX_REACH);
+
+  const snap = build.update(
+    dt,
+    ray.ox, ray.oy, ray.oz,
+    ray.dx, ray.dy, ray.dz,
+    input.isDown('freeAim'),
+    // Crouch doubles as the fine-placement modifier while building.
+    input.isDown('crouch'),
+  );
+
+  snapKindLabel = snap.candidate?.kind ?? 'none';
+  candidateCount = snap.count;
+  validPlacement = snap.candidate?.valid ?? false;
+
+  // Sticky repeat while held: the difference between building a 20-rung ladder
+  // and giving up on one.
+  if (input.wasPressed('placePart')) {
+    placeHeldTicks = 0;
+    if (build.tryPlace()) worldChanged();
+  } else if (input.isDown('placePart')) {
+    placeHeldTicks++;
+    if (placeHeldTicks % 10 === 0 && build.tryPlace()) worldChanged();
+  }
+
+  if (input.wasPressed('removePart') && build.removeAimed()) worldChanged();
+  if (input.wasPressed('interact') && build.undo()) worldChanged();
+}
+
+function render(alpha: number, frameDt: number): void {
+  const state = player.sample(alpha);
+  const speedFraction = Math.min(1, player.speed / 7.4);
+  camera.update(frameDt, state.x, state.y + state.eyeHeight, state.z, speedFraction);
+
+  avatar.visible = camera.showsPlayer;
+  avatar.position.set(state.x, state.y, state.z);
+  avatar.rotation.y = camera.yaw;
+
+  renderer.render(scene, camera.camera);
+
+  hud.update({
+    selectedKind: build.selectedKind,
+    colorway: build.selectedColorway,
+    validPlacement,
+    snapKind: snapKindLabel,
+    candidateCount,
+    rotation: build.rotationDegrees,
+    partsPlaced: build.placedCount,
+    cameraMode: camera.mode,
+    climbing: state.climbing,
+  });
+  hud.updateDebug({
+    fps: loop.fps,
+    parts: world.partCount,
+    drawCalls: renderer.info.render.calls,
+    triangles: renderer.info.render.triangles,
+    playerY: state.y,
+    onGround: state.onGround,
+  });
+}
+
+const loop = new GameLoop({ fixedUpdate, render }, { tickRate: TICK_RATE });
+loop.start();
+
+window.addEventListener('resize', () => {
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  camera.setAspect(window.innerWidth / window.innerHeight);
+  parts.setViewportHeight(window.innerHeight);
 });
 
-(window as any).__maker = {
+// ── Debug API, also driven by the headless screenshot harness ────────────────
+declare global {
+  interface Window {
+    __maker?: Record<string, unknown>;
+  }
+}
+
+window.__maker = {
   ready: true,
   stats: () => ({
-    parts: placed,
+    fps: Math.round(loop.fps),
+    parts: world.partCount,
     instances: parts.instanceCount,
     drawCalls: renderer.info.render.calls,
     triangles: renderer.info.render.triangles,
-    frames,
-    fog: PALETTE.fog.toString(16),
+    player: { x: +player.x.toFixed(2), y: +player.y.toFixed(2), z: +player.z.toFixed(2), onGround: player.onGround },
+    hashCells: world.hash.stats().cells,
   }),
+  teleport: (x: number, y: number, z: number) => player.teleport(x, y, z),
+  lookAt: (yaw: number, pitch: number) => {
+    camera.yaw = yaw;
+    camera.pitch = pitch;
+  },
+  /** Aim at a world point, so scenarios can frame a shot without doing trig. */
+  lookAtPoint: (tx: number, ty: number, tz: number) => {
+    const state = player.sample(1);
+    const dx = tx - state.x;
+    const dy = ty - (state.y + state.eyeHeight);
+    const dz = tz - state.z;
+    camera.yaw = Math.atan2(-dx, -dz);
+    camera.pitch = Math.atan2(dy, Math.hypot(dx, dz));
+  },
+  /** Drop the click-to-play overlay, which otherwise dims every screenshot. */
+  hideOverlay: () => hud.setPointerLocked(true),
+  setHudVisible: (visible: boolean) => {
+    hud.root.style.display = visible ? '' : 'none';
+  },
+  setCameraMode: (mode: 'first' | 'third') => {
+    camera.mode = mode;
+  },
+  selectPart: (i: number) => build.selectKind(i),
+  /** Aim and place without a mouse, so scenarios can drive the build system. */
+  placeAt: (yaw: number, pitch: number): boolean => {
+    camera.yaw = yaw;
+    camera.pitch = pitch;
+    const state = player.sample(1);
+    const ray = camera.getAimRay(state.x, state.y + state.eyeHeight, state.z, MAX_REACH);
+    build.update(DT, ray.ox, ray.oy, ray.oz, ray.dx, ray.dy, ray.dz, false, false);
+    const ok = build.tryPlace();
+    if (ok) worldChanged();
+    return ok;
+  },
+  save: (): PlacementRecord[] => build.serialize(),
+  load: (records: PlacementRecord[]) => {
+    build.deserialize(records);
+    worldChanged();
+  },
+  world,
+  build,
+  player,
   camera,
   scene,
   renderer,
