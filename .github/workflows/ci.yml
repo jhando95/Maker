@@ -65,6 +65,13 @@ jobs:
       - name: Water-fight scenario
         run: node tools/shoot.mjs --scenario scenarios/water.mjs --auto-quality --out /tmp/ci-water.png
 
+      # Multiple people in one world, with no network yet to bring them. The
+      # roster and teams are unit-tested; that a second body reaches the
+      # renderer's instance buffers, wears the right shirt and moves on its own
+      # commands only happens in a browser.
+      - name: Multiple-actor scenario
+        run: node tools/shoot.mjs --scenario scenarios/actors.mjs --auto-quality --out /tmp/ci-actors.png
+
       # A CI runner has no GPU either, so it is a genuine instance of the case
       # adaptive quality exists for. The decision logic is unit-tested; this
       # checks the decision reaches the drawing buffer.
@@ -82,6 +89,7 @@ jobs:
             /tmp/ci-quality.png
             /tmp/ci-wheel.png
             /tmp/ci-water.png
+            /tmp/ci-actors.png
           if-no-files-found: ignore
 
   benchmark:

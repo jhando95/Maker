@@ -23,7 +23,7 @@ import { seedStarterStructures, STARTER_ORIGIN } from './world/starter.ts';
 import { AudioBus } from './audio/audioBus.ts';
 import { GameSounds } from './audio/gameSounds.ts';
 import { Rng } from './core/rng.ts';
-import { ActorRoster, LOCAL_ACTOR_ID, type Actor } from './game/actor.ts';
+import { ActorRoster, LOCAL_ACTOR_ID, type Actor, type Team } from './game/actor.ts';
 import { BUTTON, commandToIntent, makeCommand } from './core/command.ts';
 import { ProjectileSystem } from './game/projectiles.ts';
 import { ModeRenderer } from './game/modeRenderer.ts';
@@ -936,6 +936,32 @@ window.__maker = {
   moveAxis: () => input.moveAxis,
   /** Stick look rate this frame, for the same reason as moveAxis. */
   padLook: () => input.padLook,
+  actors,
+  /**
+   * Put a second person in the world without a network to bring them.
+   *
+   * The whole remote path — roster, collision, drawing, team colour — exists
+   * before any socket does, and this is what lets it be checked. When a
+   * transport arrives it will call exactly this, so the scenario driving it is
+   * testing the real thing rather than a stand-in.
+   */
+  addRemoteActor: (id: number, team: Team, x: number, y: number, z: number) => {
+    actors.addRemote({
+      id, kind: 'remote', team,
+      controller: new CharacterController(world, x, y, z),
+    });
+  },
+  removeRemoteActor: (id: number) => actors.removeRemote(id),
+  /** Drive a remote actor the way a received command would. */
+  stepRemoteActor: (id: number, moveX: number, moveZ: number) => {
+    const who = actors.get(id);
+    if (who === undefined || who.kind !== 'remote') return null;
+    const command = makeCommand(simTick);
+    command.moveX = moveX;
+    command.moveZ = moveZ;
+    who.controller.step(DT, commandToIntent(command));
+    return { x: who.controller.x, y: who.controller.y, z: who.controller.z };
+  },
   bindingFor: (code: string) => input.getBindings()[code] ?? null,
   /** Move the mouse, for scenarios that cannot hold pointer lock. */
   look: (dx: number, dy: number) => input.injectLook(dx, dy),

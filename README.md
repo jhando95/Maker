@@ -86,8 +86,13 @@ the house is in between. Take theirs, get it home, three times. Play alternates
 between a build phase and a capture phase, and a capture *ends the round* rather
 than scoring a point in a continuous one — so what you actually experience is:
 lose the flag, watch exactly how they got in, then get forty-five seconds to fix
-that. Enemy bots split into runners who come for your flag and guards who sit on
-theirs, and the mix shifts with the score.
+that. Both sides split into runners who go for the other team's flag and guards
+who sit on their own, and the enemy's mix shifts with the score.
+
+You get two kids on your side — enough that it is a team game rather than a
+fetch quest with obstacles, few enough that you are still outnumbered and still
+have something to do. Shirts are coloured by side, which is not decoration: you
+cannot decide who to throw at if you cannot tell who is who.
 
 **Fort Defense.** Build a fort around the stash on the front lawn, then hold five
 waves. Between waves you get time to patch whatever failed.
@@ -126,6 +131,47 @@ you can be soaked, so being outnumbered is reliably bad rather than instant. The
 kids' shirts darken as they soak, which is how you tell the one you have nearly
 finished from the one who just arrived.
 
+## Towards more than one player
+
+The point of all of this is party modes played with other people, and the game
+now knows how to hold them even though nothing brings them yet.
+
+It grew up around one player and a bag of bots, which were different kinds of
+thing: a bot is an id, a body and a side, while the player was a bare character
+controller the shell happened to own. That costs nothing until a second person
+joins, at which point every piece of code that says "the player" has to decide
+which one it meant. An **actor** is the smallest thing that makes them the same,
+and deliberately carries nothing else — no health, no wetness, no flag, because
+those belong to whichever mode invented them. The three kinds of actor differ
+only in where their intent comes from: a keyboard, a behaviour tree, or a socket.
+
+A **command** is one tick of a player's will as data — movement, look, and a
+bitfield of buttons. Input, the camera basis and the controller used to be one
+straight line through the shell, which works for exactly one player on one
+machine. Pulling the reading apart from the acting means the thing in between
+can be a recording or a network. Movement is stored already rotated into world
+space: sending the raw stick would let a server re-derive and so validate it, but
+re-deriving means reproducing floating-point camera state, and a replay that has
+to reconstruct its own inputs is a replay that drifts.
+
+Then a **replay** test records a round, plays it into a fresh world and hashes
+the result, so nondeterminism fails at the commit that causes it rather than as
+a desync between two people a month later. That is not hypothetical here:
+`Math.random` is banned from world state for this reason, and a purely cosmetic
+splash was drawing from the simulation's own RNG until it was caught by hand.
+
+Checked by planting the bug it is meant to catch. A `Math.random` jitter on a
+bot's movement fails it immediately; the same call on a state timer at 1e-6 does
+not, because it moves nobody far enough to survive the hash's quantum. So it
+catches nondeterminism that changes what happens, not nondeterminism that merely
+exists — which is the trade that also stops float noise from failing honest runs.
+
+What is left is the transport. The plan is host-authoritative rather than
+server-authoritative: one player's browser runs the simulation and the others
+are told about it, which needs no deploy target. It is also the honest answer to
+the limit above, since determinism here does not prove float portability between
+two different CPUs.
+
 ## The map
 
 A cul-de-sac with a house at the centre. Left yard is -X, right yard is +X, and
@@ -158,13 +204,13 @@ with the game.
 
 ```
 src/
-  core/        game loop, input, seeded RNG, math
+  core/        game loop, input, commands, replay, seeded RNG, math
   physics/     spatial hash, capsule-vs-OBB collision, part store, collision world
   player/      character controller, camera rig
   build/       part kit, snapping, build system
   render/      cel shading, procedural geometry, instanced meshes
   world/       neighborhood map, scene, starter structures
-  game/        game modes, bots, flow-field navigation, projectiles
+  game/        game modes, actors and teams, bots, flow-field navigation, projectiles
   audio/       synthesized sound
   app/         settings, persistence, crash handling
   ui/          HUD, menus, radial part picker
@@ -175,7 +221,7 @@ scenarios/     scripted checks driven through the harness
 ```
 
 ```bash
-npm test         # 476 unit tests
+npm test         # 518 unit tests
 npm run typecheck
 npm run bench    # what a tick costs, as a share of the 16.67ms budget
 node tools/shoot.mjs --out shots/x.png   # boot headless, screenshot, fail on any console error
@@ -187,8 +233,10 @@ cannot be honestly unit-tested: whether a throw inside the render loop actually
 produces a crash screen, whether a stick push actually reaches the character
 controller, whether a resolution decision actually reaches the drawing buffer,
 whether emptying a water tank and refilling it from a paddling pool works once
-the mode, the shell and the HUD are wired together. Each only happens in a
-browser, and each has broken at least once with the unit suite green.
+the mode, the shell and the HUD are wired together, whether a second person in
+the world reaches the renderer's instance buffers wearing the right shirt. Each
+only happens in a browser, and each has broken at least once with the unit suite
+green.
 
 ## Design notes
 
