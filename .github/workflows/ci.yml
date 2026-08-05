@@ -1,0 +1,76 @@
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+# A newer push to the same branch makes the older run irrelevant.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Unit tests
+        run: npm test
+
+      - name: Production build
+        run: npx vite build
+
+      # The harness boots the real game in headless Chromium and fails on any
+      # console error or uncaught exception. It catches the whole class of bug
+      # unit tests cannot see — a shader that will not compile, a module that
+      # throws at import, an initialization order that only breaks in a browser.
+      - name: Install Chromium for the smoke test
+        run: npx playwright install --with-deps chromium
+
+      - name: Headless smoke test
+        run: node tools/shoot.mjs --out /tmp/ci-smoke.png --settle 3000
+
+      # The crash handler's claim is that a throw inside the render loop is
+      # survivable and visible. Nothing short of a real browser can check that,
+      # so the scenario throws for real and asserts on what a player would see.
+      - name: Crash-handler scenario
+        run: node tools/shoot.mjs --scenario scenarios/crash.mjs --allow-errors --out /tmp/ci-crash.png
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: screenshots
+          path: |
+            /tmp/ci-smoke.png
+            /tmp/ci-crash.png
+          if-no-files-found: ignore
+
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      # Reported, not gated. A shared CI runner's timings are too noisy to fail
+      # a build on, but a regression is obvious in the log next to the previous
+      # run — and the tests already guard the specific costs that matter.
+      - name: Simulation benchmark
+        run: npm run bench

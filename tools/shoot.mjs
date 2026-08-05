@@ -11,6 +11,7 @@
  *   node tools/shoot.mjs --out shots/build.png    # choose output path
  *   node tools/shoot.mjs --scenario scenarios/stairs.mjs
  *   node tools/shoot.mjs --settle 3000 --size 1600x900
+ *   node tools/shoot.mjs --scenario scenarios/crash.mjs --allow-errors
  *
  * A scenario file default-exports `async (page) => {}` and drives the game via
  * `window.__maker` (the debug API exposed by src/debug/debugApi.ts).
@@ -50,6 +51,12 @@ const scenarioPath = flag('scenario', null);
 const settleMs = Number(flag('settle', 2000));
 const [width, height] = flag('size', '1280x720').split('x').map(Number);
 const keepOpen = args.includes('--keep-open');
+/**
+ * Some scenarios provoke an error on purpose — the crash handler, for one, is
+ * only worth anything if it can be shown handling a real throw. Those runs let
+ * the scenario do its own asserting instead of the blanket console gate.
+ */
+const allowErrors = args.includes('--allow-errors');
 
 const log = (...m) => console.log('[shoot]', ...m);
 
@@ -166,15 +173,20 @@ try {
   const stats = await page.evaluate(() => window.__maker?.stats?.() ?? null);
   if (stats) log('stats:', JSON.stringify(stats));
 
-  if (pageErrors.length) {
-    log(`FAIL: ${pageErrors.length} uncaught page error(s)`);
-    exitCode = 1;
+  if (allowErrors) {
+    log(`errors ignored by request: ${pageErrors.length} page, ${consoleErrors.length} console`);
+    log('PASS: scenario completed without assertion failures');
+  } else {
+    if (pageErrors.length) {
+      log(`FAIL: ${pageErrors.length} uncaught page error(s)`);
+      exitCode = 1;
+    }
+    if (consoleErrors.length) {
+      log(`FAIL: ${consoleErrors.length} console error(s)`);
+      exitCode = 1;
+    }
+    if (!exitCode) log('PASS: no console or page errors');
   }
-  if (consoleErrors.length) {
-    log(`FAIL: ${consoleErrors.length} console error(s)`);
-    exitCode = 1;
-  }
-  if (!exitCode) log('PASS: no console or page errors');
 
   if (keepOpen) {
     log('--keep-open set; press ctrl-c to exit');

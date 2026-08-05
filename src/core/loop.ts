@@ -148,6 +148,17 @@ export class GameLoop {
   }
 
   /**
+   * Whether frames are still being scheduled.
+   *
+   * Distinct from paused: a paused loop keeps drawing, a stopped one does not
+   * come back without start(). The crash handler stops it, and the headless
+   * harness checks this to confirm it stayed stopped.
+   */
+  get isRunning(): boolean {
+    return this.running;
+  }
+
+  /**
    * Run a fixed number of simulation steps without rendering. Used by tests and
    * by the debug API to advance the world deterministically.
    */

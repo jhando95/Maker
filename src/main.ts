@@ -30,9 +30,27 @@ import { SettingsStore, ghostColors, loadBindings, saveBindings, clearBindings }
 import { BINDABLE, describeKey, type Action } from './core/input.ts';
 import { BuildStore } from './app/buildStore.ts';
 import { Menu } from './ui/menu.ts';
+import { CrashHandler } from './app/crashHandler.ts';
 
 const app = document.getElementById('app')!;
 app.style.cssText = 'position:fixed;inset:0;overflow:hidden;';
+
+/**
+ * Installed first, before anything that could throw.
+ *
+ * A throw inside a requestAnimationFrame callback is caught by nothing: the
+ * frame dies, no further frames are scheduled, and the last good image sits
+ * frozen on screen with the reason only in the console.
+ */
+const crash = new CrashHandler(() => ({
+  parts: world.partCount,
+  mode: mode?.id ?? 'none',
+  phase: mode?.phase ?? null,
+  wave: mode?.wave ?? null,
+  player: { x: +player.x.toFixed(2), y: +player.y.toFixed(2), z: +player.z.toFixed(2) },
+  screen: menu.current,
+  tick: loop.tick,
+}));
 
 // ── Renderer ─────────────────────────────────────────────────────────────────
 const renderer = new THREE.WebGLRenderer({
@@ -380,7 +398,25 @@ function tryPlaceWithFeedback(): boolean {
   return true;
 }
 
+/**
+ * Set by the debug API to make the next simulation tick throw.
+ *
+ * The crash handler's whole claim is that a throw inside the loop is survivable
+ * and visible, and the only way to check that claim is to actually throw from
+ * inside the loop. One boolean read per tick is what that costs.
+ */
+let pendingCrash = false;
+
 function fixedUpdate(dt: number): void {
+  crash.guard('simulation', () => simulate(dt));
+}
+
+function simulate(dt: number): void {
+  if (pendingCrash) {
+    pendingCrash = false;
+    throw new Error('deliberate scenario crash');
+  }
+
   input.beginTick();
 
   // Look is sampled per tick from accumulated mouse movement, so a 1000Hz mouse
@@ -547,6 +583,10 @@ function fixedUpdate(dt: number): void {
 }
 
 function render(alpha: number, frameDt: number): void {
+  crash.guard('render', () => draw(alpha, frameDt));
+}
+
+function draw(alpha: number, frameDt: number): void {
   const state = player.sample(alpha);
   const speedFraction = Math.min(1, player.speed / 7.4);
   camera.update(frameDt, state.x, state.y + state.eyeHeight, state.z, speedFraction);
@@ -585,6 +625,27 @@ function render(alpha: number, frameDt: number): void {
 }
 
 const loop = new GameLoop({ fixedUpdate, render }, { tickRate: TICK_RATE });
+
+/**
+ * Everything that has to happen once, on any crash, from any source.
+ *
+ * The guards in fixedUpdate and render are not the only way a crash arrives —
+ * an event handler or a rejected promise reaches the handler directly, and
+ * those must stop the loop too. Doing it here means there is one answer rather
+ * than one per call site.
+ *
+ * Stopping matters beyond tidiness: a loop that keeps running behind the crash
+ * screen goes on throwing sixty times a second, holds the pointer captive so
+ * the player cannot click Reload, and leaves the ambient track playing under a
+ * dialog that says the game has stopped.
+ */
+crash.onCrash = () => {
+  loop.stop();
+  audio.setMuted(true);
+  input.setEnabled(false);
+  if (document.pointerLockElement) document.exitPointerLock();
+};
+
 loop.start();
 
 // Boot into the title screen through the same path everything else uses, so the
@@ -668,7 +729,19 @@ window.__maker = {
   },
   audio,
   settings,
+  crash,
+  /**
+   * Throw from inside the next simulation tick.
+   *
+   * Deliberately not a direct call to crash.report(): that would prove only
+   * that the dialog renders, and say nothing about whether a real throw in the
+   * loop is caught at all.
+   */
+  crashNextTick: () => {
+    pendingCrash = true;
+  },
   isPaused: () => loop.isPaused,
+  isRunning: () => loop.isRunning,
   menu,
   startRound,
   stopRound,
