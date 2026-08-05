@@ -5,8 +5,9 @@ you nail together whatever you want — ladders, staircases, towers, forts,
 bridges. The long-term goal is party modes played *inside* the things you build:
 capture the flag, water balloon battles, tag.
 
-This repository is the first vertical slice: single-player, one backyard, and
-the movement and building mechanics the whole game rests on.
+Single-player so far: one backyard, the movement and building mechanics the
+whole game rests on, and the first game mode — **Fort Defense**. Build a fort,
+then hold off waves of kids coming for your stash of water balloons.
 
 ```bash
 npm install
@@ -34,6 +35,9 @@ npm run dev      # http://localhost:5173
 | `F` | undo |
 | `` ` `` | debug overlay |
 
+During a wave the mouse throws balloons instead of placing parts — you are never
+fumbling between two things on one button.
+
 Walk into a near-vertical surface with rungs and you climb it. That is not a
 ladder object — it is any structure the game recognises as climbable, which
 means a ladder you nailed together yourself works exactly like one that shipped
@@ -47,15 +51,18 @@ src/
   physics/     spatial hash, capsule-vs-OBB collision, part store, collision world
   player/      character controller, camera rig
   build/       part kit, snapping, build system
-  render/      cel shading, procedural geometry, instanced part renderer
+  render/      cel shading, procedural geometry, instanced meshes
   world/       backyard scene, starter structures
+  game/        game modes, bots, flow-field navigation, projectiles
+  audio/       synthesized sound
+  app/         settings and persistence
   ui/          HUD
 tools/
   shoot.mjs    headless screenshot + smoke-test harness
 ```
 
 ```bash
-npm test         # 148 unit tests
+npm test         # 205 unit tests
 npm run typecheck
 node tools/shoot.mjs --out shots/x.png   # boot headless, screenshot, fail on any console error
 ```
@@ -93,6 +100,19 @@ cartoon look comes from chamfered edges — a visible bevel catches light
 differently from the faces around it, and two or three pixels of it at play
 distance is most of what separates this from programmer art.
 
+**Bots route, they do not just steer.** Steering directly at the objective and
+probing for gaps when blocked fails on exactly the structure this game is about:
+in a U-shaped fort with the opening on the far side, a steering bot stops at the
+near wall 4.35m out and never improves. So routing is a breadth-first flood from
+the objective over a 0.75m grid, shared by every bot and rebuilt five times a
+second; local steering only handles the last two metres. That matters beyond bots
+looking stupid — the mode exists to show you where your fort failed, and if a gap
+is never found, a leaky fort scores as a perfect one.
+
+**Nothing is an audio file either.** Every sound is oscillators, filtered noise
+and envelopes built at runtime. Beyond shipping zero bytes, it lets a footstep
+shift pitch with surface and speed because it is being *built*, not played back.
+
 **Multiplayer is not built, but it is not blocked.** Simulation runs on a fixed
 timestep with no `Math.random` in anything affecting world state. Placement is
 split into intent and application: `place()` returns a plain JSON-safe record
@@ -115,23 +135,32 @@ auto-downgrade to a shorter part, or surfacing *why* it is blocked.
 
 **Software-GL frame rate is not a signal.** The headless harness runs under
 SwiftShader and reports single-digit FPS; that says nothing about real hardware.
-Draw calls (~300, mostly the individually-meshed fence) and triangle counts are
-the numbers worth watching, and the fence should become instanced before the
-yard grows.
+Draw calls (~60 with scenery instanced, down from ~340) and triangle counts are
+the numbers worth watching.
+
+**There is no menu yet.** The game boots straight into the sandbox; a round is
+started from the debug API. Settings exist and persist but have no UI.
+
+**Nav routing is 2D.** Bots walk on the ground toward a ground-level objective,
+so the grid has one layer. A mode whose objective sits on top of a structure
+would need a layered grid — one flood per standable height per column.
 
 ## Where this goes next
 
-1. **Netcode** — server-authoritative, client prediction for movement,
-   `PlacePart`/`RemovePart` intents replicated. The seams above exist for this.
-2. **First party mode.** Water balloon tag is the one to build first: it needs
-   only projectiles and a hit rule, and it immediately answers the question the
-   whole concept rests on — *is it fun to fight inside something you built?*
-   Capture the flag is the better long-term mode but a worse first experiment,
-   because it needs map balance to be fun and would confound the answer.
-3. **More modes**, then the woods survival mode, which wants resource gathering
-   and structural support rules that the sandbox deliberately does without.
+1. **Play Fort Defense and tune it.** Every number in it — build time, wave
+   sizes, stash supplies, throw arc — is a first guess. This is the cheapest and
+   most valuable next step, and it needs a human, not more code.
+2. **Menu and settings UI**, plus save slots for builds. The store and the
+   serialization already exist; only the screens are missing.
+3. **Construction ergonomics.** Repeat-last-placement is the big one: after two
+   parts, a key repeats the offset, turning two rungs into a twenty-rung ladder.
+   Under a build timer this is the difference between a fort and a fence.
+4. **Netcode** — server-authoritative, client prediction, `PlacePart` intents
+   replicated. The seams exist for this.
+5. **More modes**, then woods survival, which wants resource gathering and
+   structural support rules the sandbox deliberately does without.
 
-The biggest risk is not technical. It is that building under time pressure is
-*stressful* rather than joyful — that in a real match players stop building and
-just run around. Testing that needs two humans and a timer, not more code, and
-it should be tested before anything else is built on top.
+The biggest risk is still not technical. It is that building under time pressure
+is *stressful* rather than joyful — that players stop building and just run
+around. Fort Defense makes that testable solo for the first time, but the version
+that matters is two humans building against each other, and that needs netcode.
