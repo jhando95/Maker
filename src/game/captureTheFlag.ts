@@ -683,7 +683,7 @@ export class CaptureTheFlagMode implements GameMode {
         if (ctx.actors.friendly(hit.ownerId, target.id)) continue;
 
         if (target.id === LOCAL_ACTOR_ID) {
-          this.soakPlayer(ctx);
+          this.soakPlayer(ctx, hit);
           continue;
         }
         const bot = this.bots.find((b) => b.id === target.id);
@@ -705,13 +705,13 @@ export class CaptureTheFlagMode implements GameMode {
    * defending worth doing. A carrier who can absorb a hit and keep running
    * turns every defender into scenery.
    */
-  private soakPlayer(ctx: ModeContext): void {
+  private soakPlayer(ctx: ModeContext, from?: { x: number; y: number; z: number }): void {
     if (this.playerSoakedFor > 0) return;
     this.playerSoakedFor = SOAK_PENALTY;
     const theirs = this.flags.right;
     if (theirs.carrier === LOCAL_ACTOR_ID) this.dropFlag(theirs, ctx);
     ctx.player.teleport(LEFT_SPAWN.x, LEFT_SPAWN.y, LEFT_SPAWN.z);
-    ctx.emit({ type: 'playerSoaked' });
+    ctx.emit({ type: 'playerSoaked', x: from?.x, y: from?.y, z: from?.z });
     this.setMessage('Soaked! Back to your yard.', 2.5);
   }
 
@@ -753,10 +753,13 @@ export class CaptureTheFlagMode implements GameMode {
     return {
       phase: label,
       timer: this.phase === 'setup' ? Math.max(0, this.timer) : null,
-      primary: { label: 'score', value: `${this.scoreLeft} – ${this.scoreRight}` },
-      secondary: this.phase === 'capture'
+      // The score goes through `score` rather than `primary` so the HUD can
+      // paint each side in its own shirt colour.
+      score: { left: this.scoreLeft, right: this.scoreRight },
+      primary: this.phase === 'capture'
         ? { label: 'flags', value: `${flagWord(ours)} / ${flagWord(theirs)}` }
         : null,
+      secondary: null,
       message: this.message,
       charge: this.charging ? this.charge : null,
       wetness: null,

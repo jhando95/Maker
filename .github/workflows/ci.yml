@@ -72,6 +72,13 @@ jobs:
       - name: Multiple-actor scenario
         run: node tools/shoot.mjs --scenario scenarios/actors.mjs --auto-quality --out /tmp/ci-actors.png
 
+      # The HUD's job is to say what a mode knows, and every part of that is a
+      # seam between two systems rather than logic inside either — so the unit
+      # suite stays green with the objective compass, the hit marker and the
+      # damage cue all broken.
+      - name: HUD scenario
+        run: node tools/shoot.mjs --scenario scenarios/hud.mjs --auto-quality --out /tmp/ci-hud.png
+
       # A CI runner has no GPU either, so it is a genuine instance of the case
       # adaptive quality exists for. The decision logic is unit-tested; this
       # checks the decision reaches the drawing buffer.
@@ -90,6 +97,7 @@ jobs:
             /tmp/ci-wheel.png
             /tmp/ci-water.png
             /tmp/ci-actors.png
+            /tmp/ci-hud.png
           if-no-files-found: ignore
 
   benchmark:

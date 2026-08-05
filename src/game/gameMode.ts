@@ -56,7 +56,15 @@ export type GameEvent =
   | { type: 'splash'; x: number; y: number; z: number }
   | { type: 'throw'; x: number; y: number; z: number }
   | { type: 'botSoaked'; x: number; y: number; z: number }
-  | { type: 'playerSoaked' }
+  /**
+   * Carries where the water came from, when the mode knows.
+   *
+   * It always did know — the balloon that got you has a position — and threw it
+   * away. The HUD needs it to point: a meter says how much trouble you are in
+   * and never says which way it is, which turns being ambushed into several
+   * seconds of turning on the spot.
+   */
+  | { type: 'playerSoaked'; x?: number; y?: number; z?: number }
   | { type: 'stashHit'; remaining: number }
   | { type: 'refilled'; x: number; y: number; z: number }
   | { type: 'phaseChange'; phase: string }
@@ -120,6 +128,13 @@ export interface ModeHud {
   /** Primary counter, e.g. supplies remaining. */
   primary: { label: string; value: string } | null;
   secondary: { label: string; value: string } | null;
+  /**
+   * The two sides' captures, when a mode is a contest between them.
+   *
+   * Its own field rather than squeezed into `primary`, because the HUD paints it
+   * in the teams' own shirt colours and cannot do that to an arbitrary string.
+   */
+  score?: { left: number; right: number } | null;
   /** A line of guidance, shown large when it changes. */
   message: string | null;
   /** 0..1 charge on the throw, or null when not aiming. */

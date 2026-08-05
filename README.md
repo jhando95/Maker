@@ -131,6 +131,43 @@ you can be soaked, so being outnumbered is reliably bad rather than instant. The
 kids' shirts darken as they soak, which is how you tell the one you have nearly
 finished from the one who just arrived.
 
+## The interface
+
+Outlined, not frosted. Everything solid in this world has a hard dark outline
+drawn round it by the renderer, so the interface is drawn the same way: hard
+borders and hard offset shadows, never a blur. A translucent panel with a
+backdrop blur — which is what this was, and what most games ship — reads as a
+sheet of glass in front of the game. An outlined card reads as an object made of
+the same stuff as the fence, which is the point of a game where the kids built
+everything.
+
+Two surfaces, one language. Menus are cardboard with ink text, because a
+full-screen menu has nothing behind it worth seeing and can afford to be a sign
+somebody made. In-game panels stay dark, because they sit over a sunlit lawn you
+still need to see through. The outline, the radii, the type and the motion are
+shared; only the fill differs. The first pass kept the menu dark and the outline
+simply vanished — #2b201c on #3a2b25 is the same colour twice, and an outline
+needs something bright to outline.
+
+Colours are wired to the world's, not chosen beside it. The two teams' scores
+are painted in the exact shirt colours the renderer uses, so a number on the
+banner and a kid on the lawn are obviously the same fact.
+
+Three things the HUD now does that it could not:
+
+- **Points at the objectives.** Water War puts three taps at three corners of a
+  forty-eight metre lot; until now the only way to find out which was being
+  drained was to walk round and look. Off-screen objectives pin to the edge with
+  a chevron and a distance. The distance was hidden there at first, which is
+  exactly backwards — an objective you can see tells you roughly how far it is
+  by how big it looks, and one you cannot see tells you nothing at all.
+- **Says when you connect.** Hitting someone and missing them looked identical
+  from behind the crosshair, and the only thing that moved was a meter on a body
+  forty metres away.
+- **Says where you were hit from.** A wetness meter says how much trouble you
+  are in and never which way it is, which turns being ambushed into several
+  seconds of turning on the spot.
+
 ## Towards more than one player
 
 The point of all of this is party modes played with other people, and the game
@@ -213,7 +250,7 @@ src/
   game/        game modes, actors and teams, bots, flow-field navigation, projectiles
   audio/       synthesized sound
   app/         settings, persistence, crash handling
-  ui/          HUD, menus, radial part picker
+  ui/          design tokens, HUD, menus, radial part picker
 tools/
   shoot.mjs    headless screenshot + smoke-test harness
   bench.ts     simulation cost per tick, at 3000 parts
@@ -221,7 +258,7 @@ scenarios/     scripted checks driven through the harness
 ```
 
 ```bash
-npm test         # 518 unit tests
+npm test         # 519 unit tests
 npm run typecheck
 npm run bench    # what a tick costs, as a share of the 16.67ms budget
 node tools/shoot.mjs --out shots/x.png   # boot headless, screenshot, fail on any console error
@@ -234,8 +271,9 @@ produces a crash screen, whether a stick push actually reaches the character
 controller, whether a resolution decision actually reaches the drawing buffer,
 whether emptying a water tank and refilling it from a paddling pool works once
 the mode, the shell and the HUD are wired together, whether a second person in
-the world reaches the renderer's instance buffers wearing the right shirt. Each
-only happens in a browser, and each has broken at least once with the unit suite
+the world reaches the renderer's instance buffers wearing the right shirt,
+whether the HUD can actually point at an objective that is behind you. Each only
+happens in a browser, and each has broken at least once with the unit suite
 green.
 
 ## Design notes

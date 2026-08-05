@@ -545,11 +545,11 @@ export class WaterWarMode implements GameMode {
     ctx.emit({ type: 'botSoaked', x: bot.x, y: bot.y + 1, z: bot.z });
   }
 
-  private soakPlayer(ctx: ModeContext): void {
+  private soakPlayer(ctx: ModeContext, from?: { x: number; y: number; z: number }): void {
     if (this.playerOut > 0) return;
     this.playerOut = PLAYER_SOAKED_TIME;
     this.streamTo = null;
-    ctx.emit({ type: 'playerSoaked' });
+    ctx.emit({ type: 'playerSoaked', x: from?.x, y: from?.y, z: from?.z });
     this.setMessage('Drenched! Back in a moment.', 2.5);
   }
 
@@ -581,7 +581,7 @@ export class WaterWarMode implements GameMode {
       // Direct and splash are kept apart deliberately — see waterKit. A centre
       // hit taking both is the difference between two balloons and three.
       if (hit.targetIndex >= 0) {
-        this.applyWet(ctx, this.targets[hit.targetIndex], WEAPONS.balloon.power);
+        this.applyWet(ctx, this.targets[hit.targetIndex], WEAPONS.balloon.power, hit);
         if (!DIRECT_HIT_TAKES_SPLASH) continue;
       }
       for (const index of ctx.projectiles.splashTargets(hit, this.targets)) {
@@ -589,17 +589,23 @@ export class WaterWarMode implements GameMode {
         const t = this.targets[index];
         if (t === undefined) continue;
         const d = Math.hypot(t.x - hit.x, t.y + t.height * 0.5 - hit.y, t.z - hit.z);
-        this.applyWet(ctx, t, splashPower(d, SPLASH_RADIUS));
+        this.applyWet(ctx, t, splashPower(d, SPLASH_RADIUS), hit);
       }
     }
   }
 
-  private applyWet(ctx: ModeContext, target: BalloonTarget | undefined, amount: number): void {
+  private applyWet(
+    ctx: ModeContext,
+    target: BalloonTarget | undefined,
+    amount: number,
+    /** Where the water came from, so the HUD can point at it. */
+    from?: { x: number; y: number; z: number },
+  ): void {
     if (target === undefined || amount <= 0) return;
 
     if (target.id === PLAYER_ID) {
       soak(this.playerWet, amount);
-      if (isSoaked(this.playerWet)) this.soakPlayer(ctx);
+      if (isSoaked(this.playerWet)) this.soakPlayer(ctx, from);
       return;
     }
     const bot = this.bots.find((b) => b.id === target.id);

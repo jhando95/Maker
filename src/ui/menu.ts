@@ -12,71 +12,97 @@
 
 import { SettingsStore, type Settings } from '../app/settings.ts';
 import type { BuildSlot } from '../app/buildStore.ts';
+import { installTheme } from './theme.ts';
 
 export type Screen = 'none' | 'title' | 'settings' | 'builds' | 'pause' | 'result' | 'controls';
 
 const STYLE = `
 .mk-menu {
   position: fixed; inset: 0; z-index: 20;
-  font-family: ui-rounded, "Nunito", "Segoe UI", system-ui, sans-serif;
-  color: #fff; user-select: none;
+  font-family: var(--font);
+  color: var(--text); user-select: none;
   display: flex; align-items: center; justify-content: center;
-  background: radial-gradient(ellipse at 50% 40%, rgba(20,16,14,0.35), rgba(20,16,14,0.7));
-  backdrop-filter: blur(3px);
+  background: radial-gradient(ellipse at 50% 40%, rgba(20,16,14,0.42), rgba(20,16,14,0.78));
 }
 .mk-menu.mk-off { display: none; }
 
+/*
+ * A card with the same hard outline everything solid in this world has, rather
+ * than a floating pane of dark glass. The menus and the HUD were styled where
+ * each was written and had drifted into two different programs; both are drawn
+ * from theme.ts now, so a change lands in both or neither.
+ */
+/*
+ * Cardboard, not dark glass.
+ *
+ * The first pass kept the card dark and gave it the world's ink outline, and
+ * the outline simply vanished — #2b201c on #3a2b25 is the same colour twice.
+ * An outline needs something bright to outline. Going light also earns the
+ * theme: a full-screen menu with nothing behind it can afford to be a sign
+ * somebody made, while the in-game panels stay dark because they sit over a
+ * sunlit lawn you still need to see through. Same outline, same radii, same
+ * type, two surfaces — the fill is the only thing that differs, and it differs
+ * for a reason.
+ */
 .mk-card {
-  background: rgba(30, 24, 21, 0.86);
-  border: 3px solid rgba(255,255,255,0.14);
-  border-radius: 18px;
+  background: var(--card);
+  color: var(--ink);
+  border: 3px solid var(--ink);
+  border-radius: var(--r-lg);
   padding: 26px 30px;
-  min-width: 340px; max-width: 560px;
+  min-width: 360px; max-width: 580px;
   max-height: 82vh; overflow-y: auto;
-  box-shadow: 0 18px 50px rgba(0,0,0,0.45);
+  box-shadow: 0 7px 0 var(--ink), 0 26px 46px rgba(0,0,0,0.5);
+  animation: mk-pop-in 0.22s var(--pop);
 }
 .mk-title {
-  font-size: 62px; font-weight: 900; letter-spacing: -1.5px;
+  font-size: 66px; font-weight: 900; letter-spacing: -2px;
   text-align: center; margin: 0 0 2px;
-  color: #ffd76a; text-shadow: 0 4px 0 #a8722a, 0 8px 18px rgba(0,0,0,0.4);
+  color: var(--sun);
+  /* The same hard outline the world's geometry gets, at title scale. */
+  text-shadow:
+    -3px 0 var(--ink), 3px 0 var(--ink), 0 -3px var(--ink), 0 3px var(--ink),
+    -3px -3px var(--ink), 3px -3px var(--ink), -3px 3px var(--ink), 3px 3px var(--ink),
+    0 7px 0 var(--ink);
 }
-.mk-tag { text-align: center; opacity: 0.75; font-size: 13px; margin: 0 0 22px; }
-.mk-h2 { font-size: 20px; font-weight: 800; margin: 0 0 16px; text-align: center; }
+.mk-tag { text-align: center; color: rgba(43,32,28,0.62); font-size: 13px; margin: 0 0 24px;
+  font-weight: 700; }
+.mk-h2 { font-size: 21px; font-weight: 900; margin: 0 0 18px; text-align: center;
+  letter-spacing: -0.3px; }
 
 .mk-btn {
   display: block; width: 100%; box-sizing: border-box;
-  margin: 0 0 9px; padding: 12px 16px;
-  font: inherit; font-size: 16px; font-weight: 800;
-  color: #3a2c2a; background: #f4a259;
-  border: none; border-bottom: 4px solid #c47a35; border-radius: 11px;
+  margin: 0 0 10px; padding: 13px 16px;
+  font: inherit; font-size: 16px; font-weight: 900;
+  color: var(--ink); background: var(--sun);
+  border: 2px solid var(--ink); border-bottom-width: 5px; border-radius: var(--r-md);
   cursor: pointer; text-align: center;
   transition: transform 0.06s, filter 0.12s;
 }
-.mk-btn:hover { filter: brightness(1.08); }
+.mk-btn:hover { filter: brightness(1.07); transform: translateY(-1px); }
+.mk-btn:focus-visible { outline: 3px solid var(--water); outline-offset: 3px; }
 /* Press moves the button onto its own shadow, which is most of what makes a
    flat cartoon button feel physical. */
-.mk-btn:active { transform: translateY(3px); border-bottom-width: 1px; }
-.mk-btn.mk-secondary {
-  background: rgba(255,255,255,0.13); color: #fff; border-bottom-color: rgba(0,0,0,0.3);
-}
-.mk-btn.mk-danger { background: #d8564f; color: #fff; border-bottom-color: #92302b; }
+.mk-btn:active { transform: translateY(3px); border-bottom-width: 2px; }
+.mk-btn.mk-secondary { background: #e6d3ae; color: var(--ink); }
+.mk-btn.mk-danger { background: #d8564f; color: var(--text); border-color: var(--ink); }
 
 .mk-row {
   display: flex; align-items: center; gap: 12px;
-  padding: 9px 0; border-bottom: 1px solid rgba(255,255,255,0.08);
+  padding: 10px 0; border-bottom: 2px solid rgba(43,32,28,0.14);
 }
-.mk-row label { flex: 1; font-size: 14px; }
+.mk-row label { flex: 1; font-size: 14px; font-weight: 700; }
 .mk-row .mk-val {
-  min-width: 52px; text-align: right; font-size: 13px;
-  opacity: 0.85; font-variant-numeric: tabular-nums;
+  min-width: 52px; text-align: right; font-size: 13px; font-weight: 800;
+  color: rgba(43,32,28,0.7); font-variant-numeric: tabular-nums;
 }
-.mk-row input[type=range] { width: 168px; accent-color: #f4a259; }
-.mk-row input[type=checkbox] { width: 19px; height: 19px; accent-color: #f4a259; }
+.mk-row input[type=range] { width: 168px; accent-color: var(--sun); }
+.mk-row input[type=checkbox] { width: 19px; height: 19px; accent-color: var(--sun); }
 
 .mk-slot {
   display: flex; align-items: center; gap: 10px;
   padding: 10px 12px; margin-bottom: 7px;
-  background: rgba(255,255,255,0.07); border-radius: 10px;
+  background: rgba(43,32,28,0.07); border-radius: var(--r-md); border: 2px solid rgba(43,32,28,0.16);
 }
 .mk-slot .mk-name { flex: 1; font-weight: 700; font-size: 14px; }
 .mk-slot .mk-meta { font-size: 11px; opacity: 0.65; }
@@ -85,13 +111,14 @@ const STYLE = `
   border: none; border-radius: 7px; cursor: pointer;
   background: #f4a259; color: #3a2c2a;
 }
-.mk-slot button.mk-x { background: rgba(255,255,255,0.16); color: #fff; }
+.mk-slot button.mk-x { background: rgba(43,32,28,0.12); color: var(--ink); }
 .mk-empty { opacity: 0.6; font-size: 13px; text-align: center; padding: 18px 0; }
 
 .mk-result-big { font-size: 44px; font-weight: 900; text-align: center; margin: 0 0 4px; }
 .mk-result-big.win { color: #8fe3a0; }
 .mk-result-big.lose { color: #ff9f6a; }
-.mk-stats { text-align: center; opacity: 0.85; font-size: 14px; margin: 0 0 20px; line-height: 1.6; }
+.mk-stats { text-align: center; color: rgba(43,32,28,0.75); font-size: 14px; margin: 0 0 20px;
+  line-height: 1.6; font-weight: 700; }
 
 .mk-hint { text-align: center; font-size: 11.5px; opacity: 0.55; margin-top: 14px; }
 .mk-btn.mk-mode { margin-bottom: 3px; }
@@ -103,22 +130,22 @@ const STYLE = `
 }
 .mk-bind {
   display: flex; align-items: center; gap: 10px;
-  padding: 7px 0; border-bottom: 1px solid rgba(255,255,255,0.08);
+  padding: 7px 0; border-bottom: 2px solid rgba(43,32,28,0.12);
 }
 .mk-bind label { flex: 1; font-size: 13.5px; }
 .mk-bind button {
   min-width: 108px; padding: 6px 12px;
   font: inherit; font-size: 12.5px; font-weight: 700;
   border: none; border-radius: 8px; cursor: pointer;
-  background: rgba(255,255,255,0.13); color: #fff;
+  background: #e6d3ae; color: var(--ink); border: 2px solid var(--ink);
 }
-.mk-bind button:hover { background: rgba(255,255,255,0.22); }
+.mk-bind button:hover { background: #f0e0bf; }
 .mk-bind button.listening { background: #f4a259; color: #3a2c2a; }
 .mk-name-input {
   width: 100%; box-sizing: border-box; margin-bottom: 10px;
   padding: 10px 12px; font: inherit; font-size: 14px;
-  border-radius: 9px; border: 2px solid rgba(255,255,255,0.18);
-  background: rgba(0,0,0,0.3); color: #fff;
+  border-radius: var(--r-sm); border: 2px solid var(--ink);
+  background: #e6d3ae; color: var(--ink);
 }
 `;
 
@@ -168,6 +195,7 @@ export class Menu {
     this.settings = settings;
     this.callbacks = callbacks;
 
+    installTheme();
     const style = document.createElement('style');
     style.textContent = STYLE;
     document.head.appendChild(style);

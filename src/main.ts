@@ -17,7 +17,7 @@ import { PartRenderer } from './render/partRenderer.ts';
 import { BuildSystem, type PlacementRecord } from './build/buildSystem.ts';
 import { CharacterController } from './player/controller.ts';
 import { CameraRig } from './player/cameraRig.ts';
-import { Hud } from './ui/hud.ts';
+import { Hud, type ScreenPin } from './ui/hud.ts';
 import { MAX_REACH } from './build/snapping.ts';
 import { seedStarterStructures, STARTER_ORIGIN } from './world/starter.ts';
 import { AudioBus } from './audio/audioBus.ts';
@@ -25,6 +25,7 @@ import { GameSounds } from './audio/gameSounds.ts';
 import { Rng } from './core/rng.ts';
 import { ActorRoster, LOCAL_ACTOR_ID, type Actor, type Team } from './game/actor.ts';
 import { BUTTON, commandToIntent, makeCommand } from './core/command.ts';
+
 import { ProjectileSystem } from './game/projectiles.ts';
 import { ModeRenderer } from './game/modeRenderer.ts';
 import { FortDefenseMode } from './game/fortDefense.ts';
@@ -39,6 +40,12 @@ import { Menu } from './ui/menu.ts';
 import { CrashHandler } from './app/crashHandler.ts';
 import { GamepadManager } from './core/gamepadManager.ts';
 import { PerformanceGovernor } from './app/performanceGovernor.ts';
+
+/** How far off the window edge an off-screen objective chevron sits. */
+const PIN_EDGE_MARGIN = 54;
+/** Objectives are pinned above the thing rather than at its feet. */
+const PIN_HEIGHT = 1.4;
+
 
 /**
  * The modes a player can start.
@@ -262,6 +269,84 @@ let simTick = 0;
 /** Scratch list of who to draw, reused so rendering allocates nothing. */
 const drawnActors: Actor[] = [];
 
+/**
+ * Turn the objectives a mode publishes into pins on the screen.
+ *
+ * Reads `mode.markers()`, which already exists for the 3D renderer, so no mode
+ * needs to know this feature happened. Screen-space maths lives here rather than
+ * in the HUD because the camera lives here — a HUD that could project a point
+ * would be a HUD that imports three.js.
+ *
+ * Off-screen objectives are pinned to the edge with a chevron. That is the part
+ * that matters: Water War spreads three taps across a forty-eight metre lot, so
+ * the one being drained is usually behind you, and until now the only way to
+ * find out was to walk round and look.
+ */
+const pinScratch: ScreenPin[] = [];
+const pinVec = new THREE.Vector3();
+
+function projectPins(active: GameMode | null, eye: { x: number; y: number; z: number }): ScreenPin[] {
+  pinScratch.length = 0;
+  if (active === null) return pinScratch;
+
+  const width = window.innerWidth;
+  const height = window.innerHeight;
+  const cx = width / 2;
+  const cy = height / 2;
+  // Kept off the very edge, or half the chevron sits outside the window.
+  const marginX = width / 2 - PIN_EDGE_MARGIN;
+  const marginY = height / 2 - PIN_EDGE_MARGIN;
+
+  // Dimming is relative: with nothing marked active every pin came out dim,
+  // which is the same as none of them being dim except harder to read.
+  const markers = active.markers();
+  let anyActive = false;
+  for (const marker of markers) anyActive ||= marker.active === true;
+
+  for (const marker of markers) {
+    pinVec.set(marker.x, marker.y + PIN_HEIGHT, marker.z);
+    pinVec.project(camera.camera);
+
+    // `project` gives normalised device coords, and z > 1 means behind the eye —
+    // where x and y are mirrored and meaningless, so they get recomputed from
+    // the world direction instead.
+    const behind = pinVec.z > 1;
+    let sx = pinVec.x * cx;
+    let sy = -pinVec.y * cy;
+    if (behind) {
+      sx = -sx;
+      sy = -sy;
+    }
+
+    const outside = behind || Math.abs(sx) > marginX || Math.abs(sy) > marginY;
+    let angle = 0;
+    if (outside) {
+      // Push out along the direction to the objective until it meets the frame,
+      // so a chevron sits where you would turn to find the thing.
+      angle = Math.atan2(sy, sx);
+      const scale = Math.min(
+        marginX / Math.max(Math.abs(sx), 1e-3),
+        marginY / Math.max(Math.abs(sy), 1e-3),
+      );
+      sx *= scale;
+      sy *= scale;
+    }
+
+    pinScratch.push({
+      x: cx + sx,
+      y: cy + sy,
+      edge: outside,
+      // The chevron points along the direction of travel; its art points up.
+      angle: angle + Math.PI / 2,
+      distance: Math.hypot(marker.x - eye.x, marker.z - eye.z),
+      color: `#${marker.color.toString(16).padStart(6, '0')}`,
+      kind: marker.kind,
+      quiet: anyActive && marker.active !== true,
+    });
+  }
+  return pinScratch;
+}
+
 const modeContext: ModeContext = {
   world, build, player, actors, camera, projectiles,
   rng: new Rng('round-1'),
@@ -432,6 +517,10 @@ function drainEvents(): void {
         break;
       case 'botSoaked':
         audio.play('hit', { ...spatialAt(e.x, e.y, e.z), volume: 0.5 });
+        // Says "that was you". Before this, connecting and missing looked the
+        // same from behind the crosshair, and the only thing that moved was a
+        // meter on a body forty metres away.
+        hud.hitMarker(performance.now() / 1000);
         break;
       case 'playerSoaked':
         audio.play('hit', { volume: 0.7, pitch: 0.7 });
@@ -796,7 +885,8 @@ function draw(alpha: number, frameDt: number): void {
   avatar.position.set(state.x, state.y, state.z);
   avatar.rotation.y = camera.yaw;
 
-  flushShadows(performance.now() / 1000);
+  const nowSeconds = performance.now() / 1000;
+  flushShadows(nowSeconds);
   drainEvents();
   modeRenderer.setStream(
     mode?.stream ?? null,
@@ -824,7 +914,9 @@ function draw(alpha: number, frameDt: number): void {
     cameraMode: camera.mode,
     climbing: state.climbing,
     mode: mode?.hud() ?? null,
+    now: nowSeconds,
   });
+  hud.setPins(projectPins(mode, state));
   hud.updateDebug({
     fps: loop.fps,
     parts: world.partCount,

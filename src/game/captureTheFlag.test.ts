@@ -487,10 +487,19 @@ describe('CaptureTheFlagMode', () => {
     });
 
     it('the HUD reports a score and never a null phase', () => {
+      // The score travels in its own field rather than as a formatted string,
+      // because the HUD paints each side in that side's shirt colour and cannot
+      // do that to "0 – 0".
       const h = mode.hud();
       expect(h.phase.length).toBeGreaterThan(0);
-      expect(h.primary).not.toBeNull();
-      expect(h.primary!.value).toContain('0');
+      expect(h.score).toBeDefined();
+      expect(h.score!.left).toBe(0);
+      expect(h.score!.right).toBe(0);
+    });
+
+    it('keeps the score reported once someone has actually scored', () => {
+      mode.scoreLeft = 2;
+      expect(mode.hud().score!.left).toBe(2);
     });
 
     it('shows a countdown in setup and none in capture', () => {
