@@ -12,7 +12,7 @@ import { chamferedBox, blob } from '../render/geometry.ts';
 import { Rng } from '../core/rng.ts';
 import { MAX_BALLOONS, BALLOON_RADIUS } from './projectiles.ts';
 import type { ProjectileSystem } from './projectiles.ts';
-import type { FortDefenseMode } from './fortDefense.ts';
+import { BUCKETS, BUCKET_RADIUS, type FortDefenseMode } from './fortDefense.ts';
 import { CAP_HEIGHT, CAP_RADIUS } from '../physics/constants.ts';
 
 const MAX_BOTS = 24;
@@ -35,6 +35,8 @@ export class ModeRenderer {
   private readonly splashMesh: THREE.InstancedMesh;
   private readonly stash: THREE.Group;
   private readonly stashGlow: THREE.Mesh;
+  private readonly buckets: THREE.Group;
+  private readonly bucketMarkers: THREE.Mesh[] = [];
 
   private readonly splashes: Splash[] = [];
   private readonly matrix = new THREE.Matrix4();
@@ -125,6 +127,48 @@ export class ModeRenderer {
     this.stash.visible = false;
     this.group.add(this.stash);
 
+    // Ammo buckets, out past where a fort usually ends up. Each carries a marker
+    // like the stash's, because the player has to be able to find them from
+    // inside their own walls — a bucket you cannot see is a bucket you do not
+    // plan a route to.
+    this.buckets = new THREE.Group();
+    const bucketGeometry = chamferedBox(0.7, 0.7, 0.7, 0.03);
+    const ringGeometry = new THREE.TorusGeometry(BUCKET_RADIUS, 0.05, 6, 24).rotateX(Math.PI / 2);
+
+    for (const b of BUCKETS) {
+      const mesh = new THREE.Mesh(bucketGeometry, createToonMaterial({ color: 0x4f8fd8 }));
+      mesh.position.set(b.x, 0.35, b.z);
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+      this.buckets.add(mesh);
+
+      const outline = new THREE.Mesh(bucketGeometry, createOutlineMaterial(0x24506f, 0.018));
+      outline.position.copy(mesh.position);
+      this.buckets.add(outline);
+      this.outlineMaterials.push(outline.material as THREE.ShaderMaterial);
+
+      // A ring on the ground showing exactly where "close enough" is, so the
+      // channel never fails for a reason the player cannot see.
+      const ringMaterial = createToonMaterial({ color: 0x9fd8ee });
+      ringMaterial.transparent = true;
+      ringMaterial.opacity = 0.5;
+      const ring = new THREE.Mesh(ringGeometry, ringMaterial);
+      ring.position.set(b.x, 0.03, b.z);
+      this.buckets.add(ring);
+
+      const marker = new THREE.Mesh(
+        new THREE.OctahedronGeometry(0.2, 0),
+        createToonMaterial({ color: 0x6ec6ff }),
+      );
+      marker.position.set(b.x, 1.3, b.z);
+      marker.name = 'bucketMarker';
+      this.buckets.add(marker);
+      this.bucketMarkers.push(marker);
+    }
+
+    this.buckets.visible = false;
+    this.group.add(this.buckets);
+
     this.hideAll();
   }
 
@@ -169,8 +213,19 @@ export class ModeRenderer {
 
     if (mode === null) {
       this.stash.visible = false;
+      this.buckets.visible = false;
       return;
     }
+
+    this.buckets.visible = true;
+    this.bucketMarkers.forEach((marker, i) => {
+      marker.position.y = 1.3 + Math.sin(time * 2.6 + i * 1.7) * 0.1;
+      marker.rotation.y = time * 1.4;
+      // The one being used lifts and spins faster, so the channel is legible
+      // from third person where the HUD bar is easy to miss.
+      const active = mode.currentBucket === i;
+      marker.scale.setScalar(active ? 1.25 + mode.refillFraction * 0.35 : 1);
+    });
 
     this.stash.visible = true;
     this.stash.position.set(mode.stash.x, mode.stash.y, mode.stash.z);
@@ -272,5 +327,6 @@ export class ModeRenderer {
     this.hideAll();
     for (const s of this.splashes) s.active = false;
     this.stash.visible = false;
+    this.buckets.visible = false;
   }
 }

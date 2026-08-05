@@ -269,6 +269,9 @@ function drainEvents(): void {
       case 'playerSoaked':
         audio.play('hit', { volume: 0.7, pitch: 0.7 });
         break;
+      case 'refilled':
+        audio.play('uiClick', { ...spatialAt(e.x, e.y, e.z), volume: 0.6, pitch: 1.3 });
+        break;
       case 'stashHit':
         audio.play('invalid', { volume: 0.8, pitch: 0.6 });
         break;
@@ -605,8 +608,19 @@ window.__maker = {
     camera.yaw = Math.atan2(-dx, -dz);
     camera.pitch = Math.atan2(dy, Math.hypot(dx, dz));
   },
-  /** Drop the click-to-play overlay, which otherwise dims every screenshot. */
-  hideOverlay: () => hud.setPointerLocked(true),
+  /**
+   * Dismiss whatever screen is up and let the world run.
+   *
+   * Not enterPlay(): pointer lock cannot be granted without a real gesture, so
+   * a headless capture would bounce straight back to the pause screen.
+   */
+  hideOverlay: () => {
+    menu.show('none');
+    loop.setPaused(false);
+    hud.root.style.display = '';
+    hud.setPointerLocked(true);
+    input.setEnabled(true);
+  },
   setHudVisible: (visible: boolean) => {
     hud.root.style.display = visible ? '' : 'none';
   },

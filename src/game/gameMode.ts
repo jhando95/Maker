@@ -44,6 +44,7 @@ export type GameEvent =
   | { type: 'botSoaked'; x: number; y: number; z: number }
   | { type: 'playerSoaked' }
   | { type: 'stashHit'; remaining: number }
+  | { type: 'refilled'; x: number; y: number; z: number }
   | { type: 'phaseChange'; phase: string }
   | { type: 'roundWon' }
   | { type: 'roundLost' };
@@ -62,6 +63,8 @@ export interface ModeHud {
   /** 0..1 charge on the throw, or null when not aiming. */
   charge: number | null;
   ammo: { current: number; max: number } | null;
+  /** 0..1 progress on a refill channel, or null when not at a bucket. */
+  refill: number | null;
 }
 
 export interface ModeInput {
@@ -112,6 +115,7 @@ export class SandboxMode implements GameMode {
       message: null,
       charge: null,
       ammo: null,
+      refill: null,
     };
   }
 }

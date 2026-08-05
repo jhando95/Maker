@@ -36,9 +36,32 @@ export const STASH_SUPPLIES = 6;
 export const STASH_RADIUS = 1.6;
 /** Seconds between player throws. */
 export const THROW_COOLDOWN = 0.42;
-/** Player ammo, refilled by standing near the stash. */
-export const PLAYER_AMMO_MAX = 12;
-export const RELOAD_INTERVAL = 0.35;
+/**
+ * Player ammo, and where it comes from.
+ *
+ * Refilling at the stash rewarded standing on the objective — a turret sit, with
+ * the fort as scenery you happened to be inside. Buckets placed outside the
+ * likely build footprint convert that into a traversal loop *through* your own
+ * fort: you have to leave cover, get back in, and find out whether the way you
+ * built it is a route or an obstacle. That is the mode's whole question, asked
+ * every thirty seconds instead of once.
+ */
+export const PLAYER_AMMO_MAX = 8;
+/** How long you must stand at a bucket to fill up. */
+export const REFILL_TIME = 0.6;
+/** How close counts as at a bucket. */
+export const BUCKET_RADIUS = 1.8;
+/** Distance from the stash. Outside where a fort usually ends up. */
+export const BUCKET_DISTANCE = 9.5;
+
+/** Bucket positions, spread so no single side of a fort covers them all. */
+export const BUCKETS: ReadonlyArray<{ x: number; z: number }> = [0, 1, 2].map((i) => {
+  const angle = (i / 3) * Math.PI * 2 + Math.PI / 6;
+  return {
+    x: Math.sin(angle) * BUCKET_DISTANCE,
+    z: Math.cos(angle) * BUCKET_DISTANCE,
+  };
+});
 /** Being soaked costs the player this long of slowed movement. */
 export const PLAYER_SOAK_TIME = 1.4;
 /** Seconds between nav-field rebuilds during a wave. */
@@ -73,8 +96,9 @@ export class FortDefenseMode implements GameMode {
   private charge = 0;
   private charging = false;
   private ammo = PLAYER_AMMO_MAX;
-  private reloadTimer = 0;
   private playerSoakedFor = 0;
+  private atBucket = -1;
+  private refillProgress = 0;
 
   private nextBotId = 1;
   /**
@@ -96,6 +120,8 @@ export class FortDefenseMode implements GameMode {
     this.stash.supplies = STASH_SUPPLIES;
     this.bots.length = 0;
     this.ammo = PLAYER_AMMO_MAX;
+    this.refillProgress = 0;
+    this.atBucket = -1;
     this.finished = false;
     this.won = false;
     this.setMessage('Build your fort. Protect the stash.', 6);
@@ -283,22 +309,49 @@ export class FortDefenseMode implements GameMode {
 
   // ── Player actions ──────────────────────────────────────────────────────────
 
-  /** Ammo refills near the stash, which is what pulls the player back to it. */
+  /**
+   * Ammo refills only at the buckets, and only by standing there.
+   *
+   * A channel rather than an instant pickup: the pause is what makes leaving
+   * the fort a decision with a cost, and it is the moment bots get a clear shot
+   * at you.
+   */
   private updateAmmo(dt: number, ctx: ModeContext): void {
-    const near = Math.hypot(
-      ctx.player.x - this.stash.x,
-      ctx.player.z - this.stash.z,
-    ) < 4.0;
-
-    if (near && this.ammo < PLAYER_AMMO_MAX) {
-      this.reloadTimer -= dt;
-      if (this.reloadTimer <= 0) {
-        this.reloadTimer = RELOAD_INTERVAL;
-        this.ammo++;
+    this.atBucket = -1;
+    for (let i = 0; i < BUCKETS.length; i++) {
+      const b = BUCKETS[i]!;
+      if (Math.hypot(ctx.player.x - b.x, ctx.player.z - b.z) <= BUCKET_RADIUS) {
+        this.atBucket = i;
+        break;
       }
-    } else {
-      this.reloadTimer = RELOAD_INTERVAL;
     }
+
+    if (this.atBucket === -1 || this.ammo >= PLAYER_AMMO_MAX) {
+      // Walking away abandons the channel; it does not bank progress.
+      this.refillProgress = 0;
+      return;
+    }
+
+    this.refillProgress += dt / REFILL_TIME;
+    if (this.refillProgress >= 1) {
+      this.refillProgress = 0;
+      this.ammo = PLAYER_AMMO_MAX;
+      ctx.emit({ type: 'refilled', x: ctx.player.x, y: ctx.player.y, z: ctx.player.z });
+    }
+  }
+
+  /** Balloons in hand. Exposed directly because the HUD hides it between waves. */
+  get ammoCount(): number {
+    return this.ammo;
+  }
+
+  /** Which bucket the player is standing at, or -1. For the HUD and renderer. */
+  get currentBucket(): number {
+    return this.atBucket;
+  }
+
+  get refillFraction(): number {
+    return this.refillProgress;
   }
 
   private updateThrow(dt: number, ctx: ModeContext, input: ModeInput): void {
@@ -420,6 +473,7 @@ export class FortDefenseMode implements GameMode {
       message: this.message,
       charge: this.charging ? this.charge : null,
       ammo: this.buildingAllowed ? null : { current: this.ammo, max: PLAYER_AMMO_MAX },
+      refill: this.atBucket >= 0 && this.ammo < PLAYER_AMMO_MAX ? this.refillProgress : null,
     };
   }
 }

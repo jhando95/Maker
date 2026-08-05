@@ -108,6 +108,8 @@ const STYLE = `
 .maker-charge { width: 128px; height: 6px; border-radius: 3px;
   background: rgba(0,0,0,0.4); overflow: hidden; }
 .maker-charge i { display: block; height: 100%; background: #ffd76a; width: 0%; }
+.maker-charge.refill i { background: #6ec6ff; }
+.maker-refill-label { font-size: 11px; font-weight: 700; opacity: 0.9; }
 `;
 
 import type { ModeHud } from '../game/gameMode.ts';
@@ -296,9 +298,16 @@ export class Hud {
       for (let i = 0; i < m.ammo.max; i++) {
         pips.push(`<div class="pip${i < m.ammo.current ? ' full' : ''}"></div>`);
       }
-      const charge = m.charge === null ? '' :
-        `<div class="maker-charge"><i style="width:${Math.round(m.charge * 100)}%"></i></div>`;
-      this.ammoEl.innerHTML = `<div class="pips">${pips.join('')}</div>${charge}`;
+      // Charge and refill share the bar: they never happen at once, and two
+      // bars in the same place would be read as one thing behaving oddly.
+      let bar = '';
+      if (m.refill !== null) {
+        bar = `<div class="maker-refill-label">filling up…</div>` +
+          `<div class="maker-charge refill"><i style="width:${Math.round(m.refill * 100)}%"></i></div>`;
+      } else if (m.charge !== null) {
+        bar = `<div class="maker-charge"><i style="width:${Math.round(m.charge * 100)}%"></i></div>`;
+      }
+      this.ammoEl.innerHTML = `<div class="pips">${pips.join('')}</div>${bar}`;
     }
   }
 

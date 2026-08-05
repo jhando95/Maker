@@ -5,7 +5,10 @@ import { BuildSystem } from '../build/buildSystem.ts';
 import { CharacterController } from '../player/controller.ts';
 import { CameraRig } from '../player/cameraRig.ts';
 import { ProjectileSystem, segmentHitsCapsule } from './projectiles.ts';
-import { FortDefenseMode, BUILD_TIME, STASH_SUPPLIES, WAVE_COUNT } from './fortDefense.ts';
+import {
+  FortDefenseMode, BUILD_TIME, STASH_SUPPLIES, WAVE_COUNT,
+  BUCKETS, BUCKET_DISTANCE, BUCKET_RADIUS, PLAYER_AMMO_MAX, REFILL_TIME,
+} from './fortDefense.ts';
 import type { GameEvent, ModeContext, ModeInput } from './gameMode.ts';
 import { Rng } from '../core/rng.ts';
 import { DT, CAP_HEIGHT, CAP_RADIUS } from '../physics/constants.ts';
@@ -324,6 +327,77 @@ describe('FortDefenseMode', () => {
     expect(mode.wave).toBe(WAVE_COUNT);
     expect(mode.stash.supplies).toBe(STASH_SUPPLIES);
     expect(events.some((e) => e.type === 'roundWon')).toBe(true);
+  });
+
+  it('places buckets away from the stash, so refilling means leaving cover', () => {
+    expect(BUCKETS.length).toBe(3);
+    for (const b of BUCKETS) {
+      expect(Math.hypot(b.x, b.z)).toBeCloseTo(BUCKET_DISTANCE, 6);
+    }
+    // Spread around the stash, so no single wall of a fort covers them all.
+    for (let i = 0; i < BUCKETS.length; i++) {
+      for (let j = i + 1; j < BUCKETS.length; j++) {
+        const d = Math.hypot(BUCKETS[i]!.x - BUCKETS[j]!.x, BUCKETS[i]!.z - BUCKETS[j]!.z);
+        expect(d).toBeGreaterThan(BUCKET_DISTANCE);
+      }
+    }
+  });
+
+  it('standing on the stash no longer refills anything', () => {
+    run(mode, ctx, BUILD_TIME + 0.2);
+    // Spend the magazine.
+    for (let i = 0; i < PLAYER_AMMO_MAX; i++) {
+      mode.fixedUpdate(DT, ctx, { fire: true, firePressed: true, fireReleased: false });
+      mode.fixedUpdate(DT, ctx, { fire: false, firePressed: false, fireReleased: true });
+    }
+    expect(mode.ammoCount).toBeLessThan(PLAYER_AMMO_MAX);
+
+    ctx.player.teleport(mode.stash.x, 0.5, mode.stash.z);
+    const spent = mode.ammoCount;
+    run(mode, ctx, 5);
+    expect(mode.ammoCount).toBe(spent);
+  });
+
+  it('standing at a bucket refills after the channel completes', () => {
+    run(mode, ctx, BUILD_TIME + 0.2);
+    for (let i = 0; i < PLAYER_AMMO_MAX; i++) {
+      mode.fixedUpdate(DT, ctx, { fire: true, firePressed: true, fireReleased: false });
+      mode.fixedUpdate(DT, ctx, { fire: false, firePressed: false, fireReleased: true });
+    }
+    const spent = mode.ammoCount;
+    expect(spent).toBeLessThan(PLAYER_AMMO_MAX);
+
+    const b = BUCKETS[0]!;
+    ctx.player.teleport(b.x, 0.5, b.z);
+
+    // Partway through the channel: nothing yet.
+    run(mode, ctx, REFILL_TIME * 0.5);
+    expect(mode.currentBucket).toBe(0);
+    expect(mode.refillFraction).toBeGreaterThan(0);
+    expect(mode.ammoCount).toBe(spent);
+
+    run(mode, ctx, REFILL_TIME);
+    expect(mode.ammoCount).toBe(PLAYER_AMMO_MAX);
+    expect(events.some((e) => e.type === 'refilled')).toBe(true);
+  });
+
+  it('walking away abandons the channel rather than banking it', () => {
+    run(mode, ctx, BUILD_TIME + 0.2);
+    for (let i = 0; i < PLAYER_AMMO_MAX; i++) {
+      mode.fixedUpdate(DT, ctx, { fire: true, firePressed: true, fireReleased: false });
+      mode.fixedUpdate(DT, ctx, { fire: false, firePressed: false, fireReleased: true });
+    }
+
+    const b = BUCKETS[0]!;
+    ctx.player.teleport(b.x, 0.5, b.z);
+    run(mode, ctx, REFILL_TIME * 0.8);
+    expect(mode.refillFraction).toBeGreaterThan(0.5);
+
+    // Step out of the ring.
+    ctx.player.teleport(b.x + BUCKET_RADIUS * 3, 0.5, b.z);
+    run(mode, ctx, 0.1);
+    expect(mode.currentBucket).toBe(-1);
+    expect(mode.refillFraction).toBe(0);
   });
 
   it('reports HUD state that matches the phase', () => {

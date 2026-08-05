@@ -64,7 +64,7 @@ tools/
 ```
 
 ```bash
-npm test         # 247 unit tests
+npm test         # 251 unit tests
 npm run typecheck
 node tools/shoot.mjs --out shots/x.png   # boot headless, screenshot, fail on any console error
 ```
@@ -101,6 +101,14 @@ its line.
 cartoon look comes from chamfered edges — a visible bevel catches light
 differently from the faces around it, and two or three pixels of it at play
 distance is most of what separates this from programmer art.
+
+**Ammo comes from outside the fort.** Refilling at the stash rewarded standing
+on the objective — a turret sit, with the fort as scenery you happened to be
+inside. Three buckets sit 9.5m out, past where a fort usually ends up, and
+filling up is a short channel rather than a pickup. That turns the round into a
+traversal loop *through* your own walls: you have to leave, get back in, and
+find out whether the way you built it is a route or an obstacle. Which is the
+mode's whole question, asked every thirty seconds instead of once.
 
 **Bots route, they do not just steer.** Steering directly at the objective and
 probing for gaps when blocked fails on exactly the structure this game is about:
@@ -152,9 +160,10 @@ would need a layered grid — one flood per standable height per column.
 
 ## Where this goes next
 
-1. **Play Fort Defense and tune it.** Every number in it — build time, wave
-   sizes, stash supplies, throw arc — is a first guess. This is the cheapest and
-   most valuable next step, and it needs a human, not more code.
+1. **Play Fort Defense and tune it.** In particular the bucket loop: 9.5m and a
+   0.6s channel are guesses, and the whole balance of turtling versus running
+   turns on them. Every other number — build time, wave sizes, stash supplies,
+   throw arc — is a first guess too. It needs a human, not more code.
 2. **Key rebinding and gamepad support.** The input layer already maps devices
    to named actions, so both are wiring rather than redesign.
 3. **More construction tools**: blueprints, line-drag fill, an eyedropper, and
