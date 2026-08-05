@@ -146,10 +146,17 @@ describe('CharacterController — built structures', () => {
     }
     const c = new CharacterController(w, -1, 0.05, 0);
     run(c, 0.4);
-    run(c, 4.0, intent({ right: 1 }));
-    // Climbed most of the flight.
-    expect(c.y).toBeGreaterThan(MODULE * 6);
-    expect(c.onGround).toBe(true);
+
+    // Track the peak rather than the finish. The flight is only ten steps long,
+    // so a controller that climbs briskly reaches the top and walks off the far
+    // end well inside the window — asserting the final height would reward a
+    // slower climb.
+    let peak = c.y;
+    for (let i = 0; i < Math.round(4.0 / DT); i++) {
+      c.step(DT, intent({ right: 1 }));
+      if (c.y > peak) peak = c.y;
+    }
+    expect(peak).toBeGreaterThan(MODULE * 6);
   });
 
   it('walks down a staircase without launching off the steps', () => {
@@ -291,5 +298,36 @@ describe('CharacterController — interpolation', () => {
     expect(mid.x).toBeCloseTo((a.x + b.x) / 2, 6);
     expect(a.x).toBeCloseTo(c.prevX, 6);
     expect(b.x).toBeCloseTo(c.x, 6);
+  });
+});
+
+describe('CharacterController — step height across its advertised range', () => {
+  /**
+   * A design review measured the effective step height at 0.25m against an
+   * advertised STEP_HEIGHT of 0.55: rises of 0.20 and 0.25 climbed, and every
+   * rise from 0.30 to 0.55 silently failed. A player building half-metre steps
+   * would find them unclimbable for no visible reason.
+   */
+  it('climbs every rise up to STEP_HEIGHT', () => {
+    for (const rise of [0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5, STEP_HEIGHT]) {
+      const w = new CollisionWorld();
+      // A wide ledge, so nothing about the geometry is marginal.
+      w.addPart(0, 0, 6, rise / 2, 0, ...I, 5, rise / 2, 4);
+      const c = new CharacterController(w, 0, 0.05, 0);
+      run(c, 0.4);
+      run(c, 1.4, intent({ right: 1 }));
+      expect(c.y, `rise ${rise}`).toBeGreaterThan(rise - 0.06);
+    }
+  });
+
+  it('still refuses anything above STEP_HEIGHT', () => {
+    for (const rise of [STEP_HEIGHT + 0.15, STEP_HEIGHT + 0.5]) {
+      const w = new CollisionWorld();
+      w.addPart(0, 0, 6, rise / 2, 0, ...I, 5, rise / 2, 4);
+      const c = new CharacterController(w, 0, 0.05, 0);
+      run(c, 0.4);
+      run(c, 1.4, intent({ right: 1 }));
+      expect(c.y, `rise ${rise}`).toBeLessThan(0.12);
+    }
   });
 });

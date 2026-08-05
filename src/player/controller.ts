@@ -303,6 +303,23 @@ export class CharacterController {
 
     this.capsule.ay += rise + SKIN;
     this.capsule.by += rise + SKIN;
+
+    // Raising alone is not enough. The feet are still a radius behind the step's
+    // face, so on anything but the shallowest rise the capsule is left standing
+    // over thin air and ground-snapping drops it straight back down — the reason
+    // the effective step height was 0.25m against an advertised 0.55m, with
+    // every rise from 0.30 upward silently failing.
+    //
+    // So carry it far enough that its footprint is actually over the new
+    // surface. Bounded to a fraction of the radius, which is small enough not to
+    // read as a teleport and large enough to clear the lip.
+    // Carried as far as it will go, not all or nothing. On a staircase the next
+    // riser blocks the carry almost immediately, and that is the correct
+    // outcome — the capsule is already standing on this tread. Undoing the raise
+    // because the carry was short would put the climb straight back to failing.
+    const carry = Math.min(CAP_RADIUS * 0.75, probeDist);
+    this.world.moveAndSlide(this.capsule, nx * carry, 0, nz * carry, 0, 0, 0);
+
     this.onGround = true;
     if (this.vy < 0) this.vy = 0;
     return true;
