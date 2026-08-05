@@ -24,6 +24,7 @@ import { CAP_RADIUS, CAP_HEIGHT } from '../physics/constants.ts';
 import type { Rng } from '../core/rng.ts';
 import { ProjectileSystem } from './projectiles.ts';
 import type { BalloonTarget } from './projectiles.ts';
+import type { NavField } from './navField.ts';
 
 export type BotState = 'approach' | 'divert' | 'attack' | 'stunned' | 'done';
 
@@ -54,6 +55,11 @@ const STUCK_TIME = 0.7;
 const DIVERT_TIME = 1.1;
 /** Headings tried when looking for a way round, in radians off target. */
 const DIVERT_ANGLES = [0.6, -0.6, 1.2, -1.2, 2.0, -2.0];
+/**
+ * Inside this range the nav grid is too coarse to steer by — a 0.75m cell is
+ * larger than the objective — so the bot goes back to aiming straight at it.
+ */
+const CELL_TRUST_DISTANCE = 2.5;
 
 export class Bot {
   readonly id: number;
@@ -146,6 +152,7 @@ export class Bot {
     dt: number,
     projectiles: ProjectileSystem,
     canSeeTarget: boolean,
+    nav: NavField | null = null,
   ): void {
     if (this.state === 'done') return;
 
@@ -176,9 +183,21 @@ export class Bot {
       if (this.stateTimer <= 0) this.state = 'approach';
     } else {
       this.state = 'approach';
-      const inv = distance > 1e-4 ? 1 / distance : 0;
-      moveX = dx * inv;
-      moveZ = dz * inv;
+
+      // Global routing first. Close to the objective the grid is too coarse to
+      // trust, so the last couple of metres are steered directly.
+      const routed = nav !== null && distance > CELL_TRUST_DISTANCE
+        ? nav.direction(this.controller.x, this.controller.z)
+        : null;
+
+      if (routed !== null) {
+        moveX = routed.dx;
+        moveZ = routed.dz;
+      } else {
+        const inv = distance > 1e-4 ? 1 / distance : 0;
+        moveX = dx * inv;
+        moveZ = dz * inv;
+      }
     }
 
     const before = { x: this.controller.x, z: this.controller.z };
@@ -257,8 +276,9 @@ export class Bot {
     }
 
     // Nowhere to go: keep pressing against the obstacle. A bot bunched against
-    // a wall it cannot pass reads as thwarted, which is the point of having
-    // built the wall in the first place.
+    // a wall it genuinely cannot pass reads as thwarted, which is the point of
+    // having built the wall. With the nav field routing, this is now only
+    // reached when the fort really is sealed.
     this.state = 'approach';
     void distance;
   }

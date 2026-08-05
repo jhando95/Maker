@@ -20,6 +20,7 @@ import { Bot, BOT_TIERS, type BotConfig } from './bot.ts';
 import { ProjectileSystem, type BalloonTarget } from './projectiles.ts';
 import type { GameMode, ModeContext, ModeHud, ModeInput } from './gameMode.ts';
 import { CAP_HEIGHT, CAP_RADIUS } from '../physics/constants.ts';
+import { NavField } from './navField.ts';
 
 export type Phase = 'build' | 'wave' | 'intermission' | 'over';
 
@@ -40,6 +41,8 @@ export const PLAYER_AMMO_MAX = 12;
 export const RELOAD_INTERVAL = 0.35;
 /** Being soaked costs the player this long of slowed movement. */
 export const PLAYER_SOAK_TIME = 1.4;
+/** Seconds between nav-field rebuilds during a wave. */
+export const NAV_REBUILD_INTERVAL = 0.2;
 
 export interface StashState {
   x: number; y: number; z: number;
@@ -74,6 +77,15 @@ export class FortDefenseMode implements GameMode {
   private playerSoakedFor = 0;
 
   private nextBotId = 1;
+  /**
+   * One field for the whole wave, not one path per bot.
+   *
+   * Rebuilt a few times a second rather than every tick: the world only changes
+   * when someone builds, and a fraction of a second of staleness is invisible
+   * next to the cost of flooding the grid sixty times a second.
+   */
+  private readonly nav = new NavField(26);
+  private navTimer = 0;
   /** Reused so the per-tick target list does not allocate. */
   private readonly targets: BalloonTarget[] = [];
 
@@ -134,6 +146,9 @@ export class FortDefenseMode implements GameMode {
     this.wave++;
     this.phase = 'wave';
     this.timer = 0;
+    // Route before the first tick, so bots do not spend it walking into a wall.
+    this.nav.rebuild(ctx.world, this.stash.x, this.stash.z);
+    this.navTimer = NAV_REBUILD_INTERVAL;
     this.spawnWave(ctx);
     this.setMessage(`Wave ${this.wave}`, 3);
     ctx.emit({ type: 'phaseChange', phase: `wave ${this.wave}` });
@@ -172,6 +187,12 @@ export class FortDefenseMode implements GameMode {
   private updateWave(dt: number, ctx: ModeContext): void {
     let anyAlive = false;
 
+    this.navTimer -= dt;
+    if (this.navTimer <= 0) {
+      this.navTimer = NAV_REBUILD_INTERVAL;
+      this.nav.rebuild(ctx.world, this.stash.x, this.stash.z);
+    }
+
     for (const bot of this.bots) {
       if (!bot.alive) continue;
       anyAlive = true;
@@ -190,7 +211,7 @@ export class FortDefenseMode implements GameMode {
       bot.hasAim = true;
 
       const canSee = this.hasLineOfSightTo(ctx, bot, ctx.player.x, ctx.player.y + 0.9, ctx.player.z);
-      bot.update(dt, ctx.projectiles, canSee);
+      bot.update(dt, ctx.projectiles, canSee, this.nav);
 
       // Reached the stash: take a balloon and leave.
       const d = Math.hypot(bot.x - this.stash.x, bot.z - this.stash.z);
@@ -370,6 +391,11 @@ export class FortDefenseMode implements GameMode {
   /** Movement multiplier, so being soaked actually costs something. */
   get playerSpeedScale(): number {
     return this.playerSoakedFor > 0 ? 0.55 : 1;
+  }
+
+  /** The routing grid, for debug visualisation. */
+  get navField(): NavField {
+    return this.nav;
   }
 
   /** True while the build controls should be live. */
