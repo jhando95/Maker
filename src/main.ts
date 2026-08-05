@@ -27,6 +27,7 @@ import { ProjectileSystem } from './game/projectiles.ts';
 import { ModeRenderer } from './game/modeRenderer.ts';
 import { FortDefenseMode } from './game/fortDefense.ts';
 import { CaptureTheFlagMode } from './game/captureTheFlag.ts';
+import { WaterWarMode } from './game/waterWar.ts';
 import { LEFT_SPAWN } from './world/neighborhood.ts';
 import type { GameEvent, GameMode, ModeContext, ModeInput } from './game/gameMode.ts';
 import { SettingsStore, ghostColors, loadBindings, saveBindings, clearBindings } from './app/settings.ts';
@@ -44,13 +45,18 @@ import { PerformanceGovernor } from './app/performanceGovernor.ts';
  * the menu, the restart path and the debug API all need to name a mode and none
  * of them should be able to name one that does not exist.
  */
-export type ModeId = 'fortDefense' | 'captureTheFlag';
+export type ModeId = 'fortDefense' | 'captureTheFlag' | 'waterWar';
 
 export const MODES: ReadonlyArray<{ id: ModeId; name: string; blurb: string }> = [
   {
     id: 'captureTheFlag',
     name: 'Capture the Flag',
     blurb: 'Their flag is past the house. Build a way over, and a way to stop them.',
+  },
+  {
+    id: 'waterWar',
+    name: 'Water War',
+    blurb: 'Three taps, one hot afternoon. Fortify them, then hold them while the street drains them dry.',
   },
   {
     id: 'fortDefense',
@@ -60,7 +66,9 @@ export const MODES: ReadonlyArray<{ id: ModeId; name: string; blurb: string }> =
 ];
 
 function createMode(id: ModeId): GameMode {
-  return id === 'captureTheFlag' ? new CaptureTheFlagMode() : new FortDefenseMode();
+  if (id === 'captureTheFlag') return new CaptureTheFlagMode();
+  if (id === 'waterWar') return new WaterWarMode();
+  return new FortDefenseMode();
 }
 
 const app = document.getElementById('app')!;
@@ -532,17 +540,29 @@ function simulate(dt: number): void {
   // choosing a plank spins you round to face the fence.
   const look = input.lookDelta;
   const picker = hud.partWheel;
-  if (input.wasPressed('partWheel') && (mode === null || mode.buildingAllowed)) {
-    picker.show(build.selectedKind);
+  // One wheel, two contents. Parts while you can build, weapons while you
+  // cannot — which is exactly when each is the only one that makes sense, and
+  // is one gesture to learn instead of two.
+  const loadout = mode?.buildingAllowed === false ? mode.loadout : undefined;
+  if (input.wasPressed('partWheel') && (mode === null || mode.buildingAllowed || loadout !== undefined)) {
+    if (loadout !== undefined) {
+      hud.showWeapons(loadout);
+      picker.show(loadout.entries.findIndex((e) => e.id === loadout.selected));
+    } else {
+      hud.showParts();
+      picker.show(build.selectedKind);
+    }
   }
   if (picker.isOpen) {
     picker.move(look.x, look.y);
     if (!input.isDown('partWheel')) {
       const picked = picker.hide();
       if (picked !== null) {
-        build.selectKind(picked);
+        if (loadout !== undefined) loadout.select(loadout.entries[picked]?.id ?? loadout.selected);
+        else build.selectKind(picked);
         sounds.pickPart();
       }
+      hud.showParts();
     }
   } else if (look.x !== 0 || look.y !== 0) {
     camera.look(look.x, look.y);
@@ -741,6 +761,10 @@ function draw(alpha: number, frameDt: number): void {
 
   flushShadows(performance.now() / 1000);
   drainEvents();
+  modeRenderer.setStream(
+    mode?.stream ?? null,
+    state.x, state.y + state.eyeHeight * 0.82, state.z,
+  );
   modeRenderer.update(frameDt, mode, projectiles, performance.now() / 1000);
 
   renderer.render(scene, camera.camera);
@@ -924,12 +948,15 @@ window.__maker = {
    * context. Scenarios that build their own context get subtly different
    * behaviour, which is worse than useless for verification.
    */
-  fastForward: (seconds: number, until?: string) => {
+  fastForward: (seconds: number, until?: string, fire = false) => {
     if (mode === null) return null;
     const ticks = Math.round(seconds / DT);
-    const noFire = { fire: false, firePressed: false, fireReleased: false };
     for (let i = 0; i < ticks; i++) {
-      mode.fixedUpdate(DT, modeContext, noFire);
+      // firePressed only on the first tick, so a held trigger reads as one press
+      // and a cooldown-gated weapon is not treated as spam.
+      mode.fixedUpdate(DT, modeContext, {
+        fire, firePressed: fire && i === 0, fireReleased: false,
+      });
       if (until !== undefined && mode.hud().phase === until) break;
     }
     drainEvents();

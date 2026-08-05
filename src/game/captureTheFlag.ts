@@ -655,6 +655,7 @@ export class CaptureTheFlagMode implements GameMode {
         : null,
       message: this.message,
       charge: this.charging ? this.charge : null,
+      wetness: null,
       ammo: this.buildingAllowed ? null : { current: this.ammo, max: PLAYER_AMMO_MAX },
       refill: null,
     };

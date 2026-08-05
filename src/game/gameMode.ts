@@ -73,6 +73,24 @@ export interface Marker {
   faded?: boolean;
 }
 
+/**
+ * Weapons the player can switch between, when a mode has any.
+ *
+ * Optional because Fort Defense and Capture the Flag each have exactly one
+ * thing to throw, and a picker for a choice of one is worse than no picker.
+ */
+export interface Loadout {
+  readonly entries: ReadonlyArray<{
+    id: string;
+    name: string;
+    blurb: string;
+    /** False when it is out of water, or out of hose. */
+    ready: boolean;
+  }>;
+  readonly selected: string;
+  select(id: string): void;
+}
+
 /** The result screen, in the mode's own words. */
 export interface ModeSummary {
   /** The headline, e.g. "The fort held!". */
@@ -93,7 +111,22 @@ export interface ModeHud {
   message: string | null;
   /** 0..1 charge on the throw, or null when not aiming. */
   charge: number | null;
-  ammo: { current: number; max: number } | null;
+  /**
+   * How wet the player is, 0..1, or null in a mode without a soaking meter.
+   *
+   * Its own field rather than borrowed space on `charge`: a yellow bar that
+   * usually means "your throw is winding up" cannot also mean "you are about to
+   * be knocked out of the fight" without teaching the player the wrong thing.
+   */
+  wetness: number | null;
+  /**
+   * Rounds left, drawn as pips — or a tank, drawn as a bar.
+   *
+   * `gauge` exists because the pip renderer is per-unit: a 100 litre tank came
+   * out as a hundred pips and a thousand pixels of them. Pips are for things you
+   * can count and ration; a gauge is for something continuous.
+   */
+  ammo: { current: number; max: number; gauge?: boolean } | null;
   /** 0..1 progress on a refill channel, or null when not at a bucket. */
   refill: number | null;
 }
@@ -134,6 +167,24 @@ export interface GameMode {
   readonly buildingAllowed: boolean;
   /** Multiplier on player speed, for being soaked. */
   readonly playerSpeedScale: number;
+  /** Weapons to offer in the picker, or undefined when there is one option. */
+  readonly loadout?: Loadout;
+  /**
+   * Where a continuous stream currently ends, or null.
+   *
+   * The mode owns the ray because the mode owns what stops it; the renderer
+   * only needs to know where to draw water to.
+   */
+  readonly stream?: { x: number; y: number; z: number } | null;
+  /**
+   * How wet a given bot is, 0..1, for the renderer to tint by.
+   *
+   * Optional, because a mode without a soaking meter has nothing to say here.
+   * Without it the meter is invisible: you cannot tell the kid you have nearly
+   * finished from the one who just arrived, so choosing who to shoot — the
+   * decision the meter exists to create — is a guess.
+   */
+  wetnessOf?(botId: number): number;
 }
 
 /**
@@ -170,6 +221,7 @@ export class SandboxMode implements GameMode {
       secondary: null,
       message: null,
       charge: null,
+      wetness: null,
       ammo: null,
       refill: null,
     };

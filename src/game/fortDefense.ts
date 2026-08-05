@@ -513,6 +513,7 @@ export class FortDefenseMode implements GameMode {
       secondary: this.phase === 'wave' ? { label: 'left', value: String(aliveBots) } : null,
       message: this.message,
       charge: this.charging ? this.charge : null,
+      wetness: null,
       ammo: this.buildingAllowed ? null : { current: this.ammo, max: PLAYER_AMMO_MAX },
       refill: this.atBucket >= 0 && this.ammo < PLAYER_AMMO_MAX ? this.refillProgress : null,
     };

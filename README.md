@@ -6,9 +6,9 @@ bridges. The long-term goal is party modes played *inside* the things you build:
 capture the flag, water balloon battles, tag.
 
 Single-player so far: a neighborhood lot with a house in the middle of it, the
-movement and building mechanics the whole game rests on, and two modes —
-**Capture the Flag** across the two yards, and **Fort Defense** on the front
-lawn.
+movement and building mechanics the whole game rests on, and three modes —
+**Capture the Flag** across the two yards, **Fort Defense** on the front lawn,
+and **Water War** over the paddling pool, the rain barrel and the garden tap.
 
 ```bash
 npm install
@@ -23,14 +23,14 @@ npm run dev      # http://localhost:5173
 | `Space` | jump |
 | `Shift` | sprint |
 | `Ctrl` / `C` | crouch (also fine-placement mode while building) |
-| `LMB` | place part — hold to keep placing |
+| `LMB` | place part — hold to keep placing; throw or soak once the fighting starts |
 | `RMB` | remove the part under the crosshair |
 | `Alt` | free aim — suspend snapping entirely |
 | `R` | cycle to the next snap candidate |
 | `Q` / `E` | turn the held part 15° |
 | `Z` / `X` | tilt / roll |
 | `T` | reset rotation |
-| `Tab` (hold) | part wheel — flick a direction, let go |
+| `Tab` (hold) | part wheel — flick a direction, let go; picks your water kit during a fight |
 | `1`–`8`, scroll | choose a part |
 | `Shift` + wheel | change colour |
 | `V` | first ⇄ third person |
@@ -74,8 +74,10 @@ One browser limitation, not a design choice: entering the game needs a real
 click, because pointer lock cannot be granted from a controller button. After
 that, `Start` pauses and resumes without touching the mouse.
 
-During a wave — or a capture phase — the mouse throws balloons instead of
-placing parts, so you are never fumbling between two things on one button.
+During a wave, a capture phase or a raid, the mouse throws and soaks instead of
+placing parts, so you are never fumbling between two things on one button. The
+on-screen hints follow, because half the build keys do nothing while you are
+holding a soaker and a player who tries them learns the wrong lesson.
 
 ## Modes
 
@@ -89,6 +91,40 @@ theirs, and the mix shifts with the score.
 
 **Fort Defense.** Build a fort around the stash on the front lawn, then hold five
 waves. Between waves you get time to patch whatever failed.
+
+**Water War.** Four raids of neighbourhood kids come for the paddling pool, the
+rain barrel and the garden tap. Hold the water until they get bored.
+
+The kids are not the objective — the water is. You cannot clear the lawn:
+soaking someone buys you seven seconds of them not draining a tap, and then they
+walk back. That single rule is what makes the mode work. Scoring on kills would
+have meant bots pathing to a moving player, which defeats the flow-field cache
+outright, and it would have made a fort a detour rather than a wall — you would
+have won by chasing, and the building would have been decoration.
+
+Because the taps sit at three corners of the lot and you can only stand at one,
+the mode is a triage problem. Raids go for whichever tap is fullest, so ignoring
+one is punished specifically, and the answer to a tap you cannot reach in time
+is something you built there earlier.
+
+The arsenal splits three ways and no weapon wins at every range:
+
+| | reach | best at | costs |
+|---|---|---|---|
+| **Soaker** | 8.5m | close work — nothing wets faster point blank | 17 L/s |
+| **Balloon** | 12.5m | reaching a tap you are not standing at | 12 L a throw |
+| **Hose** | 13m | holding one tap all raid, free but tethered to it | nothing |
+
+Water is the ammunition and the score at once. Your tank refills from the same
+taps you are defending, so drinking deep to fight costs you the thing you are
+fighting for.
+
+Everyone has a wetness meter rather than dying in one hit. Wet clothes soak
+faster, so a fight nearly won finishes instead of stalling; drying is quick once
+it starts, so breaking off is a real option; and there is a ceiling on how fast
+you can be soaked, so being outnumbered is reliably bad rather than instant. The
+kids' shirts darken as they soak, which is how you tell the one you have nearly
+finished from the one who just arrived.
 
 ## The map
 
@@ -139,7 +175,7 @@ scenarios/     scripted checks driven through the harness
 ```
 
 ```bash
-npm test         # 411 unit tests
+npm test         # 475 unit tests
 npm run typecheck
 npm run bench    # what a tick costs, as a share of the 16.67ms budget
 node tools/shoot.mjs --out shots/x.png   # boot headless, screenshot, fail on any console error
@@ -149,8 +185,10 @@ node tools/shoot.mjs --scenario scenarios/gamepad.mjs   # drive a synthetic cont
 CI runs all of the above on every push. The scenarios exist because some things
 cannot be honestly unit-tested: whether a throw inside the render loop actually
 produces a crash screen, whether a stick push actually reaches the character
-controller, whether a resolution decision actually reaches the drawing buffer.
-All three only happen in a browser, so all three are checked in one.
+controller, whether a resolution decision actually reaches the drawing buffer,
+whether emptying a water tank and refilling it from a paddling pool works once
+the mode, the shell and the HUD are wired together. Each only happens in a
+browser, and each has broken at least once with the unit suite green.
 
 ## Design notes
 
@@ -263,20 +301,23 @@ would need a layered grid — one flood per standable height per column.
 
 ## Where this goes next
 
-1. **Play Fort Defense and tune it.** In particular the bucket loop: 9.5m and a
-   0.6s channel are guesses, and the whole balance of turtling versus running
-   turns on them. Every other number — build time, wave sizes, stash supplies,
-   throw arc — is a first guess too. It needs a human, not more code.
-2. **Gamepad support.** The input layer already maps devices to named actions
-   and rebinding is in, so this is wiring rather than redesign.
-3. **More construction tools**: blueprints, line-drag fill, an eyedropper, and
+1. **Play the modes and tune them.** Every number is a first guess that survived
+   arithmetic, which is not the same as being fun. Water War's economy is the
+   one with a measured target behind it — an unopposed afternoon demands about
+   twice the pool, so you have to stop roughly half the draining — and a test
+   holds it there, but whether *half* is the right number is a question for a
+   human. Fort Defense's bucket loop is less defended than that: 9.5m and a 0.6s
+   channel are guesses, and the balance of turtling versus running turns on them.
+2. **More construction tools**: blueprints, line-drag fill, an eyedropper, and
    moving a placed part instead of delete-and-replace.
-4. **Netcode** — server-authoritative, client prediction, `PlacePart` intents
+3. **Netcode** — server-authoritative, client prediction, `PlacePart` intents
    replicated. The seams exist for this.
-5. **More modes**, then woods survival, which wants resource gathering and
-   structural support rules the sandbox deliberately does without.
+4. **Woods survival**, which wants resource gathering and structural support
+   rules the sandbox deliberately does without.
 
 The biggest risk is still not technical. It is that building under time pressure
 is *stressful* rather than joyful — that players stop building and just run
-around. Fort Defense makes that testable solo for the first time, but the version
-that matters is two humans building against each other, and that needs netcode.
+around. The three modes make that testable solo, and Water War is the sharpest
+test of it: you cannot win by fighting, so if the building is not enjoyable there
+is nothing else there. The version that matters is still two humans building
+against each other, and that needs netcode.

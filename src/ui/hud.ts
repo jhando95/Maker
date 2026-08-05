@@ -92,9 +92,55 @@ const STYLE = `
 .maker-charge i { display: block; height: 100%; background: #ffd76a; width: 0%; }
 .maker-charge.refill i { background: #6ec6ff; }
 .maker-refill-label { font-size: 11px; font-weight: 700; opacity: 0.9; }
+
+/*
+ * Two meters that mean opposite things, so they are labelled and never bare.
+ *
+ * Unlabelled they were a stack of identical blue bars with a stray number
+ * between them, and nothing said which was the water you have and which was
+ * the water on you.
+ */
+.maker-meter { display: flex; align-items: center; gap: 7px; }
+.maker-meter .cap { font-size: 10px; font-weight: 800; letter-spacing: 1px;
+  opacity: 0.75; width: 34px; text-align: right; }
+.maker-meter .track { width: 118px; height: 9px; border-radius: 5px;
+  background: rgba(0,0,0,0.42); overflow: hidden; }
+.maker-meter .track i { display: block; height: 100%; width: 0%;
+  transition: width 0.1s linear; }
+
+/* The tank: continuous, so a bar rather than pips. */
+.maker-tank .track i { background: #6ec6ff; }
+.maker-tank.low .track i { background: #ffb06a; }
+.maker-tank .cap { color: #bfe6ff; }
+
+/* How wet you are. Climbs toward being knocked out of the fight. */
+.maker-soak .track i { background: #7fd6ff; }
+.maker-soak.drenched .track i { background: #4a86c8; }
+.maker-soak .cap { color: #9fdcff; }
+.maker-soak.drenched .cap { color: #ffd0d0; }
+
+/*
+ * The edge of the screen beads up as you get soaked.
+ *
+ * A meter tucked by the hands is not something anyone reads mid-fight; the
+ * vignette is what actually tells you to break off, because it is impossible to
+ * miss and it grows exactly as your odds get worse.
+ */
+.maker-vignette {
+  position: absolute; inset: 0; pointer-events: none; opacity: 0;
+  transition: opacity 0.18s ease-out;
+  /*
+   * Two layers, because one blue wash is invisible against the sky — which is
+   * exactly where you look when running away. The dark ring carries the signal
+   * on bright backgrounds; the pale one reads as water on the grass.
+   */
+  background:
+    radial-gradient(ellipse at center, rgba(214,242,255,0) 34%, rgba(214,242,255,0.34) 100%),
+    radial-gradient(ellipse at center, rgba(28,74,116,0) 26%, rgba(28,74,116,0.62) 100%);
+}
 `;
 
-import type { ModeHud } from '../game/gameMode.ts';
+import type { Loadout, ModeHud } from '../game/gameMode.ts';
 
 export interface HudState {
   selectedKind: number;
@@ -167,6 +213,23 @@ const HELP_GAMEPAD = [
   `${key('D←')}${key('D→')} parts &nbsp; ${key('LT')} free aim &nbsp; ${key('R3')} camera`,
 ];
 
+/**
+ * What the corner says once building is off and there is a fight on.
+ *
+ * The build hints are not merely useless during a raid, they are wrong: half
+ * those keys do nothing while you are holding a soaker, and a player who tries
+ * them learns the controls are broken rather than that the phase changed.
+ */
+const HELP_FIGHT_KEYBOARD = [
+  `${key('LMB')} soak &nbsp; ${key('Tab')} kit &nbsp; stand in water to fill up`,
+  `${key('Shift')} sprint &nbsp; ${key('V')} camera &nbsp; ${key('`')} debug`,
+];
+
+const HELP_FIGHT_GAMEPAD = [
+  `${key('RT')} soak &nbsp; ${key('D←')}${key('D→')} kit &nbsp; stand in water to fill up`,
+  `${key('L3')} sprint &nbsp; ${key('R3')} camera`,
+];
+
 export class Hud {
   readonly root: HTMLDivElement;
 
@@ -177,6 +240,9 @@ export class Hud {
   private readonly modePanel: HTMLDivElement;
   private readonly messageEl: HTMLDivElement;
   private readonly ammoEl: HTMLDivElement;
+  private readonly vignette: HTMLDivElement;
+  /** True while a mode has building switched off, so the hints follow the phase. */
+  private fighting = false;
   private readonly help: HTMLDivElement;
   private readonly chip: HTMLDivElement;
   private readonly wheel: PartWheel;
@@ -234,6 +300,11 @@ export class Hud {
     this.ammoEl.className = 'maker-ammo maker-hidden';
     this.root.appendChild(this.ammoEl);
 
+    // Behind the crosshair and panels, in front of the world.
+    this.vignette = document.createElement('div');
+    this.vignette.className = 'maker-vignette';
+    this.root.insertBefore(this.vignette, this.crosshair);
+
     this.lock = document.createElement('div');
     this.lock.className = 'maker-lock';
     this.lock.innerHTML =
@@ -251,7 +322,15 @@ export class Hud {
    */
   setInputDevice(device: InputDevice): void {
     this.device = device;
-    this.help.innerHTML = (device === 'gamepad' ? HELP_GAMEPAD : HELP_KEYBOARD).join('<br>');
+    this.paintHelp();
+  }
+
+  private paintHelp(): void {
+    const pad = this.device === 'gamepad';
+    const lines = this.fighting
+      ? (pad ? HELP_FIGHT_GAMEPAD : HELP_FIGHT_KEYBOARD)
+      : (pad ? HELP_GAMEPAD : HELP_KEYBOARD);
+    this.help.innerHTML = lines.join('<br>');
   }
 
   get inputDevice(): InputDevice {
@@ -312,6 +391,26 @@ export class Hud {
     return this.wheel;
   }
 
+  /** Point the wheel at the build kit. */
+  showParts(): void {
+    this.wheel.setEntries(WHEEL_ENTRIES);
+  }
+
+  /**
+   * Point the wheel at a mode's weapons.
+   *
+   * Anything not currently usable — out of water, or a hose away from a tap —
+   * is shown greyed rather than hidden, because a wheel whose contents move
+   * around is a wheel you have to read every time instead of flicking.
+   */
+  showWeapons(loadout: Loadout): void {
+    this.wheel.setEntries(loadout.entries.map((e) => ({
+      label: e.name,
+      detail: e.ready ? e.blurb : 'no water',
+      color: e.ready ? '#6ec6ff' : '#6a6f74',
+    })));
+  }
+
   /** Render the running mode's banner, message and ammo, or hide them all. */
   private updateMode(mode: ModeHud | null): void {
     const active = mode !== null;
@@ -320,7 +419,15 @@ export class Hud {
     this.ammoEl.classList.toggle('maker-hidden', !active || mode!.ammo === null);
     // The part chip is meaningless while throwing, so it goes with the build
     // controls rather than sitting there inert.
-    this.chip.classList.toggle('maker-hidden', active && mode!.ammo !== null);
+    const fighting = active && mode!.ammo !== null;
+    this.chip.classList.toggle('maker-hidden', fighting);
+    // So do the snap readout and the rotate-and-place hints: keys that do
+    // nothing right now read as keys that are broken.
+    this.status.classList.toggle('maker-hidden', fighting);
+    if (fighting !== this.fighting) {
+      this.fighting = fighting;
+      this.paintHelp();
+    }
     if (!active) return;
 
     const m = mode!;
@@ -342,11 +449,29 @@ export class Hud {
 
     if (m.message !== null) this.messageEl.textContent = m.message;
 
+    // The vignette runs off wetness whether or not the mode shows ammo, so
+    // being soaked reads the same during a lull as it does mid-raid.
+    const wet = m.wetness ?? 0;
+    // Held back until it means something: a splash on the way past should not
+    // dim the screen, being two hits from out of the fight should.
+    this.vignette.style.opacity = String(wet < 0.25 ? 0 : Math.min(1, (wet - 0.25) / 0.65));
+
     if (m.ammo !== null) {
-      const pips: string[] = [];
-      for (let i = 0; i < m.ammo.max; i++) {
-        pips.push(`<div class="pip${i < m.ammo.current ? ' full' : ''}"></div>`);
+      const fraction = m.ammo.max === 0 ? 0 : m.ammo.current / m.ammo.max;
+      let supply: string;
+      if (m.ammo.gauge === true) {
+        supply =
+          `<div class="maker-meter maker-tank${fraction < 0.25 ? ' low' : ''}">` +
+          `<span class="cap">${Math.round(m.ammo.current)}L</span>` +
+          `<span class="track"><i style="width:${Math.round(fraction * 100)}%"></i></span></div>`;
+      } else {
+        const pips: string[] = [];
+        for (let i = 0; i < m.ammo.max; i++) {
+          pips.push(`<div class="pip${i < m.ammo.current ? ' full' : ''}"></div>`);
+        }
+        supply = `<div class="pips">${pips.join('')}</div>`;
       }
+
       // Charge and refill share the bar: they never happen at once, and two
       // bars in the same place would be read as one thing behaving oddly.
       let bar = '';
@@ -356,7 +481,15 @@ export class Hud {
       } else if (m.charge !== null) {
         bar = `<div class="maker-charge"><i style="width:${Math.round(m.charge * 100)}%"></i></div>`;
       }
-      this.ammoEl.innerHTML = `<div class="pips">${pips.join('')}</div>${bar}`;
+
+      // Wetness sits below both, so the thing that ends your round is not
+      // competing for the same strip as the thing that reloads it.
+      const soak = m.wetness === null || m.wetness <= 0.02 ? ''
+        : `<div class="maker-meter maker-soak${m.wetness >= 0.85 ? ' drenched' : ''}">` +
+          `<span class="cap">${m.wetness >= 0.85 ? 'SOAKED' : 'WET'}</span>` +
+          `<span class="track"><i style="width:${Math.round(m.wetness * 100)}%"></i></span></div>`;
+
+      this.ammoEl.innerHTML = `${supply}${bar}${soak}`;
     }
   }
 

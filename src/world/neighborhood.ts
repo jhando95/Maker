@@ -116,6 +116,19 @@ export const RIGHT_SPAWN = { x: 20.5, y: 0.5, z: -7 } as const;
  */
 export const FORT_YARD = { x: -12, y: 0, z: -13 } as const;
 
+/**
+ * The three water sources, and the reason Water War has three fronts.
+ *
+ * Spread far enough apart that one player cannot stand between them. That is the
+ * whole design: a fort has to work while you are somewhere else, which is a
+ * different question from Fort Defense's "is it fun to fight inside one".
+ */
+export const WATER_SOURCES: ReadonlyArray<{ key: string; name: string; x: number; z: number }> = [
+  { key: 'pool', name: 'the paddling pool', x: -9.5, z: 9 },
+  { key: 'butt', name: 'the rain barrel', x: 16, z: 9 },
+  { key: 'tap', name: 'the garden tap', x: 2.5, z: -11 },
+];
+
 /** The treehouse deck, which is the left side's high ground. */
 export const TREEHOUSE = { x: -13.5, z: 5.5, deck: 4.5 } as const;
 
@@ -155,6 +168,7 @@ export function neighborhoodSlabs(rng: Rng): Slab[] {
   rightYard(rng);
   street();
   clutter(rng);
+  waterworks();
 
   return slabs.map((s) => ({ ...s }));
 }
@@ -694,6 +708,43 @@ function clutter(rng: Rng): void {
   // ── A lamp post out front, because the street needed a vertical ───────────
   timber(0.22, 4.4, 0.22, 8.5, 2.2, -17.5, LOT.metal, { outline: 0x4a4f54 });
   timber(0.6, 0.5, 0.6, 8.5, 4.6, -17.5, LOT.cloth, { chamfer: 0.12, ghost: true });
+}
+
+/**
+ * The rain barrel and the garden tap.
+ *
+ * The paddling pool is already in the left yard, so only two need building. Each
+ * one is a landmark before it is an objective — you should be able to say "the
+ * tap" and have somebody know where you mean.
+ */
+function waterworks(): void {
+  const butt = WATER_SOURCES.find((w) => w.key === 'butt')!;
+  timber(1.8, 1.9, 1.8, butt.x, 0.95, butt.z, 0x4a6f5a, {
+    outline: 0x2a4436, chamfer: 0.28,
+  });
+  timber(2.0, 0.16, 2.0, butt.x, 1.96, butt.z, LOT.plank);
+  // A tap on the barrel, and a puddle under it that never dries.
+  timber(0.14, 0.14, 0.4, butt.x, 0.7, butt.z - 1.0, LOT.metal, { outline: 0x4a4f54 });
+  put({
+    w: 2.6, h: 0.05, d: 2.6,
+    x: butt.x, y: 0.03, z: butt.z - 1.6,
+    color: 0x6fb8d8, outline: 0x3a7a96, chamfer: 0.2, ghost: true,
+  });
+
+  const tap = WATER_SOURCES.find((w) => w.key === 'tap')!;
+  timber(0.5, 0.9, 0.5, tap.x, 0.45, tap.z, 0x8a8f96, { outline: 0x4a4f54, chamfer: 0.06 });
+  timber(0.16, 0.5, 0.16, tap.x, 1.1, tap.z, LOT.metal, { outline: 0x4a4f54 });
+  timber(0.16, 0.16, 0.5, tap.x, 1.28, tap.z - 0.2, LOT.metal, { outline: 0x4a4f54 });
+  // A coiled hose, which is what makes the tap worth standing next to.
+  for (let i = 0; i < 3; i++) {
+    timber(1.5 - i * 0.35, 0.12, 1.5 - i * 0.35, tap.x + 0.9, 0.07 + i * 0.12, tap.z + 0.5,
+      0x3f8a4f, { outline: 0x246030, chamfer: 0.05 });
+  }
+  put({
+    w: 2.4, h: 0.05, d: 2.4,
+    x: tap.x, y: 0.03, z: tap.z,
+    color: 0x6fb8d8, outline: 0x3a7a96, chamfer: 0.2, ghost: true,
+  });
 }
 
 // ── Making it solid ──────────────────────────────────────────────────────────

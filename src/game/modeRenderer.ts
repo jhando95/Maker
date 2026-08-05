@@ -14,6 +14,7 @@ import { MAX_BALLOONS, BALLOON_RADIUS } from './projectiles.ts';
 import type { ProjectileSystem } from './projectiles.ts';
 import type { GameMode } from './gameMode.ts';
 import { CAP_HEIGHT, CAP_RADIUS } from '../physics/constants.ts';
+import { wetBlend } from './wetness.ts';
 
 const MAX_BOTS = 24;
 /** Simultaneous splash bursts. */
@@ -23,6 +24,14 @@ const SPLASH_LIFETIME = 0.5;
 /** Objective stands and flags a mode can ask for at once. */
 const MAX_MARKERS = 8;
 const MAX_FLAGS = 4;
+/**
+ * Droplets in a stream.
+ *
+ * A jet drawn as one tapered mesh reads as a solid rod of glass; a line of
+ * shrinking blobs reads as water, and it comes free because it is one instanced
+ * draw either way.
+ */
+const MAX_DROPS = 26;
 
 interface Splash {
   x: number; y: number; z: number;
@@ -56,6 +65,9 @@ export class ModeRenderer {
   private readonly splashMesh: THREE.InstancedMesh;
   private readonly stands: Stand[] = [];
   private readonly flagPoles: FlagPole[] = [];
+  private readonly drops: THREE.InstancedMesh;
+  private streamFrom: { x: number; y: number; z: number } | null = null;
+  private streamEnd: { x: number; y: number; z: number } | null = null;
 
   private readonly splashes: Splash[] = [];
   private readonly matrix = new THREE.Matrix4();
@@ -68,6 +80,10 @@ export class ModeRenderer {
 
   /** Kept off-screen rather than resized, so instance counts never churn. */
   private static readonly HIDDEN = new THREE.Matrix4().makeTranslation(0, -9999, 0);
+  private static readonly NO_ROTATION = new THREE.Quaternion();
+  /** A dry shirt, and the same shirt wringing wet. */
+  private static readonly DRY_KID = new THREE.Color().setHex(0xe07a4f, THREE.SRGBColorSpace);
+  private static readonly SOAKED_KID = new THREE.Color().setHex(0x6b3524, THREE.SRGBColorSpace);
 
   constructor() {
     this.group.name = 'mode';
@@ -131,6 +147,18 @@ export class ModeRenderer {
     for (let i = 0; i < MAX_FLAGS; i++) {
       this.flagPoles.push(this.makeFlag());
     }
+
+    // The stream: droplets strung from the nozzle to wherever the mode says the
+    // water stops. Pooled and hidden off-screen like everything else here, so a
+    // trigger pull never compiles a shader.
+    this.drops = new THREE.InstancedMesh(
+      new THREE.SphereGeometry(1, 6, 5),
+      createToonMaterial({ color: 0x8fd8f4 }),
+      MAX_DROPS,
+    );
+    this.drops.frustumCulled = false;
+    this.drops.castShadow = false;
+    this.group.add(this.drops);
 
     this.hideAll();
   }
@@ -248,6 +276,59 @@ export class ModeRenderer {
     this.updateBalloons(projectiles);
     this.updateSplashes(dt);
     this.updateMarkers(mode, time);
+    this.updateStream(time);
+  }
+
+  /**
+   * Where the water is going this frame.
+   *
+   * Set every frame from the mode, because a stream that persists for one frame
+   * after the trigger is released reads as the weapon sticking.
+   */
+  setStream(
+    end: { x: number; y: number; z: number } | null,
+    fromX: number, fromY: number, fromZ: number,
+  ): void {
+    this.streamEnd = end;
+    this.streamFrom = end === null ? null : { x: fromX, y: fromY, z: fromZ };
+  }
+
+  private updateStream(time: number): void {
+    const from = this.streamFrom;
+    const to = this.streamEnd;
+    if (from === null || to === null) {
+      for (let i = 0; i < MAX_DROPS; i++) this.drops.setMatrixAt(i, ModeRenderer.HIDDEN);
+      this.drops.instanceMatrix.needsUpdate = true;
+      return;
+    }
+
+    const dx = to.x - from.x;
+    const dy = to.y - from.y;
+    const dz = to.z - from.z;
+    const length = Math.hypot(dx, dy, dz);
+    const used = Math.max(2, Math.min(MAX_DROPS, Math.round(length * 2.6)));
+
+    for (let i = 0; i < MAX_DROPS; i++) {
+      if (i >= used) {
+        this.drops.setMatrixAt(i, ModeRenderer.HIDDEN);
+        continue;
+      }
+      const t = (i + 0.5) / used;
+      // A little sag and a little wobble: dead straight reads as a laser.
+      const sag = Math.sin(t * Math.PI) * length * 0.035;
+      const wobble = Math.sin(time * 22 + i * 1.7) * 0.035 * t;
+      this.pos.set(
+        from.x + dx * t + wobble,
+        from.y + dy * t - sag,
+        from.z + dz * t + wobble,
+      );
+      // Fattens along its length, so the jet has a direction you can read.
+      this.scale.setScalar(0.045 + t * 0.085);
+      this.matrix.compose(this.pos, ModeRenderer.NO_ROTATION, this.scale);
+      this.drops.setMatrixAt(i, this.matrix);
+    }
+    this.scale.setScalar(1);
+    this.drops.instanceMatrix.needsUpdate = true;
   }
 
   /**
@@ -309,9 +390,14 @@ export class ModeRenderer {
         this.botBody.setMatrixAt(count, this.matrix);
 
         // Stunned bots wash out toward blue, so it is obvious at a glance which
-        // are still a threat.
-        const stunned = bot.state === 'stunned';
-        this.color.setHex(stunned ? 0x7fb8d8 : 0xe07a4f, THREE.SRGBColorSpace);
+        // are still a threat. Otherwise the shirt darkens as it soaks, which is
+        // how the player reads who is nearly finished and picks a target.
+        if (bot.state === 'stunned') {
+          this.color.setHex(0x7fb8d8, THREE.SRGBColorSpace);
+        } else {
+          this.color.copy(ModeRenderer.DRY_KID);
+          this.color.lerp(ModeRenderer.SOAKED_KID, wetBlend(mode.wetnessOf?.(bot.id) ?? 0));
+        }
         this.botBody.setColorAt(count, this.color);
 
         this.pos.set(bot.x, bot.y + CAP_HEIGHT - 0.05, bot.z);
@@ -394,5 +480,7 @@ export class ModeRenderer {
     for (const s of this.splashes) s.active = false;
     for (const stand of this.stands) stand.group.visible = false;
     for (const flag of this.flagPoles) flag.group.visible = false;
+    this.setStream(null, 0, 0, 0);
+    this.updateStream(0);
   }
 }
