@@ -100,6 +100,26 @@ quantized to a millimetre, and `applyPlace()` is the only thing that mutates the
 world. That is the seam a server would authorise against, and the same records
 are the save format.
 
+## Known limitations
+
+**The ramp collides as a box, not as a wedge.** `PART_KINDS[6]` renders as a
+tapered prism but every part in the collision world is an oriented box, so you
+walk into an invisible wall where the slope should be. Either give wedges a
+collision proxy (a rotated thin box along the slope, which is what most games
+do) or cut the part until that exists. Everything else in the kit is a true box,
+so this is the only shape where visuals and collision disagree.
+
+**Snapping can show a red ghost with no valid alternative** when a long part is
+aimed into a dense cluster — every candidate genuinely overlaps something. That
+is accurate but reads as the game refusing without explaining. Worth an
+auto-downgrade to a shorter part, or surfacing *why* it is blocked.
+
+**Software-GL frame rate is not a signal.** The headless harness runs under
+SwiftShader and reports single-digit FPS; that says nothing about real hardware.
+Draw calls (~300, mostly the individually-meshed fence) and triangle counts are
+the numbers worth watching, and the fence should become instanced before the
+yard grows.
+
 ## Where this goes next
 
 1. **Netcode** — server-authoritative, client prediction for movement,
