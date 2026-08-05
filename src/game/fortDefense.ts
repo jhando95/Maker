@@ -21,6 +21,7 @@ import { ProjectileSystem, type BalloonTarget } from './projectiles.ts';
 import type { GameMode, ModeContext, ModeHud, ModeInput } from './gameMode.ts';
 import { CAP_HEIGHT, CAP_RADIUS } from '../physics/constants.ts';
 import { NavField } from './navField.ts';
+import { FORT_YARD } from '../world/neighborhood.ts';
 
 export type Phase = 'build' | 'wave' | 'intermission' | 'over';
 
@@ -54,12 +55,21 @@ export const BUCKET_RADIUS = 1.8;
 /** Distance from the stash. Outside where a fort usually ends up. */
 export const BUCKET_DISTANCE = 9.5;
 
-/** Bucket positions, spread so no single side of a fort covers them all. */
+/** Where the stash sits: the front lawn, with the house at your back. */
+export const STASH_POSITION = { x: FORT_YARD.x, y: FORT_YARD.y, z: FORT_YARD.z };
+
+/**
+ * Bucket positions, spread so no single side of a fort covers them all.
+ *
+ * Relative to the stash, not to the origin. They used to be absolute, which was
+ * indistinguishable from relative while the stash sat at the origin — and would
+ * have quietly left all three buckets inside the house the moment it moved.
+ */
 export const BUCKETS: ReadonlyArray<{ x: number; z: number }> = [0, 1, 2].map((i) => {
   const angle = (i / 3) * Math.PI * 2 + Math.PI / 6;
   return {
-    x: Math.sin(angle) * BUCKET_DISTANCE,
-    z: Math.cos(angle) * BUCKET_DISTANCE,
+    x: STASH_POSITION.x + Math.sin(angle) * BUCKET_DISTANCE,
+    z: STASH_POSITION.z + Math.cos(angle) * BUCKET_DISTANCE,
   };
 });
 /** Being soaked costs the player this long of slowed movement. */
@@ -67,14 +77,46 @@ export const PLAYER_SOAK_TIME = 1.4;
 /** Seconds between nav-field rebuilds during a wave. */
 export const NAV_REBUILD_INTERVAL = 0.2;
 
+/**
+ * Project an angle onto the square boundary of the lot.
+ *
+ * Dividing by the larger of |sin| and |cos| maps the unit circle onto the unit
+ * square, so every angle lands on the fence line rather than on a circle that
+ * may or may not clear whatever is standing in the middle of the map.
+ */
+export function spawnOnBoundary(angle: number, bound = SPAWN_BOUND): { x: number; z: number } {
+  const sx = Math.sin(angle);
+  const sz = Math.cos(angle);
+  const scale = bound / Math.max(Math.abs(sx), Math.abs(sz));
+  let x = sx * scale;
+  const z = sz * scale;
+  // The divider fence runs the length of the lot at x = 0, so the two angles
+  // that land dead centre would spawn a bot inside it. Nudge clear of the line
+  // rather than reject the angle, which would leave a hole in the arrival ring.
+  if (Math.abs(x) < DIVIDER_CLEARANCE) {
+    x = (x < 0 || Object.is(x, -0) ? -1 : 1) * DIVIDER_CLEARANCE;
+  }
+  return { x, z };
+}
+
 export interface StashState {
   x: number; y: number; z: number;
   supplies: number;
 }
 
-/** Where the stash sits, and where waves come from. */
-const STASH_POSITION = { x: 0, y: 0, z: 0 };
-const SPAWN_RADIUS = 21;
+/**
+ * Waves enter from the edge of the lot rather than from a circle around the
+ * objective.
+ *
+ * A circle put spawns inside the house once the map gained one. Projecting the
+ * angle onto the lot boundary instead keeps every spawn on open ground by
+ * construction, whatever the objective's position, and reads better anyway —
+ * the neighbourhood kids come in over the fence line, not out of thin air
+ * around you.
+ */
+const SPAWN_BOUND = 23.0;
+/** How far a spawn must stay from the divider fence that runs down x = 0. */
+const DIVIDER_CLEARANCE = 1.6;
 
 export class FortDefenseMode implements GameMode {
   readonly id = 'fortDefense';
@@ -203,8 +245,7 @@ export class FortDefenseMode implements GameMode {
       // Spread arrivals around the yard edge rather than clustering, so a fort
       // with one strong side is not accidentally a winning fort.
       const angle = (i / count) * Math.PI * 2 + ctx.rng.signed(0.35);
-      const x = Math.sin(angle) * SPAWN_RADIUS;
-      const z = Math.cos(angle) * SPAWN_RADIUS;
+      const { x, z } = spawnOnBoundary(angle);
 
       this.bots.push(new Bot(this.nextBotId++, ctx.world, ctx.rng.fork(), tier, x, 0.5, z));
     }

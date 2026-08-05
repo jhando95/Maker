@@ -12,6 +12,7 @@ import { Input } from './core/input.ts';
 import { CollisionWorld } from './physics/collisionWorld.ts';
 import { TICK_RATE, DT } from './physics/constants.ts';
 import { createScene } from './world/scene.ts';
+import { installFixtures } from './world/neighborhood.ts';
 import { PartRenderer } from './render/partRenderer.ts';
 import { BuildSystem, type PlacementRecord } from './build/buildSystem.ts';
 import { CharacterController, type MoveIntent } from './player/controller.ts';
@@ -74,8 +75,12 @@ renderer.shadowMap.needsUpdate = true;
 app.appendChild(renderer.domElement);
 
 // ── World ────────────────────────────────────────────────────────────────────
-const { scene, invalidateShadows, props: scenery } = createScene('backyard-01');
+const { scene, invalidateShadows, props: scenery, slabs } = createScene('backyard-01');
 const world = new CollisionWorld(1.0, 4096);
+// The map's solid geometry, from the same numbers the scenery was drawn with.
+// Installed before anything else touches the world so the starter structures
+// and the player both spawn against a house that is already there.
+installFixtures(world, slabs);
 const parts = new PartRenderer();
 scene.add(parts.group);
 

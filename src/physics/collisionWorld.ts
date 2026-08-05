@@ -138,6 +138,35 @@ export class CollisionWorld {
   /** When false, the ground plane is ignored entirely (useful for tests). */
   hasGround = true;
 
+  /**
+   * Parts that belong to the map rather than to a player.
+   *
+   * A house you can walk through is scenery, and scenery cannot be the thing two
+   * teams fight over. But a house made of ordinary parts is one a player can
+   * take apart, and a map whose central wall can be deleted is not a map.
+   *
+   * So fixtures are collided with, raycast against, snapped to and routed around
+   * exactly like any other part — the only difference is that the build system
+   * refuses to remove them. Everything that makes the house useful to build
+   * against still works; only demolition is off.
+   */
+  private readonly fixtures = new Set<PartId>();
+
+  /**
+   * Fixtures that can be climbed anyway — ladder rungs nailed to a trunk.
+   *
+   * The climb rule is "any near-vertical surface you can reach", which is the
+   * right rule for player-built structures: nail rungs between two rails and the
+   * game recognises a ladder without being told. Applied to the map it is the
+   * wrong rule entirely, because it means shimmying up a flat stucco wall onto
+   * the roof — and the roof being hard to reach is the reason the house is in
+   * the middle of the map at all.
+   *
+   * So: you can climb what you built. You cannot climb the neighbourhood, except
+   * where the neighbourhood already has a ladder on it.
+   */
+  private readonly climbable = new Set<PartId>();
+
   private readonly obbScratch: Obb = makeObb();
   private readonly contactPool: Contact[] = [];
   private readonly contacts: Contact[] = [];
@@ -167,9 +196,47 @@ export class CollisionWorld {
     return handle;
   }
 
+  /**
+   * Add a part that belongs to the map and cannot be removed by a player.
+   *
+   * Same arguments as addPart. The map's visible geometry is drawn separately by
+   * the scenery batch, so nothing here is rendered — these are the solid shapes
+   * underneath it, and the two must be generated from one description or they
+   * drift and players clip through a wall that is plainly there.
+   */
+  addFixture(
+    kind: number,
+    colorway: number,
+    cx: number, cy: number, cz: number,
+    qx: number, qy: number, qz: number, qw: number,
+    hx: number, hy: number, hz: number,
+    proxy?: LocalCollisionProxy | null,
+    options: { climbable?: boolean } = {},
+  ): PartHandle {
+    const handle = this.addPart(kind, colorway, cx, cy, cz, qx, qy, qz, qw, hx, hy, hz, proxy);
+    this.fixtures.add(handle.id);
+    if (options.climbable === true) this.climbable.add(handle.id);
+    return handle;
+  }
+
+  isFixture(id: PartId): boolean {
+    return this.fixtures.has(id);
+  }
+
+  /** Everything a player placed, plus the bits of the map that have rungs on them. */
+  isClimbable(id: PartId): boolean {
+    return !this.fixtures.has(id) || this.climbable.has(id);
+  }
+
+  get fixtureCount(): number {
+    return this.fixtures.size;
+  }
+
   removePart(id: PartId): boolean {
     if (!this.store.isAlive(id)) return false;
     this.hash.remove(id);
+    this.fixtures.delete(id);
+    this.climbable.delete(id);
     this.version++;
     return this.store.remove(id);
   }
@@ -181,6 +248,8 @@ export class CollisionWorld {
   clear(): void {
     this.store.clear();
     this.hash.clear();
+    this.fixtures.clear();
+    this.climbable.clear();
     this.version++;
   }
 

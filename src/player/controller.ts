@@ -382,6 +382,9 @@ export class CharacterController {
       CAP_RADIUS + CLIMB_REACH,
     );
     if (hit === null || hit.isGround) return false;
+    // The map is not a ladder. Without this the house wall is a free lift to the
+    // roof, and the roof being awkward to reach is the point of the house.
+    if (!this.world.isClimbable(hit.part)) return false;
 
     // Near-vertical surfaces only.
     const maxY = Math.sin((CLIMB_MAX_TILT_DEG * Math.PI) / 180);
@@ -409,7 +412,7 @@ export class CharacterController {
       dx !== 0 || dz !== 0 ? dx : 0, 0, dx !== 0 || dz !== 0 ? dz : 1,
       CAP_RADIUS + CLIMB_REACH,
     );
-    if (still === null || still.isGround) {
+    if (still === null || still.isGround || !this.world.isClimbable(still.part)) {
       this.climbing = false;
       this.stepGrounded(dt, intent);
       return;

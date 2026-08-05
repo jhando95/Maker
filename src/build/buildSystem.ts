@@ -455,6 +455,9 @@ export class BuildSystem {
   }
 
   applyRemove(id: PartId): boolean {
+    // The map is not the player's to demolish. Aiming at the house and pressing
+    // remove has to do nothing rather than open a hole in the level.
+    if (this.world.isFixture(id)) return false;
     if (!this.world.removePart(id)) return false;
     this.renderer.remove(id);
     const i = this.history.lastIndexOf(id);
