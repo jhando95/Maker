@@ -15,7 +15,7 @@ import type { ProjectileSystem } from './projectiles.ts';
 import type { GameMode } from './gameMode.ts';
 import { CAP_HEIGHT, CAP_RADIUS } from '../physics/constants.ts';
 import { wetBlend } from './wetness.ts';
-import type { Actor } from './actor.ts';
+import type { Actor, Team } from './actor.ts';
 
 const MAX_BOTS = 24;
 /** Simultaneous splash bursts. */
@@ -84,9 +84,38 @@ export class ModeRenderer {
   private static readonly NO_ROTATION = new THREE.Quaternion();
   /** Hoisted: composing a character's matrix allocated one of these per bot per frame. */
   private static readonly UP = new THREE.Vector3(0, 1, 0);
-  /** A dry shirt, and the same shirt wringing wet. */
-  private static readonly DRY_KID = new THREE.Color().setHex(0xe07a4f, THREE.SRGBColorSpace);
-  private static readonly SOAKED_KID = new THREE.Color().setHex(0x6b3524, THREE.SRGBColorSpace);
+  /**
+   * A dry shirt and the same shirt wringing wet, per side.
+   *
+   * Two palettes rather than one because the moment your own team existed, one
+   * palette meant every kid on the lawn looked identical and the flag game
+   * became guesswork — you cannot decide who to throw at if you cannot tell who
+   * is who. Violet against the neighbourhood's oranges and greens rather than a
+   * second warm colour, and deliberately not the pale blue a stunned kid washes
+   * out to, which would make "on your side" and "out of it" the same cue.
+   */
+  private static readonly SHIRTS: Record<Team, { dry: THREE.Color; soaked: THREE.Color }> = {
+    left: {
+      dry: new THREE.Color().setHex(0x7a3fc8, THREE.SRGBColorSpace),
+      soaked: new THREE.Color().setHex(0x321a5c, THREE.SRGBColorSpace),
+    },
+    right: {
+      dry: new THREE.Color().setHex(0xe07a4f, THREE.SRGBColorSpace),
+      soaked: new THREE.Color().setHex(0x6b3524, THREE.SRGBColorSpace),
+    },
+  };
+
+  /**
+   * What being stunned looks like: your own shirt, washed out.
+   *
+   * Not a colour of its own. A fixed pale blue for "out of it" competed with the
+   * blue-violet of a team — a screenshot with one kid from each side in it had
+   * them reading as the same thing, and under the toon ramp a mid violet
+   * desaturates almost exactly onto that blue. Washing the team colour toward
+   * this keeps who someone is while saying they are briefly not a threat, which
+   * are two different questions and should not share a channel.
+   */
+  private static readonly STUNNED_WASH = new THREE.Color().setHex(0xd6e2ea, THREE.SRGBColorSpace);
 
   constructor() {
     this.group.name = 'mode';
@@ -417,12 +446,12 @@ export class ModeRenderer {
       // Stunned characters wash out toward blue, so it is obvious at a glance
       // who is still a threat. Otherwise the shirt darkens as it soaks, which is
       // how the player reads who is nearly finished and picks a target.
-      if (who.stunned === true) {
-        this.color.setHex(0x7fb8d8, THREE.SRGBColorSpace);
-      } else {
-        this.color.copy(ModeRenderer.DRY_KID);
-        this.color.lerp(ModeRenderer.SOAKED_KID, wetBlend(mode?.wetnessOf?.(who.id) ?? 0));
-      }
+      const shirt = ModeRenderer.SHIRTS[who.team];
+      this.color.copy(shirt.dry);
+      this.color.lerp(shirt.soaked, wetBlend(mode?.wetnessOf?.(who.id) ?? 0));
+      // Washed out while stunned, so it stays obvious at a glance who is still a
+      // threat without costing the team colour that says whose side they are on.
+      if (who.stunned === true) this.color.lerp(ModeRenderer.STUNNED_WASH, 0.72);
       this.botBody.setColorAt(count, this.color);
 
       this.pos.set(body.x, body.y + CAP_HEIGHT - 0.05, body.z);

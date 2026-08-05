@@ -176,6 +176,9 @@ export class FortDefenseMode implements GameMode {
   }
 
   fixedUpdate(dt: number, ctx: ModeContext, input: ModeInput): void {
+    // The mode owns its bots, so the mode keeps the roster honest — before the
+    // early return, so a finished round still draws the right people.
+    ctx.actors.refresh(this.bots);
     if (this.finished) return;
 
     this.messageTimer -= dt;

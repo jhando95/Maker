@@ -17,6 +17,14 @@
  * what the build phase exists to stop. Guards stay near theirs and never chase,
  * which is what stops the other direction from being a walk. A mode with only
  * runners is a tower defence; with only guards, a foot race.
+ *
+ * Both sides have kids on them, which is newer than the rest of this file and
+ * changed how it is written. Every rule here used to be phrased from the
+ * player's point of view — "is this the flag PLAYER_TEAM owns" standing in for
+ * "is this mine" — and each was implemented twice, once for the player and once
+ * for bots. The rules were always symmetric; only the code was not, and two
+ * copies of a symmetric rule is how a teammate ends up able to steal its own
+ * flag. They are written once now and run for whichever side is asking.
  */
 
 import { Bot, BOT_TIERS, type BotConfig } from './bot.ts';
@@ -25,7 +33,10 @@ import type { GameMode, Marker, ModeContext, ModeHud, ModeInput, ModeSummary } f
 import { CAP_HEIGHT, CAP_RADIUS } from '../physics/constants.ts';
 import { NavField } from './navField.ts';
 import { LEFT_FLAG, RIGHT_FLAG, LEFT_SPAWN, RIGHT_SPAWN } from '../world/neighborhood.ts';
-import type { Team } from './actor.ts';
+import { LOCAL_ACTOR_ID, opposing, type Actor, type Team } from './actor.ts';
+
+/** Both sides, for rules that are the same whichever one you are on. */
+const TEAMS: readonly Team[] = ['left', 'right'];
 
 export type CtfPhase = 'setup' | 'capture' | 'over';
 
@@ -56,6 +67,18 @@ export const SOAK_PENALTY = 1.6;
 export const BOT_RESPAWN_TIME = 6;
 /** Bots on the field at once. */
 export const ENEMY_COUNT = 5;
+/**
+ * Kids on your side.
+ *
+ * Two rather than none because a capture-the-flag game with one player on a
+ * team is not capture the flag — it is a fetch quest with obstacles. Two rather
+ * than five because they have to leave you something to do: at parity the round
+ * resolves itself while you watch.
+ *
+ * One runs and one guards, mirroring how the other side splits, so your flag
+ * has somebody on it when you are across the map.
+ */
+export const ALLY_COUNT = 2;
 /** Seconds between nav-field rebuilds. */
 export const NAV_REBUILD_INTERVAL = 0.25;
 
@@ -87,8 +110,6 @@ function makeFlag(team: Team, home: { x: number; z: number }): FlagState {
     returnTimer: 0,
   };
 }
-
-const PLAYER_CARRIER = 0;
 
 /** The player's team. Bots are the other one. */
 const PLAYER_TEAM: Team = 'left';
@@ -130,12 +151,19 @@ export class CaptureTheFlagMode implements GameMode {
   private readonly guards = new Set<number>();
 
   /**
-   * Two fields, because the two roles walk to different places and a flow field
-   * is defined by its goal. Rebuilding one field twice a tick would cost more
-   * than keeping two.
+   * A field per role per side.
+   *
+   * A flow field is defined by its goal, and the two roles walk to different
+   * places, so one field cannot serve both — rebuilding it twice a tick would
+   * cost more than keeping two. Now that both sides have kids on them it is four,
+   * which sounds worse than it is: a rebuild is bounded by the grid, not by how
+   * many characters read the result, and the alternative is bots on your team
+   * pathing to the enemy's objective.
    */
-  private readonly navAttack = new NavField(26);
-  private readonly navHome = new NavField(26);
+  private readonly nav: Record<Team, { attack: NavField; home: NavField }> = {
+    left: { attack: new NavField(26), home: new NavField(26) },
+    right: { attack: new NavField(26), home: new NavField(26) },
+  };
   private navTimer = 0;
 
   private readonly targets: BalloonTarget[] = [];
@@ -169,6 +197,8 @@ export class CaptureTheFlagMode implements GameMode {
   }
 
   fixedUpdate(dt: number, ctx: ModeContext, input: ModeInput): void {
+    // Before the early return, so a finished round still draws the right people.
+    ctx.actors.refresh(this.bots);
     if (this.finished) return;
 
     this.messageTimer -= dt;
@@ -203,7 +233,7 @@ export class CaptureTheFlagMode implements GameMode {
 
     // Route before the first tick, so nobody spends it walking into a wall.
     this.rebuildNav(ctx);
-    this.spawnEnemies(ctx);
+    this.spawnTeams(ctx);
     this.setMessage('Go! Bring their flag home.', 4);
     ctx.emit({ type: 'phaseChange', phase: 'capture' });
   }
@@ -271,23 +301,19 @@ export class CaptureTheFlagMode implements GameMode {
     this.checkCaptures(ctx);
   }
 
-  /** A carried flag rides on its carrier. */
+  /** A carried flag rides on its carrier, whoever that turned out to be. */
   private followCarrier(flag: FlagState, ctx: ModeContext): void {
-    if (flag.carrier === PLAYER_CARRIER) {
-      flag.x = ctx.player.x;
-      flag.y = ctx.player.y;
-      flag.z = ctx.player.z;
-      return;
-    }
-    const bot = this.bots.find((b) => b.id === flag.carrier);
-    if (bot === undefined || !bot.alive) {
+    const carrier = flag.carrier === null ? undefined : ctx.actors.get(flag.carrier);
+    if (carrier === undefined || carrier.alive === false) {
       // The carrier stopped existing — soaked, or the round reset around it.
+      // A soaked *player* drops it in soakPlayer instead, because they also get
+      // sent home, and the flag should land where they fell rather than there.
       this.dropFlag(flag, ctx);
       return;
     }
-    flag.x = bot.x;
-    flag.y = bot.y;
-    flag.z = bot.z;
+    flag.x = carrier.controller.x;
+    flag.y = carrier.controller.y;
+    flag.z = carrier.controller.z;
   }
 
   private dropFlag(flag: FlagState, ctx: ModeContext): void {
@@ -297,38 +323,39 @@ export class CaptureTheFlagMode implements GameMode {
     ctx.emit({ type: 'flagDropped', x: flag.x, y: flag.y + 0.9, z: flag.z });
   }
 
-  /** Anyone standing on a flag either takes it or sends it home. */
+  /**
+   * Anyone standing on a flag either takes it or sends it home.
+   *
+   * One rule over everyone, which is what the roster bought. This was written
+   * twice — once for the player, once for bots — with `flag.team === PLAYER_TEAM`
+   * standing in for "is this mine". Two copies of a symmetric rule is how a
+   * teammate ends up able to steal their own flag.
+   */
   private checkTouches(flag: FlagState, ctx: ModeContext): void {
-    const playerNear = near(ctx.player.x, ctx.player.z, flag.x, flag.z, FLAG_RADIUS);
-    if (playerNear && this.playerSoakedFor <= 0) {
-      if (flag.team === PLAYER_TEAM) {
+    for (const who of ctx.actors.all) {
+      if (!this.active(who)) continue;
+      const body = who.controller;
+      if (!near(body.x, body.z, flag.x, flag.z, FLAG_RADIUS)) continue;
+
+      if (who.team === flag.team) {
         // Your own flag: touching it away from home sends it back.
         if (flag.status === 'dropped') {
           this.resetFlag(flag.team);
           ctx.emit({ type: 'flagReturned', x: flag.homeX, y: 0.9, z: flag.homeZ });
         }
-      } else {
-        flag.status = 'carried';
-        flag.carrier = PLAYER_CARRIER;
-        ctx.emit({ type: 'flagTaken', x: flag.x, y: flag.y + 0.9, z: flag.z, byPlayer: true });
-        this.setMessage('You have their flag. Get it home.', 3.5);
+        return;
       }
-      return;
-    }
 
-    for (const bot of this.bots) {
-      if (!bot.alive) continue;
-      if (!near(bot.x, bot.z, flag.x, flag.z, FLAG_RADIUS)) continue;
-
-      if (flag.team === PLAYER_TEAM) {
-        flag.status = 'carried';
-        flag.carrier = bot.id;
-        ctx.emit({ type: 'flagTaken', x: flag.x, y: flag.y + 0.9, z: flag.z, byPlayer: false });
-        this.setMessage('They have your flag!', 3.5);
-      } else if (flag.status === 'dropped') {
-        this.resetFlag(flag.team);
-        ctx.emit({ type: 'flagReturned', x: flag.homeX, y: 0.9, z: flag.homeZ });
-      }
+      const mine = who.id === LOCAL_ACTOR_ID;
+      flag.status = 'carried';
+      flag.carrier = who.id;
+      ctx.emit({ type: 'flagTaken', x: flag.x, y: flag.y + 0.9, z: flag.z, byPlayer: mine });
+      this.setMessage(
+        mine ? 'You have their flag. Get it home.'
+          : who.team === PLAYER_TEAM ? 'Your side has their flag!'
+            : 'They have your flag!',
+        3.5,
+      );
       return;
     }
   }
@@ -341,28 +368,24 @@ export class CaptureTheFlagMode implements GameMode {
    * way a first-pass CTF mode turns out not to be a game.
    */
   private checkCaptures(ctx: ModeContext): void {
-    const ours = this.flags[PLAYER_TEAM];
-    const theirs = this.flags.right;
+    for (const team of TEAMS) {
+      const base = this.flags[team];
+      const stolen = this.flags[opposing(team)];
 
-    if (
-      theirs.status === 'carried' && theirs.carrier === PLAYER_CARRIER &&
-      ours.status === 'home' &&
-      near(ctx.player.x, ctx.player.z, ours.homeX, ours.homeZ, FLAG_RADIUS + 0.6)
-    ) {
-      this.scoreLeft++;
-      ctx.emit({ type: 'captured', byPlayer: true });
-      this.finishRound(ctx, true);
+      if (stolen.status !== 'carried' || base.status !== 'home') continue;
+      const carrier = stolen.carrier === null ? undefined : ctx.actors.get(stolen.carrier);
+      if (carrier === undefined || carrier.team !== team) continue;
+      if (!near(carrier.controller.x, carrier.controller.z, base.homeX, base.homeZ, FLAG_RADIUS + 0.6)) continue;
+
+      // Your team scoring counts whether it was you or the kid next to you —
+      // which is the point of having a team, and is why this is keyed off the
+      // carrier's side rather than off whether the carrier was the player.
+      const forPlayer = team === PLAYER_TEAM;
+      if (forPlayer) this.scoreLeft++;
+      else this.scoreRight++;
+      ctx.emit({ type: 'captured', byPlayer: forPlayer });
+      this.finishRound(ctx, forPlayer);
       return;
-    }
-
-    if (ours.status === 'carried' && ours.carrier !== PLAYER_CARRIER && theirs.status === 'home') {
-      const carrier = this.bots.find((b) => b.id === ours.carrier);
-      if (carrier !== undefined &&
-          near(carrier.x, carrier.z, theirs.homeX, theirs.homeZ, FLAG_RADIUS + 0.6)) {
-        this.scoreRight++;
-        ctx.emit({ type: 'captured', byPlayer: false });
-        this.finishRound(ctx, false);
-      }
     }
   }
 
@@ -399,21 +422,32 @@ export class CaptureTheFlagMode implements GameMode {
     return 2;
   }
 
-  private spawnEnemies(ctx: ModeContext): void {
+  private spawnTeams(ctx: ModeContext): void {
     const guards = this.guardCount();
     for (let i = 0; i < ENEMY_COUNT; i++) {
       const tier: BotConfig =
         i === 0 ? BOT_TIERS.tough! : i < 3 ? BOT_TIERS.normal! : BOT_TIERS.easy!;
-      const bot = this.spawnBot(ctx, tier, i);
+      const bot = this.spawnBot(ctx, tier, i, 'right');
       if (i < guards) this.guards.add(bot.id);
+    }
+
+    // Your side: one guard, one runner. Deliberately the middle tier rather than
+    // the tough one — an ally who plays better than you do is not a teammate,
+    // it is the game finishing without you.
+    for (let i = 0; i < ALLY_COUNT; i++) {
+      const bot = this.spawnBot(ctx, BOT_TIERS.normal!, i, PLAYER_TEAM);
+      if (i === 0) this.guards.add(bot.id);
     }
   }
 
-  private spawnBot(ctx: ModeContext, tier: BotConfig, index: number): Bot {
-    // Spread along their spawn line so five bots do not arrive stacked.
-    const x = RIGHT_SPAWN.x - (index % 3) * 1.4;
-    const z = RIGHT_SPAWN.z + (index - 2) * 1.8;
+  private spawnBot(ctx: ModeContext, tier: BotConfig, index: number, team: Team): Bot {
+    // Spread along the spawn line so a whole side does not arrive stacked.
+    const home = team === 'left' ? LEFT_SPAWN : RIGHT_SPAWN;
+    const away = team === 'left' ? 1 : -1;
+    const x = home.x + away * (index % 3) * 1.4;
+    const z = home.z + (index - 2) * 1.8;
     const bot = new Bot(this.nextBotId++, ctx.world, ctx.rng.fork(), tier, x, 0.6, z);
+    bot.team = team;
     this.bots.push(bot);
     return bot;
   }
@@ -437,47 +471,79 @@ export class CaptureTheFlagMode implements GameMode {
       const index = this.bots.findIndex((b) => b.id === id);
       if (index === -1) continue;
       const wasGuard = this.guards.has(id);
+      // Read the side before the bot goes, or the replacement comes back on
+      // whichever team the default happens to be.
+      const team = this.bots[index]!.team;
       this.guards.delete(id);
       this.bots.splice(index, 1);
 
-      const replacement = this.spawnBot(ctx, BOT_TIERS.normal!, index);
+      const replacement = this.spawnBot(ctx, BOT_TIERS.normal!, index, team);
       if (wasGuard) this.guards.add(replacement.id);
     }
   }
 
+  /**
+   * Where each side is walking, written once and run for both.
+   *
+   * This used to be one team's worth of routing with the player's flag baked in
+   * as "the objective". The rule underneath is symmetric and always was: runners
+   * head for the flag they are stealing, or for their own base once they hold
+   * it, and guards converge on their own flag wherever it has got to.
+   */
   private rebuildNav(ctx: ModeContext): void {
-    const ours = this.flags[PLAYER_TEAM];
-    // Runners head for your flag, or for their own base once they have it.
-    if (ours.status === 'carried' && ours.carrier !== PLAYER_CARRIER) {
-      this.navAttack.rebuild(ctx.world, this.flags.right.homeX, this.flags.right.homeZ);
-    } else {
-      this.navAttack.rebuild(ctx.world, ours.x, ours.z);
+    for (const team of TEAMS) {
+      const base = this.flags[team];
+      const target = this.flags[opposing(team)];
+      const fields = this.nav[team];
+
+      const carriedByUs = target.status === 'carried' && this.teamOf(ctx, target.carrier) === team;
+      if (carriedByUs) fields.attack.rebuild(ctx.world, base.homeX, base.homeZ);
+      else fields.attack.rebuild(ctx.world, target.x, target.z);
+
+      fields.home.rebuild(ctx.world, base.x, base.z);
     }
-    // Guards converge on their own flag, wherever it currently is.
-    this.navHome.rebuild(ctx.world, this.flags.right.x, this.flags.right.z);
+  }
+
+  /** Which side an actor is on, or undefined for nobody. */
+  private teamOf(ctx: ModeContext, id: number | null): Team | undefined {
+    if (id === null) return undefined;
+    return ctx.actors.get(id)?.team;
+  }
+
+  /**
+   * Able to carry a flag or be shot at.
+   *
+   * The player being soaked and a bot being down are the same state wearing two
+   * names, and every rule below wants to ask about it once.
+   */
+  private active(who: Actor): boolean {
+    if (who.id === LOCAL_ACTOR_ID) return this.playerSoakedFor <= 0;
+    return who.alive !== false;
   }
 
   private updateBots(dt: number, ctx: ModeContext): void {
-    const ours = this.flags[PLAYER_TEAM];
-    const theirs = this.flags.right;
-
     for (const bot of this.bots) {
       if (!bot.alive) continue;
 
+      // From this kid's point of view rather than the player's: the flag it is
+      // stealing, and the one it is defending. The old version read the player's
+      // flag as "the objective", which is true for exactly one of the two sides.
+      const target = this.flags[opposing(bot.team)];
+      const base = this.flags[bot.team];
       const isGuard = this.guards.has(bot.id);
-      const carrying = ours.carrier === bot.id;
+      const carrying = target.carrier === bot.id;
 
       let goalX: number;
       let goalZ: number;
       if (carrying) {
-        goalX = theirs.homeX;
-        goalZ = theirs.homeZ;
+        goalX = base.homeX;
+        goalZ = base.homeZ;
       } else if (isGuard) {
-        goalX = theirs.x;
-        goalZ = theirs.z;
+        goalX = base.x;
+        goalZ = base.z;
       } else {
-        goalX = ours.x;
-        goalZ = ours.z;
+        goalX = target.x;
+        goalZ = target.z;
       }
 
       bot.targetX = goalX;
@@ -492,24 +558,52 @@ export class CaptureTheFlagMode implements GameMode {
         bot.targetZ = bot.z;
       }
 
-      const canSee = this.canSeePlayer(ctx, bot);
-      bot.aimX = ctx.player.x;
-      bot.aimY = ctx.player.y + CAP_HEIGHT * 0.6;
-      bot.aimZ = ctx.player.z;
-      bot.hasAim = canSee && this.playerSoakedFor <= 0;
+      const mark = this.nearestVisibleEnemy(ctx, bot);
+      if (mark !== null) {
+        bot.aimX = mark.x;
+        bot.aimY = mark.y + CAP_HEIGHT * 0.6;
+        bot.aimZ = mark.z;
+      }
+      bot.hasAim = mark !== null;
 
-      bot.update(dt, ctx.projectiles, canSee, carrying || isGuard ? this.navHome : this.navAttack);
+      const fields = this.nav[bot.team];
+      bot.update(dt, ctx.projectiles, mark !== null, carrying || isGuard ? fields.home : fields.attack);
     }
   }
 
-  private canSeePlayer(ctx: ModeContext, bot: Bot): boolean {
-    const dx = ctx.player.x - bot.x;
-    const dy = ctx.player.y + CAP_HEIGHT * 0.6 - (bot.y + CAP_HEIGHT * 0.75);
-    const dz = ctx.player.z - bot.z;
-    const distance = Math.hypot(dx, dy, dz);
-    if (distance > 18) return false;
-    const hit = ctx.world.raycast(bot.x, bot.y + CAP_HEIGHT * 0.75, bot.z, dx, dy, dz, distance);
-    return hit === null || hit.distance >= distance - CAP_RADIUS;
+  /**
+   * The closest person on the other side this bot can actually see.
+   *
+   * Replaces "can this bot see the player", which was the only question worth
+   * asking while the player was the only thing to shoot at. Now that both sides
+   * have kids on them, a bot that could only ever aim at the player would walk
+   * straight past the enemy carrying its flag.
+   */
+  private nearestVisibleEnemy(
+    ctx: ModeContext,
+    bot: Bot,
+  ): { x: number; y: number; z: number } | null {
+    let best: { x: number; y: number; z: number } | null = null;
+    let bestDistance = Infinity;
+
+    for (const who of ctx.actors.all) {
+      if (who.team === bot.team || who.id === bot.id) continue;
+      if (!this.active(who)) continue;
+
+      const body = who.controller;
+      const dx = body.x - bot.x;
+      const dy = body.y + CAP_HEIGHT * 0.6 - (bot.y + CAP_HEIGHT * 0.75);
+      const dz = body.z - bot.z;
+      const distance = Math.hypot(dx, dy, dz);
+      if (distance > 18 || distance >= bestDistance) continue;
+
+      const hit = ctx.world.raycast(bot.x, bot.y + CAP_HEIGHT * 0.75, bot.z, dx, dy, dz, distance);
+      if (hit !== null && hit.distance < distance - CAP_RADIUS) continue;
+
+      bestDistance = distance;
+      best = { x: body.x, y: body.y, z: body.z };
+    }
+    return best;
   }
 
   // ── The player's balloons ──────────────────────────────────────────────────
@@ -550,20 +644,22 @@ export class CaptureTheFlagMode implements GameMode {
     const ox = ctx.player.x + dir.x * 0.6;
     const oy = ctx.player.y + CAP_HEIGHT * 0.8;
     const oz = ctx.player.z + dir.z * 0.6;
-    ctx.projectiles.spawn(ox, oy, oz, dir.x, dir.y + 0.06, dir.z, speed, PLAYER_CARRIER);
+    ctx.projectiles.spawn(ox, oy, oz, dir.x, dir.y + 0.06, dir.z, speed, LOCAL_ACTOR_ID);
     ctx.emit({ type: 'throw', x: ox, y: oy, z: oz });
   }
 
   private updateProjectiles(dt: number, ctx: ModeContext): void {
+    // Everyone is a target the same way. A stunned character is skipped rather
+    // than hit again, which is what Bot.asTarget did for bots and is now simply
+    // what the rule says for anyone.
     this.targets.length = 0;
-    for (const bot of this.bots) {
-      if (bot.alive) this.targets.push(bot.asTarget());
-    }
-    if (this.playerSoakedFor <= 0) {
+    for (const who of ctx.actors.all) {
+      const body = who.controller;
       this.targets.push({
-        x: ctx.player.x, y: ctx.player.y, z: ctx.player.z,
+        x: body.x, y: body.y, z: body.z,
         radius: CAP_RADIUS, height: CAP_HEIGHT,
-        id: PLAYER_CARRIER, alive: true,
+        id: who.id,
+        alive: this.active(who) && who.stunned !== true,
       });
     }
 
@@ -579,8 +675,14 @@ export class CaptureTheFlagMode implements GameMode {
       for (const index of caught) {
         const target = this.targets[index];
         if (target === undefined) continue;
+        // No soaking your own side. The projectile system already refuses to hit
+        // whoever threw it, which was the whole of the problem while one of the
+        // two sides was a single person — now a teammate's splash could send you
+        // home, and being knocked out of a round by your own team is not a
+        // mechanic, it is a bug with a story.
+        if (ctx.actors.friendly(hit.ownerId, target.id)) continue;
 
-        if (target.id === PLAYER_CARRIER) {
+        if (target.id === LOCAL_ACTOR_ID) {
           this.soakPlayer(ctx);
           continue;
         }
@@ -588,9 +690,10 @@ export class CaptureTheFlagMode implements GameMode {
         if (bot === undefined || !bot.soak()) continue;
 
         ctx.emit({ type: 'botSoaked', x: bot.x, y: bot.y + 1, z: bot.z });
-        // Anything it was carrying falls where it fell.
-        const ours = this.flags[PLAYER_TEAM];
-        if (ours.carrier === bot.id) this.dropFlag(ours, ctx);
+        // Whatever it was carrying falls where it fell — the flag it stole,
+        // whichever side it was on.
+        const stolen = this.flags[opposing(bot.team)];
+        if (stolen.carrier === bot.id) this.dropFlag(stolen, ctx);
       }
     }
   }
@@ -606,7 +709,7 @@ export class CaptureTheFlagMode implements GameMode {
     if (this.playerSoakedFor > 0) return;
     this.playerSoakedFor = SOAK_PENALTY;
     const theirs = this.flags.right;
-    if (theirs.carrier === PLAYER_CARRIER) this.dropFlag(theirs, ctx);
+    if (theirs.carrier === LOCAL_ACTOR_ID) this.dropFlag(theirs, ctx);
     ctx.player.teleport(LEFT_SPAWN.x, LEFT_SPAWN.y, LEFT_SPAWN.z);
     ctx.emit({ type: 'playerSoaked' });
     this.setMessage('Soaked! Back to your yard.', 2.5);
@@ -628,7 +731,7 @@ export class CaptureTheFlagMode implements GameMode {
 
   /** True when the player is carrying the enemy flag. */
   get playerHasFlag(): boolean {
-    return this.flags.right.carrier === PLAYER_CARRIER;
+    return this.flags[opposing(PLAYER_TEAM)].carrier === LOCAL_ACTOR_ID;
   }
 
   private setMessage(text: string, seconds: number): void {

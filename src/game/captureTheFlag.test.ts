@@ -7,7 +7,7 @@ import { CameraRig } from '../player/cameraRig.ts';
 import { ProjectileSystem } from './projectiles.ts';
 import {
   CaptureTheFlagMode, FIRST_SETUP_TIME, SETUP_TIME, CAPTURES_TO_WIN,
-  FLAG_RETURN_TIME, PLAYER_AMMO_MAX, ENEMY_COUNT, BOT_RESPAWN_TIME,
+  FLAG_RETURN_TIME, PLAYER_AMMO_MAX, ENEMY_COUNT, ALLY_COUNT, BOT_RESPAWN_TIME,
 } from './captureTheFlag.ts';
 import type { GameEvent, ModeContext, ModeInput } from './gameMode.ts';
 import { Rng } from '../core/rng.ts';
@@ -76,10 +76,18 @@ describe('CaptureTheFlagMode', () => {
       expect(mode.buildingAllowed).toBe(false);
     });
 
-    it('spawns the enemy team when capture begins', () => {
+    it('spawns both sides when capture begins', () => {
       expect(mode.bots.length).toBe(0);
       run(mode, ctx, FIRST_SETUP_TIME + 0.2);
-      expect(mode.bots.length).toBe(ENEMY_COUNT);
+      expect(mode.bots.filter((b) => b.team === 'right').length).toBe(ENEMY_COUNT);
+      expect(mode.bots.filter((b) => b.team === 'left').length).toBe(ALLY_COUNT);
+    });
+
+    it('leaves you outnumbered, so there is still something to do', () => {
+      // Allies exist to make it a team game, not to play it for you. Parity
+      // would mean the round resolving itself while you watch.
+      run(mode, ctx, FIRST_SETUP_TIME + 0.2);
+      expect(ENEMY_COUNT).toBeGreaterThan(ALLY_COUNT + 1);
     });
 
     it('gives a longer first setup than the ones after it', () => {
@@ -289,16 +297,116 @@ describe('CaptureTheFlagMode', () => {
       expect(mode.scoreRight).toBe(1);
       expect(events.some((e) => e.type === 'captured' && !e.byPlayer)).toBe(true);
     });
+  });
+
+  describe('your side', () => {
+    beforeEach(() => run(mode, ctx, FIRST_SETUP_TIME + 0.2));
+
+    const ally = () => mode.bots.find((b) => b.team === 'left')!;
+
+    it('takes their flag, not its own', () => {
+      // The rule used to be written from the player's point of view — "is this
+      // the flag PLAYER_TEAM owns" — which is the right question for exactly one
+      // of the two sides. A teammate reading it got to steal its own flag.
+      const mate = ally();
+      mate.controller.teleport(LEFT_FLAG.x, 0.5, LEFT_FLAG.z);
+      run(mode, ctx, DT * 2);
+      expect(mode.flags.left.status).toBe('home');
+
+      mate.controller.teleport(RIGHT_FLAG.x, 0.5, RIGHT_FLAG.z);
+      run(mode, ctx, DT * 2);
+      expect(mode.flags.right.carrier).toBe(mate.id);
+    });
+
+    it('scores for you when it gets their flag home', () => {
+      // The point of having a side. Keyed off the carrier's team rather than
+      // off whether the carrier was the player, or a teammate could run the
+      // flag onto your stand and nothing at all would happen.
+      const mate = ally();
+      mate.controller.teleport(RIGHT_FLAG.x, 0.5, RIGHT_FLAG.z);
+      run(mode, ctx, DT * 2);
+      mate.controller.teleport(LEFT_FLAG.x, 0.5, LEFT_FLAG.z);
+      run(mode, ctx, DT * 2);
+      expect(mode.scoreLeft).toBe(1);
+      expect(events.some((e) => e.type === 'captured' && e.byPlayer)).toBe(true);
+    });
+
+    it('sends your own dropped flag home when it walks over it', () => {
+      const enemy = mode.bots.find((b) => b.team === 'right')!;
+      enemy.controller.teleport(LEFT_FLAG.x, 0.5, LEFT_FLAG.z);
+      run(mode, ctx, DT * 2);
+      expect(mode.flags.left.status).toBe('carried');
+
+      // Enemy goes down mid-field; the flag lies where it fell.
+      enemy.controller.teleport(0, 0.5, 8);
+      run(mode, ctx, DT * 2);
+      while (!enemy.soak()) { /* down */ }
+      run(mode, ctx, DT * 4);
+      expect(mode.flags.left.status).toBe('dropped');
+
+      const mate = ally();
+      mate.controller.teleport(mode.flags.left.x, 0.5, mode.flags.left.z);
+      run(mode, ctx, DT * 2);
+      expect(mode.flags.left.status).toBe('home');
+    });
+
+    it('cannot soak you, because being knocked out by your own team is not a mechanic', () => {
+      const mate = ally();
+      mate.controller.teleport(ctx.player.x + 0.5, 0.5, ctx.player.z);
+      // A balloon of theirs landing right on top of the two of you.
+      ctx.projectiles.spawn(ctx.player.x, ctx.player.y + 4, ctx.player.z, 0, -1, 0, 14, mate.id);
+      run(mode, ctx, DT * 30);
+      expect(events.some((e) => e.type === 'playerSoaked')).toBe(false);
+    });
+
+    it('is still hittable by the other side', () => {
+      // The friendly-fire rule has to be about sides, not about being a bot: if
+      // it read "skip bots" the enemy could never be stopped either. Counted in
+      // hits rather than waiting for a soak, because a normal-tier kid takes two
+      // and the test would then be measuring toughness instead of the rule.
+      const mate = ally();
+      const enemy = mode.bots.find((b) => b.team === 'right')!;
+      const before = mate.hits;
+      ctx.projectiles.spawn(mate.x, mate.y + 4, mate.z, 0, -1, 0, 14, enemy.id);
+      for (let i = 0; i < 40; i++) {
+        mate.controller.teleport(mate.x, 0.5, mate.z);
+        mode.fixedUpdate(DT, ctx, noInput);
+      }
+      expect(mate.hits).toBeGreaterThan(before);
+    });
+
+    it('is not hit by its own side either', () => {
+      // The mirror of the rule above, from the bot's side rather than yours.
+      const mate = ally();
+      const other = mode.bots.filter((b) => b.team === 'left')[1] ?? mate;
+      const before = mate.hits;
+      ctx.projectiles.spawn(mate.x, mate.y + 4, mate.z, 0, -1, 0, 14, other.id);
+      for (let i = 0; i < 40; i++) {
+        mate.controller.teleport(mate.x, 0.5, mate.z);
+        mode.fixedUpdate(DT, ctx, noInput);
+      }
+      expect(mate.hits).toBe(before);
+    });
 
     it('replaces a soaked bot rather than thinning the field', () => {
       // Permanent deaths would make the second half of every round a walk.
-      const bot = mode.bots[0]!;
+      const enemies = () => mode.bots.filter((b) => b.alive && b.team === 'right').length;
+      const bot = mode.bots.find((b) => b.team === 'right')!;
       while (!bot.soak()) { /* down */ }
       run(mode, ctx, DT * 2);
-      expect(mode.bots.filter((b) => b.alive).length).toBe(ENEMY_COUNT - 1);
+      expect(enemies()).toBe(ENEMY_COUNT - 1);
 
       run(mode, ctx, BOT_RESPAWN_TIME + 0.5);
-      expect(mode.bots.filter((b) => b.alive).length).toBe(ENEMY_COUNT);
+      expect(enemies()).toBe(ENEMY_COUNT);
+    });
+
+    it('brings a soaked ally back on your side, not theirs', () => {
+      // The replacement reads the side off the bot it is replacing. Reading it
+      // after the splice, or not at all, quietly hands your teammate to them.
+      const ally = mode.bots.find((b) => b.team === 'left')!;
+      while (!ally.soak()) { /* down */ }
+      run(mode, ctx, BOT_RESPAWN_TIME + 0.5);
+      expect(mode.bots.filter((b) => b.alive && b.team === 'left').length).toBe(ALLY_COUNT);
     });
   });
 

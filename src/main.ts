@@ -291,6 +291,9 @@ function stopRound(): void {
   mode = null;
   projectiles.clear();
   modeRenderer.clear();
+  // A mode keeps the roster in step while it is ticking; when it stops ticking
+  // there is nobody left to draw but the player.
+  actors.refresh([]);
 }
 
 function restartRound(): void {
@@ -718,11 +721,6 @@ function simulate(dt: number): void {
       firePressed: input.wasPressed('placePart'),
       fireReleased: input.wasReleased('placePart'),
     };
-    // Rebuilt before the mode runs rather than after, so a mode asking who is in
-    // the world during its own tick gets this tick's answer. Bots spawned during
-    // the tick appear next tick, which is the same one-frame delay they already
-    // had before they could be drawn.
-    actors.refresh(mode.bots);
     mode.fixedUpdate(dt, modeContext, modeInput);
     if (mode.finished && modeOverTimer <= 0) modeOverTimer = 4;
   }
