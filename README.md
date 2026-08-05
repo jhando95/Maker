@@ -39,6 +39,39 @@ npm run dev      # http://localhost:5173
 
 Every binding above is remappable in Settings → Controls.
 
+### Controller
+
+Any standard-mapping pad works, and is picked up the moment you touch it — the
+on-screen hints switch to match. Look speed and stick deadzone are in Settings.
+
+| | |
+|---|---|
+| Left stick | move — push it partway to walk |
+| Right stick | look |
+| `A` / `B` | jump / crouch |
+| `L3` | sprint |
+| `RT` / `X` | place / remove |
+| `LT` | free aim |
+| `LB` / `RB` | turn the held part 15° |
+| `D↑` / `D↓` | tilt / roll |
+| `Back` | reset rotation |
+| `Y` | cycle to the next snap candidate |
+| `D←` / `D→` | choose a part |
+| `R3` | first ⇄ third person |
+| `Start` | pause |
+
+Rotation gets the bumpers because it is the most-used building control and the
+bumpers are the only buttons you can reach without letting go of a stick.
+
+Undo, repeat-place and the hotbar digits stay on the keyboard: there are more
+bindable actions than a pad has buttons, and a chorded second layer would be
+harder to learn than reaching over for the two things you rarely need mid-build.
+The pad layout is fixed rather than remappable.
+
+One browser limitation, not a design choice: entering the game needs a real
+click, because pointer lock cannot be granted from a controller button. After
+that, `Start` pauses and resumes without touching the mouse.
+
 During a wave the mouse throws balloons instead of placing parts — you are never
 fumbling between two things on one button.
 
@@ -59,17 +92,27 @@ src/
   world/       backyard scene, starter structures
   game/        game modes, bots, flow-field navigation, projectiles
   audio/       synthesized sound
-  app/         settings and persistence
+  app/         settings, persistence, crash handling
   ui/          HUD
 tools/
   shoot.mjs    headless screenshot + smoke-test harness
+  bench.ts     simulation cost per tick, at 3000 parts
+scenarios/     scripted checks driven through the harness
 ```
 
 ```bash
-npm test         # 256 unit tests
+npm test         # 310 unit tests
 npm run typecheck
+npm run bench    # what a tick costs, as a share of the 16.67ms budget
 node tools/shoot.mjs --out shots/x.png   # boot headless, screenshot, fail on any console error
+node tools/shoot.mjs --scenario scenarios/gamepad.mjs   # drive a synthetic controller
 ```
+
+CI runs all of the above on every push. Two of those scenarios exist because
+some things cannot be honestly unit-tested: whether a throw inside the render
+loop actually produces a crash screen, and whether a stick push actually reaches
+the character controller. Both only happen in a browser, so both are checked in
+one.
 
 ## Design notes
 

@@ -338,6 +338,14 @@ export class Menu {
     this.toggle('Toggle crouch', 'toggleCrouch', s.toggleCrouch);
     this.toggle('Toggle sprint', 'toggleSprint', s.toggleSprint);
 
+    this.toggle('Controller', 'gamepadEnabled', s.gamepadEnabled);
+    // Shown in degrees per second: radians per second is the right unit for the
+    // code and a meaningless one for a player choosing how fast to turn.
+    this.slider('Controller look speed', 'gamepadLookSpeed', s.gamepadLookSpeed, 0.8, 6, 0.1,
+      (v) => `${Math.round((v * 180) / Math.PI)}°/s`);
+    this.slider('Controller deadzone', 'gamepadDeadzone', s.gamepadDeadzone, 0, 0.5, 0.01,
+      (v) => `${Math.round(v * 100)}%`);
+
     const spacer = document.createElement('div');
     spacer.style.height = '16px';
     this.card.appendChild(spacer);

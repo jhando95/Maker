@@ -9,6 +9,7 @@
  */
 
 import { PART_KINDS, COLORWAYS } from '../build/partKit.ts';
+import type { InputDevice } from '../core/input.ts';
 
 const STYLE = `
 .maker-hud {
@@ -139,6 +140,30 @@ export interface DebugState {
   onGround: boolean;
 }
 
+const key = (label: string) => `<span class="maker-key">${label}</span>`;
+
+const HELP_KEYBOARD = [
+  `${key('WASD')} move &nbsp; ${key('Space')} jump &nbsp; ${key('Shift')} sprint`,
+  `${key('LMB')} place &nbsp; ${key('RMB')} remove &nbsp; ${key('Alt')} free aim`,
+  `${key('Q')}${key('E')} turn &nbsp; ${key('Z')}${key('X')} tilt &nbsp; ${key('T')} reset`,
+  `${key('R')} next snap &nbsp; ${key('G')} repeat &nbsp; ${key('V')} camera`,
+  `${key('1-8')} pick part &nbsp; ${key('`')} debug`,
+];
+
+/**
+ * Mirrors PAD_BINDINGS in core/gamepad.ts. Written out rather than generated
+ * from it: the bindings are a flat list of button-to-action pairs, and these
+ * lines group verbs the way a player thinks about them — move, build, rotate —
+ * which no amount of iteration over that list would produce.
+ */
+const HELP_GAMEPAD = [
+  `${key('L Stick')} move &nbsp; ${key('A')} jump &nbsp; ${key('L3')} sprint`,
+  `${key('RT')} place &nbsp; ${key('X')} remove &nbsp; ${key('LT')} free aim`,
+  `${key('LB')}${key('RB')} turn &nbsp; ${key('D↑')}${key('D↓')} tilt &nbsp; ${key('Back')} reset`,
+  `${key('Y')} next snap &nbsp; ${key('R3')} camera &nbsp; ${key('Start')} menu`,
+  `${key('D←')}${key('D→')} pick part &nbsp; keyboard for undo &amp; repeat`,
+];
+
 export class Hud {
   readonly root: HTMLDivElement;
 
@@ -151,8 +176,10 @@ export class Hud {
   private readonly modePanel: HTMLDivElement;
   private readonly messageEl: HTMLDivElement;
   private readonly ammoEl: HTMLDivElement;
+  private readonly help: HTMLDivElement;
 
   private debugVisible = false;
+  private device: InputDevice = 'keyboard';
 
   constructor(parent: HTMLElement) {
     const style = document.createElement('style');
@@ -186,16 +213,10 @@ export class Hud {
     this.status.className = 'maker-panel maker-status';
     this.root.appendChild(this.status);
 
-    const help = document.createElement('div');
-    help.className = 'maker-panel maker-help';
-    help.innerHTML = [
-      '<span class="maker-key">WASD</span> move &nbsp; <span class="maker-key">Space</span> jump &nbsp; <span class="maker-key">Shift</span> sprint',
-      '<span class="maker-key">LMB</span> place &nbsp; <span class="maker-key">RMB</span> remove &nbsp; <span class="maker-key">Alt</span> free aim',
-      '<span class="maker-key">Q</span><span class="maker-key">E</span> turn &nbsp; <span class="maker-key">Z</span><span class="maker-key">X</span> tilt &nbsp; <span class="maker-key">T</span> reset',
-      '<span class="maker-key">R</span> next snap &nbsp; <span class="maker-key">G</span> repeat &nbsp; <span class="maker-key">V</span> camera',
-      '<span class="maker-key">1-8</span> pick part &nbsp; <span class="maker-key">`</span> debug',
-    ].join('<br>');
-    this.root.appendChild(help);
+    this.help = document.createElement('div');
+    this.help.className = 'maker-panel maker-help';
+    this.setInputDevice('keyboard');
+    this.root.appendChild(this.help);
 
     this.debug = document.createElement('div');
     this.debug.className = 'maker-panel maker-debug maker-hidden';
@@ -220,6 +241,21 @@ export class Hud {
     this.root.appendChild(this.lock);
 
     parent.appendChild(this.root);
+  }
+
+  /**
+   * Point the help panel at whichever device the player is holding.
+   *
+   * Hints that name keys a controller player does not have are worse than no
+   * hints — they say the game does not know they are there.
+   */
+  setInputDevice(device: InputDevice): void {
+    this.device = device;
+    this.help.innerHTML = (device === 'gamepad' ? HELP_GAMEPAD : HELP_KEYBOARD).join('<br>');
+  }
+
+  get inputDevice(): InputDevice {
+    return this.device;
   }
 
   setPointerLocked(locked: boolean): void {

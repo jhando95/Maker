@@ -31,6 +31,12 @@ export interface Settings {
   /** Hold to crouch, or press to toggle. */
   toggleCrouch: boolean;
   toggleSprint: boolean;
+
+  gamepadEnabled: boolean;
+  /** Stick look speed at full deflection, in radians per second. */
+  gamepadLookSpeed: number;
+  /** Radial stick deadzone, as a fraction of full deflection. */
+  gamepadDeadzone: number;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -45,6 +51,9 @@ export const DEFAULT_SETTINGS: Settings = {
   colorblindGhost: false,
   toggleCrouch: false,
   toggleSprint: false,
+  gamepadEnabled: true,
+  gamepadLookSpeed: 2.6,
+  gamepadDeadzone: 0.16,
 };
 
 /** Bounds for every numeric setting, so a hand-edited blob cannot break the game. */
@@ -54,6 +63,10 @@ const RANGES: Partial<Record<keyof Settings, [number, number]>> = {
   renderScale: [0.5, 1],
   masterVolume: [0, 1],
   sfxVolume: [0, 1],
+  gamepadLookSpeed: [0.8, 6],
+  // Above half the stick's travel there is not enough range left to aim with,
+  // and a deadzone of zero makes a worn stick drift on its own.
+  gamepadDeadzone: [0, 0.5],
 };
 
 function clampSetting<K extends keyof Settings>(key: K, value: Settings[K]): Settings[K] {

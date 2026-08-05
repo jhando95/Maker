@@ -31,6 +31,7 @@ import { BINDABLE, describeKey, type Action } from './core/input.ts';
 import { BuildStore } from './app/buildStore.ts';
 import { Menu } from './ui/menu.ts';
 import { CrashHandler } from './app/crashHandler.ts';
+import { GamepadManager } from './core/gamepadManager.ts';
 
 const app = document.getElementById('app')!;
 app.style.cssText = 'position:fixed;inset:0;overflow:hidden;';
@@ -119,6 +120,8 @@ const input = new Input(renderer.domElement);
 const savedBindings = loadBindings();
 if (savedBindings !== null) input.setBindings(savedBindings as Record<string, Action>);
 
+const gamepad = new GamepadManager(input);
+
 // Audio cannot start without a user gesture, so it rides the same click that
 // grabs pointer lock. Until then every play() is a no-op rather than an error.
 const audio = new AudioBus();
@@ -150,6 +153,12 @@ settings.subscribe((s) => {
   renderer.setSize(window.innerWidth, window.innerHeight);
   const g = ghostColors(s.colorblindGhost);
   build.setGhostColors(g.valid, g.invalid);
+  gamepad.enabled = s.gamepadEnabled;
+  gamepad.setOptions({
+    lookSpeed: s.gamepadLookSpeed,
+    deadzone: s.gamepadDeadzone,
+    invertY: s.invertY,
+  });
 });
 
 /**
@@ -290,6 +299,19 @@ window.addEventListener('keydown', (e) => {
   else enterMenu('pause');
 });
 
+// Start is the pad's Escape. It cannot restore pointer lock — the browser only
+// grants that from a real click — but the pad keeps working without it, so a
+// controller player can pause and resume without reaching for the mouse.
+gamepad.onStart = () => {
+  if (menu.isOpen) menu.handleEscape();
+  else enterMenu('pause');
+};
+
+// The on-screen hints name real buttons, so they follow the device in the
+// player's hands. Swapping them is also the only feedback a pad needs: touch a
+// stick and the help panel starts saying LB instead of Q.
+input.onDeviceChange = (device) => hud.setInputDevice(device);
+
 function drainEvents(): void {
   for (const e of events) {
     switch (e.type) {
@@ -423,6 +445,11 @@ function simulate(dt: number): void {
   // and a 60Hz simulation agree on how far the view turned.
   const look = input.lookDelta;
   if (look.x !== 0 || look.y !== 0) camera.look(look.x, look.y);
+
+  // A stick reports where it is, not how far it moved, so it is a rate and has
+  // to be integrated. Without the dt the turn speed would follow the tick rate.
+  const pad = input.padLook;
+  if (pad.yaw !== 0 || pad.pitch !== 0) camera.turn(-pad.yaw * dt, pad.pitch * dt);
 
   // Movement intent is expressed in the camera's ground basis, which is what
   // makes W mean "the way I am facing" rather than "world -Z".
@@ -587,6 +614,13 @@ function render(alpha: number, frameDt: number): void {
 }
 
 function draw(alpha: number, frameDt: number): void {
+  // The Gamepad API has no button events, only connection ones, so pads must be
+  // polled. Polling on the frame rather than the tick matches how the keyboard
+  // already works — devices write into a pending buffer whenever they like and
+  // the tick boundary folds it — and it keeps the pad alive while paused, which
+  // is what lets Start reopen the game.
+  gamepad.poll();
+
   const state = player.sample(alpha);
   const speedFraction = Math.min(1, player.speed / 7.4);
   camera.update(frameDt, state.x, state.y + state.eyeHeight, state.z, speedFraction);
@@ -742,6 +776,17 @@ window.__maker = {
   },
   isPaused: () => loop.isPaused,
   isRunning: () => loop.isRunning,
+  /**
+   * Controller state, for the headless harness.
+   *
+   * There is no inject-a-pad hook here on purpose: a scenario replaces
+   * navigator.getGamepads instead, so the frame poll reads the fake through the
+   * same path a real pad takes. A hook that bypassed that would be overwritten
+   * by the very next frame, and would prove nothing about readPads.
+   */
+  padCount: () => gamepad.padCount,
+  inputDevice: () => input.lastDevice,
+  getCameraYaw: () => camera.yaw,
   menu,
   startRound,
   stopRound,

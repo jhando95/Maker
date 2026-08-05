@@ -98,6 +98,9 @@ export const DEFAULT_BINDINGS: Record<string, Action> = {
   KeyP: 'debugFreeCam',
 };
 
+/** Which kind of device the player is currently using. */
+export type InputDevice = 'keyboard' | 'gamepad';
+
 interface ActionState {
   /** Held right now. */
   down: boolean;
@@ -167,8 +170,31 @@ export class Input {
   private wheelDelta = 0;
   private tickWheelDelta = 0;
 
+  /**
+   * Analog movement from a stick, in the same local space as `moveAxis`.
+   *
+   * Kept separate from the digital actions rather than folded into them,
+   * because a stick carries a magnitude and a key does not: pushing a stick a
+   * third of the way must walk, not run.
+   */
+  private analogMoveX = 0;
+  private analogMoveZ = 0;
+
+  /** Stick look, in radians per second. Not pixels — see gamepad.ts. */
+  private padLookYaw = 0;
+  private padLookPitch = 0;
+
   private pointerLocked = false;
   private enabled = true;
+
+  /**
+   * The device the player last actually used.
+   *
+   * Only so the on-screen hints can say LB when there is a pad in someone's
+   * hands and Q when there is not. Nothing in gameplay reads it.
+   */
+  private device: InputDevice = 'keyboard';
+  onDeviceChange: ((device: InputDevice) => void) | null = null;
 
   private readonly element: HTMLElement;
   private readonly disposers: Array<() => void> = [];
@@ -201,6 +227,7 @@ export class Input {
       // Tab would move focus off the canvas and Space would scroll the page.
       if (this.bindings[e.code]) e.preventDefault();
       if (e.repeat) return; // auto-repeat is not a new press
+      this.useDevice('keyboard');
       this.queueDown(this.bindings[e.code]);
     });
 
@@ -216,6 +243,7 @@ export class Input {
         void this.requestPointerLock();
         return;
       }
+      this.useDevice('keyboard');
       this.queueDown(this.bindings[`Mouse${e.button}`]);
     });
 
@@ -227,6 +255,10 @@ export class Input {
 
     this.on(window, 'mousemove', (e) => {
       if (!this.pointerLocked) return;
+      // A resting mouse still emits the odd one-pixel jitter, and letting that
+      // claim the device would flip the hints back and forth under a player
+      // who is holding a pad and never touched the mouse.
+      if (Math.abs(e.movementX) + Math.abs(e.movementY) > 2) this.useDevice('keyboard');
       this.mouseDx += e.movementX;
       this.mouseDy += e.movementY;
     });
@@ -272,6 +304,63 @@ export class Input {
     this.mouseDx = 0;
     this.mouseDy = 0;
     this.wheelDelta = 0;
+    this.analogMoveX = 0;
+    this.analogMoveZ = 0;
+    this.padLookYaw = 0;
+    this.padLookPitch = 0;
+  }
+
+  private useDevice(device: InputDevice): void {
+    if (this.device === device) return;
+    this.device = device;
+    this.onDeviceChange?.(device);
+  }
+
+  get lastDevice(): InputDevice {
+    return this.device;
+  }
+
+  /**
+   * Push a pad button edge in. Routed through the same queues as a key, so a
+   * pad and a keyboard cannot disagree about whether an action is held.
+   */
+  pressAction(action: Action): void {
+    this.useDevice('gamepad');
+    this.queueDown(action);
+  }
+
+  releaseAction(action: Action): void {
+    this.queueUp(action);
+  }
+
+  /**
+   * Set stick movement and look for this frame.
+   *
+   * Overwritten rather than accumulated: a stick reports where it is, not how
+   * far it has moved, so the newest reading is the whole truth. Zeroed when
+   * input is disabled, or a menu opened mid-push would leave the player walking
+   * into a wall behind it.
+   */
+  setPadAxes(moveX: number, moveZ: number, lookYawRate: number, lookPitchRate: number): void {
+    if (!this.enabled) {
+      this.analogMoveX = 0;
+      this.analogMoveZ = 0;
+      this.padLookYaw = 0;
+      this.padLookPitch = 0;
+      return;
+    }
+    this.analogMoveX = moveX;
+    this.analogMoveZ = moveZ;
+    this.padLookYaw = lookYawRate;
+    this.padLookPitch = lookPitchRate;
+    if (moveX !== 0 || moveZ !== 0 || lookYawRate !== 0 || lookPitchRate !== 0) {
+      this.useDevice('gamepad');
+    }
+  }
+
+  /** Stick look for this tick, in radians per second. Multiply by dt. */
+  get padLook(): { yaw: number; pitch: number } {
+    return { yaw: this.padLookYaw, pitch: this.padLookPitch };
   }
 
   async requestPointerLock(): Promise<void> {
@@ -344,10 +433,15 @@ export class Input {
   /**
    * Movement intent in local space, normalized so diagonals are not faster.
    * +x is right, +z is forward.
+   *
+   * Keyboard and stick are summed, then clamped. Summing rather than picking a
+   * winner means a player can hold W and steer with the stick without either
+   * device cutting the other out, and with only one device in use the sum is
+   * just that device.
    */
   get moveAxis(): { x: number; z: number } {
-    let x = 0;
-    let z = 0;
+    let x = this.analogMoveX;
+    let z = this.analogMoveZ;
     if (this.isDown('moveForward')) z += 1;
     if (this.isDown('moveBack')) z -= 1;
     if (this.isDown('moveRight')) x += 1;

@@ -63,9 +63,19 @@ export class CameraRig {
 
   /** Apply a mouse delta in pixels. */
   look(dx: number, dy: number): void {
-    this.yaw -= dx * this.sensitivity;
-    this.pitch -= dy * this.sensitivity * (this.invertY ? -1 : 1);
-    this.pitch = clamp(this.pitch, -PITCH_LIMIT, PITCH_LIMIT);
+    this.turn(-dx * this.sensitivity, -dy * this.sensitivity * (this.invertY ? -1 : 1));
+  }
+
+  /**
+   * Rotate by an angle in radians.
+   *
+   * The mouse arrives as a distance already and a stick arrives as a rate that
+   * has been multiplied by dt, so both end up here — with one place that clamps
+   * pitch and wraps yaw rather than two that could drift apart.
+   */
+  turn(dYaw: number, dPitch: number): void {
+    this.yaw += dYaw;
+    this.pitch = clamp(this.pitch + dPitch, -PITCH_LIMIT, PITCH_LIMIT);
     // Keep yaw bounded so it never loses float precision in a long session.
     if (this.yaw > Math.PI) this.yaw -= Math.PI * 2;
     else if (this.yaw < -Math.PI) this.yaw += Math.PI * 2;
