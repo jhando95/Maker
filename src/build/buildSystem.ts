@@ -439,6 +439,21 @@ export class BuildSystem {
     return handle.id;
   }
 
+  /**
+   * Apply a record only if the space is free.
+   *
+   * applyPlace deliberately does not validate — it is the authority side of the
+   * intent/apply split, and a server that has already authorised a placement
+   * should not re-litigate it. Seeding a map is the other case: a fixed list of
+   * records authored against one layout will quietly embed itself in whatever
+   * the layout became, so those go through here instead.
+   */
+  applyPlaceIfClear(record: PlacementRecord): boolean {
+    if (!this.canPlaceAt(record)) return false;
+    this.applyPlace(record);
+    return true;
+  }
+
   /** Place what the preview currently shows, if it is legal. */
   tryPlace(): boolean {
     const record = this.place();
@@ -455,6 +470,9 @@ export class BuildSystem {
   }
 
   applyRemove(id: PartId): boolean {
+    // The map is not the player's to demolish. Aiming at the house and pressing
+    // remove has to do nothing rather than open a hole in the level.
+    if (this.world.isFixture(id)) return false;
     if (!this.world.removePart(id)) return false;
     this.renderer.remove(id);
     const i = this.history.lastIndexOf(id);

@@ -33,6 +33,16 @@ function record(
 
 const HALF_PI = Math.PI / 2;
 
+/**
+ * Where the starter set is planted.
+ *
+ * The back-left lawn, which is open. It used to sit at the origin, which was
+ * open grass and is now the middle of the house — so the whole set was quietly
+ * embedded in a wall, which is exactly the failure applyPlaceIfClear exists to
+ * make visible rather than invisible.
+ */
+export const STARTER_ORIGIN = { x: -10, z: 14 } as const;
+
 export function seedStarterStructures(build: BuildSystem): void {
   const records: PlacementRecord[] = [];
 
@@ -100,5 +110,10 @@ export function seedStarterStructures(build: BuildSystem): void {
   records.push(record('ramp', 6, -4.0, 0.25, 2.0));
   records.push(record('panel', 5, -6.0, 0.62, 2.0, 0, 0, Math.PI / 3));
 
-  for (const r of records) build.applyPlace(r);
+  // Offset onto open ground, and skipped rather than forced where the map has
+  // something standing. A starter structure with a gap in it is a small
+  // disappointment; one growing through a shed is a bug report.
+  for (const r of records) {
+    build.applyPlaceIfClear({ ...r, x: r.x + STARTER_ORIGIN.x, z: r.z + STARTER_ORIGIN.z });
+  }
 }

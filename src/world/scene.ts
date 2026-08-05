@@ -12,6 +12,7 @@ import { Rng } from '../core/rng.ts';
 import { createToonMaterial } from '../render/toonMaterial.ts';
 import { chamferedBox, blob, addOutlineNormals } from '../render/geometry.ts';
 import { PropBatch } from '../render/propBatch.ts';
+import { neighborhoodSlabs, TREEHOUSE, type Slab } from './neighborhood.ts';
 
 /**
  * Palette.
@@ -46,6 +47,15 @@ export interface SceneBuild {
   sun: THREE.DirectionalLight;
   /** Scenery batch, so the viewport-dependent outline width can be updated. */
   props: PropBatch;
+  /**
+   * The map's solid geometry, as plain numbers.
+   *
+   * Handed out rather than installed here because the scene is built before the
+   * collision world exists. Pass it to installFixtures() — these are the exact
+   * boxes that were drawn, so what you can see and what you bump into cannot
+   * disagree.
+   */
+  slabs: Slab[];
   /** Call after placing or removing parts so the static shadow map refreshes. */
   invalidateShadows(): void;
 }
@@ -99,15 +109,27 @@ export function createScene(seed: string | number = 'backyard-01'): SceneBuild {
   const cache = new GeometryCache();
   const props = new PropBatch('scenery');
   addFence(props, cache, rng.fork());
-  addHouse(props, cache);
+
+  // The map is described once and drawn here. The same list becomes the
+  // collision fixtures, which is the only way the house you see and the house
+  // you walk into stay the same house.
+  const slabs = neighborhoodSlabs(rng.fork());
+  for (const s of slabs) {
+    box(props, cache, s.w, s.h, s.d, s.x, s.y, s.z, s.color, {
+      rx: s.rx, ry: s.ry, rz: s.rz,
+      chamfer: s.chamfer,
+      outline: s.outline,
+    });
+  }
+
   addTrees(scene, props, cache, rng.fork());
-  addYardProps(scene, props, cache, rng.fork());
   scene.add(props.build());
 
   return {
     scene,
     sun,
     props,
+    slabs,
     invalidateShadows() {
       sun.shadow.needsUpdate = true;
     },
@@ -245,12 +267,17 @@ function addFence(props: PropBatch, cache: GeometryCache, rng: Rng): void {
   const picketHeight = 1.6;
   const spacing = 0.28;
 
-  // Three sides; the fourth is the house.
-  const runs: Array<{ from: THREE.Vector3; to: THREE.Vector3 }> = [
-    { from: new THREE.Vector3(-YARD_HALF, 0, -YARD_HALF), to: new THREE.Vector3(YARD_HALF, 0, -YARD_HALF) },
-    { from: new THREE.Vector3(YARD_HALF, 0, -YARD_HALF), to: new THREE.Vector3(YARD_HALF, 0, YARD_HALF) },
-    { from: new THREE.Vector3(-YARD_HALF, 0, YARD_HALF), to: new THREE.Vector3(-YARD_HALF, 0, -YARD_HALF) },
+  // All four sides now. The house used to close the +Z end; it has moved to the
+  // middle of the lot, so the lot has to close itself or the yard leaks into a
+  // four-hundred-metre lawn with nothing in it.
+  const c: Array<[number, number]> = [
+    [-YARD_HALF, -YARD_HALF], [YARD_HALF, -YARD_HALF],
+    [YARD_HALF, YARD_HALF], [-YARD_HALF, YARD_HALF],
   ];
+  const runs = c.map((from, i) => ({
+    from: new THREE.Vector3(from[0], 0, from[1]),
+    to: new THREE.Vector3(c[(i + 1) % c.length]![0], 0, c[(i + 1) % c.length]![1]),
+  }));
 
   // One picket height for the whole fence. Varying it per picket would need a
   // distinct geometry per height and defeat instancing entirely; the hand-built
@@ -298,38 +325,13 @@ function jitter(hex: number, rng: Rng, amount: number): number {
   return c.getHex(THREE.SRGBColorSpace);
 }
 
-function addHouse(props: PropBatch, cache: GeometryCache): void {
-  // Only the back wall of the house is in the yard; the rest is out of play.
-  box(props, cache, 30, 7, 6, 0, 3.5, YARD_HALF + 2.5, PALETTE.houseWall, {
-    chamfer: 0.02, outline: 0x6a5548,
-  });
-
-  // A door and two windows, as flat trim panels standing slightly proud.
-  box(props, cache, 1.1, 2.1, 0.12, -2, 1.05, YARD_HALF - 0.44, PALETTE.houseTrim, {
-    chamfer: 0.01, outline: 0x6a2320,
-  });
-
-  for (const x of [2.5, 6]) {
-    box(props, cache, 1.4, 1.2, 0.1, x, 2.0, YARD_HALF - 0.45, PALETTE.houseTrim, {
-      chamfer: 0.01, outline: 0x6a2320,
-    });
-    box(props, cache, 1.15, 0.95, 0.06, x, 2.0, YARD_HALF - 0.4, 0x9fd8ee, {
-      chamfer: 0.006, outline: 0x4a7a8a,
-    });
-  }
-
-  // A low porch step, the natural first thing to build onto.
-  box(props, cache, 3.2, 0.35, 1.2, -2, 0.175, YARD_HALF - 1.2, PALETTE.houseTrim, {
-    chamfer: 0.015, outline: 0x6a2320,
-  });
-}
-
 function addTrees(scene: THREE.Scene, props: PropBatch, cache: GeometryCache, rng: Rng): void {
   const spots: Array<[number, number, number]> = [
-    [-15, -14, 1.35],
-    [16, -12, 1.1],
-    [-18, 8, 0.95],
-    [13, 14, 0.8],
+    [-16, -14, 1.35],
+    [17, -13, 1.1],
+    [-20, 13, 0.95],
+    [13, 15, 0.8],
+    [20, -2, 0.7],
   ];
 
   // Foliage blobs are individually lumpy, so each is its own geometry and its
@@ -364,59 +366,23 @@ function addTrees(scene: THREE.Scene, props: PropBatch, cache: GeometryCache, rn
       scene.add(mesh);
     }
   }
-}
 
-function addYardProps(scene: THREE.Scene, props: PropBatch, cache: GeometryCache, rng: Rng): void {
-  // Sandbox.
-  const sx = 8;
-  const sz = -6;
-  for (const [dx, dz, w, d] of [
-    [0, -1.5, 3.2, 0.18],
-    [0, 1.5, 3.2, 0.18],
-    [-1.5, 0, 0.18, 3.2],
-    [1.5, 0, 0.18, 3.2],
-  ] as const) {
-    box(props, cache, w, 0.3, d, sx + dx, 0.15, sz + dz, PALETTE.fence, {
-      chamfer: 0.01, outline: 0x5a4432,
-    });
-  }
-  const sand = new THREE.Mesh(
-    new THREE.PlaneGeometry(3.0, 3.0).rotateX(-Math.PI / 2),
-    createToonMaterial({ color: PALETTE.sand }),
-  );
-  sand.position.set(sx, 0.22, sz);
-  sand.receiveShadow = true;
-  scene.add(sand);
-
-  // Kiddie pool.
-  const px = -9;
-  const pz = -8;
-  const rim = new THREE.Mesh(
-    new THREE.TorusGeometry(1.5, 0.22, 8, 20).rotateX(Math.PI / 2),
-    createToonMaterial({ color: PALETTE.poolRim }),
-  );
-  rim.position.set(px, 0.22, pz);
-  rim.castShadow = true;
-  scene.add(rim);
-  const water = new THREE.Mesh(
-    new THREE.CircleGeometry(1.45, 20).rotateX(-Math.PI / 2),
-    createToonMaterial({ color: PALETTE.poolWater }),
-  );
-  water.position.set(px, 0.2, pz);
-  scene.add(water);
-
-  // A scattered lumber pile — the visual promise of what you can build with.
-  for (let i = 0; i < 14; i++) {
-    const length = rng.pick([1.0, 2.0, 0.5]);
-    box(
-      props, cache,
-      length, 0.05, 0.25,
-      -3 + rng.signed(1.6),
-      0.03 + Math.floor(i / 5) * 0.06,
-      -3 + rng.signed(1.2),
-      jitter(0xc89f6a, rng, 0.05),
-      { ry: rng.range(0, Math.PI), rz: rng.signed(0.02), chamfer: 0.008, outline: 0x4a3122 },
+  // The treehouse tree. Its trunk is part of the map description because it is
+  // solid and climbable; only the canopy belongs here, and it sits high enough
+  // to crown the deck rather than block it.
+  for (let i = 0; i < 4; i++) {
+    const mesh = new THREE.Mesh(
+      blob(rng.range(2.4, 3.2), 1, 0.18, () => rng.next()),
+      createToonMaterial({ color: i % 2 === 1 ? PALETTE.foliageDark : PALETTE.foliage }),
     );
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+    mesh.position.set(
+      TREEHOUSE.x + rng.signed(1.6),
+      TREEHOUSE.deck + 3.4 + rng.range(0, 1.2),
+      TREEHOUSE.z + rng.signed(1.6),
+    );
+    scene.add(mesh);
   }
 }
 

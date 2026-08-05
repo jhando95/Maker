@@ -12,20 +12,24 @@ import { Input } from './core/input.ts';
 import { CollisionWorld } from './physics/collisionWorld.ts';
 import { TICK_RATE, DT } from './physics/constants.ts';
 import { createScene } from './world/scene.ts';
+import { installFixtures } from './world/neighborhood.ts';
 import { PartRenderer } from './render/partRenderer.ts';
 import { BuildSystem, type PlacementRecord } from './build/buildSystem.ts';
 import { CharacterController, type MoveIntent } from './player/controller.ts';
 import { CameraRig } from './player/cameraRig.ts';
 import { Hud } from './ui/hud.ts';
 import { MAX_REACH } from './build/snapping.ts';
-import { seedStarterStructures } from './world/starter.ts';
+import { seedStarterStructures, STARTER_ORIGIN } from './world/starter.ts';
 import { AudioBus } from './audio/audioBus.ts';
 import { GameSounds } from './audio/gameSounds.ts';
 import { Rng } from './core/rng.ts';
 import { ProjectileSystem } from './game/projectiles.ts';
 import { ModeRenderer } from './game/modeRenderer.ts';
 import { FortDefenseMode } from './game/fortDefense.ts';
-import type { GameEvent, ModeContext, ModeInput } from './game/gameMode.ts';
+import { CaptureTheFlagMode } from './game/captureTheFlag.ts';
+import { WaterWarMode } from './game/waterWar.ts';
+import { LEFT_SPAWN } from './world/neighborhood.ts';
+import type { GameEvent, GameMode, ModeContext, ModeInput } from './game/gameMode.ts';
 import { SettingsStore, ghostColors, loadBindings, saveBindings, clearBindings } from './app/settings.ts';
 import { BINDABLE, describeKey, type Action } from './core/input.ts';
 import { BuildStore } from './app/buildStore.ts';
@@ -33,6 +37,39 @@ import { Menu } from './ui/menu.ts';
 import { CrashHandler } from './app/crashHandler.ts';
 import { GamepadManager } from './core/gamepadManager.ts';
 import { PerformanceGovernor } from './app/performanceGovernor.ts';
+
+/**
+ * The modes a player can start.
+ *
+ * A registry rather than a `new FortDefenseMode()` at the one call site, because
+ * the menu, the restart path and the debug API all need to name a mode and none
+ * of them should be able to name one that does not exist.
+ */
+export type ModeId = 'fortDefense' | 'captureTheFlag' | 'waterWar';
+
+export const MODES: ReadonlyArray<{ id: ModeId; name: string; blurb: string }> = [
+  {
+    id: 'captureTheFlag',
+    name: 'Capture the Flag',
+    blurb: 'Their flag is past the house. Build a way over, and a way to stop them.',
+  },
+  {
+    id: 'waterWar',
+    name: 'Water War',
+    blurb: 'Three taps, one hot afternoon. Fortify them, then hold them while the street drains them dry.',
+  },
+  {
+    id: 'fortDefense',
+    name: 'Fort Defense',
+    blurb: 'Build a fort around the stash, then hold five waves of neighbourhood kids.',
+  },
+];
+
+function createMode(id: ModeId): GameMode {
+  if (id === 'captureTheFlag') return new CaptureTheFlagMode();
+  if (id === 'waterWar') return new WaterWarMode();
+  return new FortDefenseMode();
+}
 
 const app = document.getElementById('app')!;
 app.style.cssText = 'position:fixed;inset:0;overflow:hidden;';
@@ -47,8 +84,7 @@ app.style.cssText = 'position:fixed;inset:0;overflow:hidden;';
 const crash = new CrashHandler(() => ({
   parts: world.partCount,
   mode: mode?.id ?? 'none',
-  phase: mode?.phase ?? null,
-  wave: mode?.wave ?? null,
+  phase: mode?.hud().phase ?? null,
   player: { x: +player.x.toFixed(2), y: +player.y.toFixed(2), z: +player.z.toFixed(2) },
   screen: menu.current,
   tick: loop.tick,
@@ -74,8 +110,12 @@ renderer.shadowMap.needsUpdate = true;
 app.appendChild(renderer.domElement);
 
 // ── World ────────────────────────────────────────────────────────────────────
-const { scene, invalidateShadows, props: scenery } = createScene('backyard-01');
+const { scene, invalidateShadows, props: scenery, slabs } = createScene('backyard-01');
 const world = new CollisionWorld(1.0, 4096);
+// The map's solid geometry, from the same numbers the scenery was drawn with.
+// Installed before anything else touches the world so the starter structures
+// and the player both spawn against a house that is already there.
+installFixtures(world, slabs);
 const parts = new PartRenderer();
 scene.add(parts.group);
 
@@ -111,9 +151,11 @@ function flushShadows(nowSeconds: number): void {
 // game is for rather than an empty lawn.
 seedStarterStructures(build);
 
-const player = new CharacterController(world, -3, 0.5, -6);
+// On the back lawn, facing the starter structures. The old spawn was the
+// origin, which the house now occupies.
+const player = new CharacterController(world, STARTER_ORIGIN.x, 0.5, STARTER_ORIGIN.z - 9);
 const camera = new CameraRig(world, window.innerWidth / window.innerHeight);
-camera.yaw = Math.PI * 0.15;
+camera.yaw = Math.PI;
 
 const hud = new Hud(app);
 const input = new Input(renderer.domElement);
@@ -198,17 +240,20 @@ const modeContext: ModeContext = {
 };
 
 /** null means free build with no rules. */
-let mode: FortDefenseMode | null = null;
+let mode: GameMode | null = null;
 
 /** The world as it was when the round began, for restarts. */
 let roundSnapshot: ReturnType<typeof build.serialize> | null = null;
+/** Which mode a restart should rebuild. */
+let lastModeId: ModeId = 'fortDefense';
 
-function startRound(): void {
+function startRound(id: ModeId = lastModeId): void {
+  lastModeId = id;
   roundSnapshot = build.serialize();
-  mode = new FortDefenseMode();
+  mode = createMode(id);
   mode.start(modeContext);
   audio.play('roundStart', { volume: 0.6 });
-  resetPlayerToSpawn();
+  resetPlayerToSpawn(id);
 }
 
 function stopRound(): void {
@@ -226,13 +271,16 @@ function restartRound(): void {
     build.deserialize(roundSnapshot);
     worldChanged();
   }
-  startRound();
+  startRound(lastModeId);
   enterPlay();
 }
 
-function resetPlayerToSpawn(): void {
-  player.teleport(-3, 0.5, -7);
-  camera.yaw = Math.PI * 0.15;
+function resetPlayerToSpawn(id: ModeId = lastModeId): void {
+  // Capture the Flag starts you in your own yard; everything else starts you
+  // where the starter structures are, which is what the sandbox wants.
+  if (id === 'captureTheFlag') player.teleport(LEFT_SPAWN.x, LEFT_SPAWN.y, LEFT_SPAWN.z);
+  else player.teleport(STARTER_ORIGIN.x, 0.5, STARTER_ORIGIN.z - 9);
+  camera.yaw = id === 'captureTheFlag' ? Math.PI * 0.5 : Math.PI;
   camera.pitch = -0.05;
 }
 
@@ -245,8 +293,9 @@ function resetPlayerToSpawn(): void {
 const buildStore = new BuildStore();
 
 const menu = new Menu(app, settings, {
-  onPlayMode: () => {
-    startRound();
+  listModes: () => MODES,
+  onPlayMode: (id: string) => {
+    startRound(id as ModeId);
     enterPlay();
   },
   onPlaySandbox: () => {
@@ -369,6 +418,24 @@ function drainEvents(): void {
       case 'phaseChange':
         audio.play('roundStart', { volume: 0.45 });
         break;
+      case 'flagTaken':
+        // Higher and brighter when it is your grab, so a pickup across the map
+        // does not sound like the one in your hands.
+        audio.play('roundStart', {
+          ...spatialAt(e.x, e.y, e.z),
+          volume: 0.7,
+          pitch: e.byPlayer ? 1.35 : 0.85,
+        });
+        break;
+      case 'flagDropped':
+        audio.play('invalid', { ...spatialAt(e.x, e.y, e.z), volume: 0.7, pitch: 0.9 });
+        break;
+      case 'flagReturned':
+        audio.play('uiClick', { ...spatialAt(e.x, e.y, e.z), volume: 0.7, pitch: 1.15 });
+        break;
+      case 'captured':
+        audio.play(e.byPlayer ? 'roundWin' : 'roundLose', { volume: 0.65 });
+        break;
     }
   }
   events.length = 0;
@@ -466,8 +533,40 @@ function simulate(dt: number): void {
 
   // Look is sampled per tick from accumulated mouse movement, so a 1000Hz mouse
   // and a 60Hz simulation agree on how far the view turned.
+  // The part wheel takes the mouse while it is open.
+  //
+  // Under pointer lock there is no cursor, so the pick is made by direction —
+  // and the same movement cannot both aim the wheel and swing the camera, or
+  // choosing a plank spins you round to face the fence.
   const look = input.lookDelta;
-  if (look.x !== 0 || look.y !== 0) camera.look(look.x, look.y);
+  const picker = hud.partWheel;
+  // One wheel, two contents. Parts while you can build, weapons while you
+  // cannot — which is exactly when each is the only one that makes sense, and
+  // is one gesture to learn instead of two.
+  const loadout = mode?.buildingAllowed === false ? mode.loadout : undefined;
+  if (input.wasPressed('partWheel') && (mode === null || mode.buildingAllowed || loadout !== undefined)) {
+    if (loadout !== undefined) {
+      hud.showWeapons(loadout);
+      picker.show(loadout.entries.findIndex((e) => e.id === loadout.selected));
+    } else {
+      hud.showParts();
+      picker.show(build.selectedKind);
+    }
+  }
+  if (picker.isOpen) {
+    picker.move(look.x, look.y);
+    if (!input.isDown('partWheel')) {
+      const picked = picker.hide();
+      if (picked !== null) {
+        if (loadout !== undefined) loadout.select(loadout.entries[picked]?.id ?? loadout.selected);
+        else build.selectKind(picked);
+        sounds.pickPart();
+      }
+      hud.showParts();
+    }
+  } else if (look.x !== 0 || look.y !== 0) {
+    camera.look(look.x, look.y);
+  }
 
   // A stick reports where it is, not how far it moved, so it is a rate and has
   // to be integrated. Without the dt the turn speed would follow the tick rate.
@@ -591,13 +690,14 @@ function simulate(dt: number): void {
   if (modeOverTimer > 0) {
     modeOverTimer -= dt;
     if (modeOverTimer <= 0 && mode !== null) {
-      const summary = {
+      const s = mode.summary();
+      enterMenu('result', {
         won: mode.won,
-        wavesHeld: mode.won ? mode.wave : Math.max(0, mode.wave - 1),
-        partsPlaced: build.placedCount,
-        suppliesLeft: mode.stash.supplies,
-      };
-      enterMenu('result', summary);
+        headline: s.headline,
+        // Parts placed belongs to the shell, not the mode — it is the same
+        // number whatever is being played.
+        lines: [...s.lines, { label: 'parts placed', value: String(build.placedCount) }],
+      });
     }
   }
 
@@ -661,6 +761,10 @@ function draw(alpha: number, frameDt: number): void {
 
   flushShadows(performance.now() / 1000);
   drainEvents();
+  modeRenderer.setStream(
+    mode?.stream ?? null,
+    state.x, state.y + state.eyeHeight * 0.82, state.z,
+  );
   modeRenderer.update(frameDt, mode, projectiles, performance.now() / 1000);
 
   renderer.render(scene, camera.camera);
@@ -777,6 +881,22 @@ window.__maker = {
     camera.mode = mode;
   },
   selectPart: (i: number) => build.selectKind(i),
+  getSelectedPart: () => build.selectedKind,
+  actionDown: (a: string) => input.isDown(a as Action),
+  /**
+   * Movement intent this frame, stick and keys summed.
+   *
+   * Exposed for the controller scenario, which needs to check that unplugging a
+   * pad leaves nothing held. Watching the player's feet instead cannot tell a
+   * released stick from one still pushed into a fence.
+   */
+  moveAxis: () => input.moveAxis,
+  /** Stick look rate this frame, for the same reason as moveAxis. */
+  padLook: () => input.padLook,
+  bindingFor: (code: string) => input.getBindings()[code] ?? null,
+  /** Move the mouse, for scenarios that cannot hold pointer lock. */
+  look: (dx: number, dy: number) => input.injectLook(dx, dy),
+  hud,
   /** Aim and place without a mouse, so scenarios can drive the build system. */
   placeAt: (yaw: number, pitch: number): boolean => {
     camera.yaw = yaw;
@@ -838,16 +958,19 @@ window.__maker = {
    * context. Scenarios that build their own context get subtly different
    * behaviour, which is worse than useless for verification.
    */
-  fastForward: (seconds: number, until?: string) => {
+  fastForward: (seconds: number, until?: string, fire = false) => {
     if (mode === null) return null;
     const ticks = Math.round(seconds / DT);
-    const noFire = { fire: false, firePressed: false, fireReleased: false };
     for (let i = 0; i < ticks; i++) {
-      mode.fixedUpdate(DT, modeContext, noFire);
-      if (until !== undefined && mode.phase === until) break;
+      // firePressed only on the first tick, so a held trigger reads as one press
+      // and a cooldown-gated weapon is not treated as spam.
+      mode.fixedUpdate(DT, modeContext, {
+        fire, firePressed: fire && i === 0, fireReleased: false,
+      });
+      if (until !== undefined && mode.hud().phase === until) break;
     }
     drainEvents();
-    return { phase: mode.phase, wave: mode.wave, bots: mode.bots.length };
+    return { phase: mode.hud().phase, bots: mode.bots.length };
   },
   projectiles,
   world,

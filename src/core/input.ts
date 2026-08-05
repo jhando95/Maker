@@ -45,7 +45,7 @@ export const ACTIONS = [
   'hotbar8',
 
   'toggleCamera',
-  'toggleBuildMode',
+  'partWheel',
   'interact',
 
   'debugToggle',
@@ -91,7 +91,7 @@ export const DEFAULT_BINDINGS: Record<string, Action> = {
   Digit8: 'hotbar8',
 
   KeyV: 'toggleCamera',
-  Tab: 'toggleBuildMode',
+  Tab: 'partWheel',
   KeyF: 'interact',
 
   Backquote: 'debugToggle',
@@ -129,6 +129,7 @@ export const BINDABLE: ReadonlyArray<{ action: Action; label: string }> = [
   { action: 'rotatePitch', label: 'Tilt' },
   { action: 'rotateRoll', label: 'Roll' },
   { action: 'resetRotation', label: 'Reset rotation' },
+  { action: 'partWheel', label: 'Part wheel' },
   { action: 'toggleCamera', label: 'Camera' },
   { action: 'interact', label: 'Undo' },
 ];
@@ -418,6 +419,19 @@ export class Input {
 
   wasReleased(action: Action): boolean {
     return this.state.get(action)!.released;
+  }
+
+  /**
+   * Push a look delta in, as if the mouse had moved.
+   *
+   * Real mouse movement is ignored unless the pointer is locked, and pointer
+   * lock cannot be granted to a headless page — there is no gesture to grant it
+   * from. Injecting at the same accumulator the mousemove handler writes to
+   * exercises every line downstream of it, which is all the code that is ours.
+   */
+  injectLook(dx: number, dy: number): void {
+    this.mouseDx += dx;
+    this.mouseDy += dy;
   }
 
   /** Mouse movement during this tick, in pixels. */

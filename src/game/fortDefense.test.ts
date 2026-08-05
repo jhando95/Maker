@@ -7,7 +7,7 @@ import { CameraRig } from '../player/cameraRig.ts';
 import { ProjectileSystem, segmentHitsCapsule } from './projectiles.ts';
 import {
   FortDefenseMode, BUILD_TIME, STASH_SUPPLIES, WAVE_COUNT,
-  BUCKETS, BUCKET_DISTANCE, BUCKET_RADIUS, PLAYER_AMMO_MAX, REFILL_TIME,
+  BUCKETS, BUCKET_DISTANCE, BUCKET_RADIUS, PLAYER_AMMO_MAX, REFILL_TIME, STASH_POSITION,
 } from './fortDefense.ts';
 import type { GameEvent, ModeContext, ModeInput } from './gameMode.ts';
 import { Rng } from '../core/rng.ts';
@@ -271,9 +271,11 @@ describe('FortDefenseMode', () => {
     // Ring the stash with a solid wall, then check bots cannot see through it.
     for (let i = 0; i < 32; i++) {
       const a = (i / 32) * Math.PI * 2;
+      // Around the stash, wherever it is — not around the origin, which was the
+      // same place only until the map grew a house and the stash moved out.
       ctx.world.addPart(
         0, 0,
-        Math.sin(a) * 3, 1.0, Math.cos(a) * 3,
+        STASH_POSITION.x + Math.sin(a) * 3, 1.0, STASH_POSITION.z + Math.cos(a) * 3,
         0, Math.sin(-a / 2), 0, Math.cos(-a / 2),
         0.35, 1.0, 0.1,
       );
@@ -332,7 +334,10 @@ describe('FortDefenseMode', () => {
   it('places buckets away from the stash, so refilling means leaving cover', () => {
     expect(BUCKETS.length).toBe(3);
     for (const b of BUCKETS) {
-      expect(Math.hypot(b.x, b.z)).toBeCloseTo(BUCKET_DISTANCE, 6);
+      // Measured from the stash, not from the origin. Those were the same
+      // number until the map gained a house and the stash moved out of it.
+      const d = Math.hypot(b.x - STASH_POSITION.x, b.z - STASH_POSITION.z);
+      expect(d).toBeCloseTo(BUCKET_DISTANCE, 6);
     }
     // Spread around the stash, so no single wall of a fort covers them all.
     for (let i = 0; i < BUCKETS.length; i++) {

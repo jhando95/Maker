@@ -56,6 +56,15 @@ jobs:
       - name: Controller scenario
         run: node tools/shoot.mjs --scenario scenarios/gamepad.mjs --out /tmp/ci-gamepad.png
 
+      - name: Part-wheel scenario
+        run: node tools/shoot.mjs --scenario scenarios/wheel.mjs --out /tmp/ci-wheel.png
+
+      # The water fight is a loop across the mode, the shell and the HUD: run
+      # dry, find a tap, fill up, hose someone. Each piece is unit-tested and
+      # each seam between them has broken at least once with the suite green.
+      - name: Water-fight scenario
+        run: node tools/shoot.mjs --scenario scenarios/water.mjs --auto-quality --out /tmp/ci-water.png
+
       # A CI runner has no GPU either, so it is a genuine instance of the case
       # adaptive quality exists for. The decision logic is unit-tested; this
       # checks the decision reaches the drawing buffer.
@@ -71,6 +80,8 @@ jobs:
             /tmp/ci-crash.png
             /tmp/ci-gamepad.png
             /tmp/ci-quality.png
+            /tmp/ci-wheel.png
+            /tmp/ci-water.png
           if-no-files-found: ignore
 
   benchmark:

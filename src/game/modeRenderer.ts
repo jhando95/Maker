@@ -12,18 +12,48 @@ import { chamferedBox, blob } from '../render/geometry.ts';
 import { Rng } from '../core/rng.ts';
 import { MAX_BALLOONS, BALLOON_RADIUS } from './projectiles.ts';
 import type { ProjectileSystem } from './projectiles.ts';
-import { BUCKETS, BUCKET_RADIUS, type FortDefenseMode } from './fortDefense.ts';
+import type { GameMode } from './gameMode.ts';
 import { CAP_HEIGHT, CAP_RADIUS } from '../physics/constants.ts';
+import { wetBlend } from './wetness.ts';
 
 const MAX_BOTS = 24;
 /** Simultaneous splash bursts. */
 const MAX_SPLASHES = 16;
 const SPLASH_LIFETIME = 0.5;
 
+/** Objective stands and flags a mode can ask for at once. */
+const MAX_MARKERS = 8;
+const MAX_FLAGS = 4;
+/**
+ * Droplets in a stream.
+ *
+ * A jet drawn as one tapered mesh reads as a solid rod of glass; a line of
+ * shrinking blobs reads as water, and it comes free because it is one instanced
+ * draw either way.
+ */
+const MAX_DROPS = 26;
+
 interface Splash {
   x: number; y: number; z: number;
   age: number;
   active: boolean;
+}
+
+/** A crate with a floating diamond over it: any objective you stand on. */
+interface Stand {
+  group: THREE.Group;
+  crateMaterial: THREE.MeshToonMaterial;
+  glow: THREE.Mesh;
+  glowMaterial: THREE.MeshToonMaterial;
+  ring: THREE.Mesh;
+  ringMaterial: THREE.MeshToonMaterial;
+}
+
+/** A pole with a cloth on it: the thing you actually carry. */
+interface FlagPole {
+  group: THREE.Group;
+  cloth: THREE.Mesh;
+  clothMaterial: THREE.MeshToonMaterial;
 }
 
 export class ModeRenderer {
@@ -33,10 +63,11 @@ export class ModeRenderer {
   private readonly botHead: THREE.InstancedMesh;
   private readonly balloons: THREE.InstancedMesh;
   private readonly splashMesh: THREE.InstancedMesh;
-  private readonly stash: THREE.Group;
-  private readonly stashGlow: THREE.Mesh;
-  private readonly buckets: THREE.Group;
-  private readonly bucketMarkers: THREE.Mesh[] = [];
+  private readonly stands: Stand[] = [];
+  private readonly flagPoles: FlagPole[] = [];
+  private readonly drops: THREE.InstancedMesh;
+  private streamFrom: { x: number; y: number; z: number } | null = null;
+  private streamEnd: { x: number; y: number; z: number } | null = null;
 
   private readonly splashes: Splash[] = [];
   private readonly matrix = new THREE.Matrix4();
@@ -45,9 +76,14 @@ export class ModeRenderer {
   private readonly scale = new THREE.Vector3(1, 1, 1);
   private readonly color = new THREE.Color();
   private readonly outlineMaterials: THREE.ShaderMaterial[] = [];
+  private readonly outlineMeshes: THREE.Mesh[] = [];
 
   /** Kept off-screen rather than resized, so instance counts never churn. */
   private static readonly HIDDEN = new THREE.Matrix4().makeTranslation(0, -9999, 0);
+  private static readonly NO_ROTATION = new THREE.Quaternion();
+  /** A dry shirt, and the same shirt wringing wet. */
+  private static readonly DRY_KID = new THREE.Color().setHex(0xe07a4f, THREE.SRGBColorSpace);
+  private static readonly SOAKED_KID = new THREE.Color().setHex(0x6b3524, THREE.SRGBColorSpace);
 
   constructor() {
     this.group.name = 'mode';
@@ -101,75 +137,104 @@ export class ModeRenderer {
       this.splashes.push({ x: 0, y: 0, z: 0, age: 0, active: false });
     }
 
-    // The stash: a crate with a glowing marker above it, so it is findable from
-    // anywhere in the yard. The whole mode is about protecting this, so it must
-    // never be ambiguous where it is.
-    this.stash = new THREE.Group();
+    // Objective markers: a pool of stands and a pool of flags, positioned from
+    // whatever the running mode publishes. The renderer used to know what a
+    // stash and a bucket were, which meant a second mode could not add an
+    // objective without editing drawing code.
+    for (let i = 0; i < MAX_MARKERS; i++) {
+      this.stands.push(this.makeStand());
+    }
+    for (let i = 0; i < MAX_FLAGS; i++) {
+      this.flagPoles.push(this.makeFlag());
+    }
+
+    // The stream: droplets strung from the nozzle to wherever the mode says the
+    // water stops. Pooled and hidden off-screen like everything else here, so a
+    // trigger pull never compiles a shader.
+    this.drops = new THREE.InstancedMesh(
+      new THREE.SphereGeometry(1, 6, 5),
+      createToonMaterial({ color: 0x8fd8f4 }),
+      MAX_DROPS,
+    );
+    this.drops.frustumCulled = false;
+    this.drops.castShadow = false;
+    this.group.add(this.drops);
+
+    this.hideAll();
+  }
+
+  /**
+   * A crate, a range ring and a floating diamond.
+   *
+   * The diamond does the work: an objective you cannot see from inside your own
+   * fort is one you never plan a route to, and the ring shows exactly where
+   * "close enough" is so nothing ever fails for an invisible reason.
+   */
+  private makeStand(): Stand {
+    const group = new THREE.Group();
+
     const crateGeometry = chamferedBox(1.1, 0.8, 1.1, 0.02);
-    const crate = new THREE.Mesh(crateGeometry, createToonMaterial({ color: 0xd8564f }));
+    const crateMaterial = createToonMaterial({ color: 0xd8564f });
+    const crate = new THREE.Mesh(crateGeometry, crateMaterial);
     crate.castShadow = true;
     crate.receiveShadow = true;
     crate.position.y = 0.4;
-    this.stash.add(crate);
+    group.add(crate);
 
-    const crateOutline = new THREE.Mesh(crateGeometry, createOutlineMaterial(0x6a2320, 0.02));
-    crateOutline.position.y = 0.4;
-    this.stash.add(crateOutline);
-    this.outlineMaterials.push(crateOutline.material as THREE.ShaderMaterial);
+    const outline = new THREE.Mesh(crateGeometry, createOutlineMaterial(0x3a2c2a, 0.02));
+    outline.position.y = 0.4;
+    group.add(outline);
+    this.outlineMaterials.push(outline.material as THREE.ShaderMaterial);
+    this.outlineMeshes.push(outline);
 
     const glowMaterial = createToonMaterial({ color: 0xffe98a });
     glowMaterial.transparent = true;
     glowMaterial.opacity = 0.85;
-    this.stashGlow = new THREE.Mesh(new THREE.OctahedronGeometry(0.28, 0), glowMaterial);
-    this.stashGlow.position.y = 1.6;
-    this.stash.add(this.stashGlow);
+    const glow = new THREE.Mesh(new THREE.OctahedronGeometry(0.28, 0), glowMaterial);
+    glow.position.y = 1.6;
+    group.add(glow);
 
-    this.stash.visible = false;
-    this.group.add(this.stash);
+    const ringMaterial = createToonMaterial({ color: 0x9fd8ee });
+    ringMaterial.transparent = true;
+    ringMaterial.opacity = 0.45;
+    const ring = new THREE.Mesh(
+      new THREE.TorusGeometry(1.5, 0.05, 6, 24).rotateX(Math.PI / 2),
+      ringMaterial,
+    );
+    ring.position.y = 0.03;
+    group.add(ring);
 
-    // Ammo buckets, out past where a fort usually ends up. Each carries a marker
-    // like the stash's, because the player has to be able to find them from
-    // inside their own walls — a bucket you cannot see is a bucket you do not
-    // plan a route to.
-    this.buckets = new THREE.Group();
-    const bucketGeometry = chamferedBox(0.7, 0.7, 0.7, 0.03);
-    const ringGeometry = new THREE.TorusGeometry(BUCKET_RADIUS, 0.05, 6, 24).rotateX(Math.PI / 2);
+    group.visible = false;
+    this.group.add(group);
+    return { group, crateMaterial, glow, glowMaterial, ring, ringMaterial };
+  }
 
-    for (const b of BUCKETS) {
-      const mesh = new THREE.Mesh(bucketGeometry, createToonMaterial({ color: 0x4f8fd8 }));
-      mesh.position.set(b.x, 0.35, b.z);
-      mesh.castShadow = true;
-      mesh.receiveShadow = true;
-      this.buckets.add(mesh);
+  private makeFlag(): FlagPole {
+    const group = new THREE.Group();
 
-      const outline = new THREE.Mesh(bucketGeometry, createOutlineMaterial(0x24506f, 0.018));
-      outline.position.copy(mesh.position);
-      this.buckets.add(outline);
-      this.outlineMaterials.push(outline.material as THREE.ShaderMaterial);
+    const poleGeometry = chamferedBox(0.08, 1.9, 0.08, 0.01);
+    const pole = new THREE.Mesh(poleGeometry, createToonMaterial({ color: 0xd8b585 }));
+    pole.castShadow = true;
+    pole.position.y = 0.95;
+    group.add(pole);
 
-      // A ring on the ground showing exactly where "close enough" is, so the
-      // channel never fails for a reason the player cannot see.
-      const ringMaterial = createToonMaterial({ color: 0x9fd8ee });
-      ringMaterial.transparent = true;
-      ringMaterial.opacity = 0.5;
-      const ring = new THREE.Mesh(ringGeometry, ringMaterial);
-      ring.position.set(b.x, 0.03, b.z);
-      this.buckets.add(ring);
+    // A bedsheet on a broom handle, which is what a backyard flag is.
+    const clothGeometry = chamferedBox(0.9, 0.6, 0.04, 0.01);
+    const clothMaterial = createToonMaterial({ color: 0xff8a6a });
+    const cloth = new THREE.Mesh(clothGeometry, clothMaterial);
+    cloth.castShadow = true;
+    cloth.position.set(0.47, 1.5, 0);
+    group.add(cloth);
 
-      const marker = new THREE.Mesh(
-        new THREE.OctahedronGeometry(0.2, 0),
-        createToonMaterial({ color: 0x6ec6ff }),
-      );
-      marker.position.set(b.x, 1.3, b.z);
-      marker.name = 'bucketMarker';
-      this.buckets.add(marker);
-      this.bucketMarkers.push(marker);
-    }
+    const outline = new THREE.Mesh(clothGeometry, createOutlineMaterial(0x3a2c2a, 0.02));
+    outline.position.copy(cloth.position);
+    group.add(outline);
+    this.outlineMaterials.push(outline.material as THREE.ShaderMaterial);
+    this.outlineMeshes.push(outline);
 
-    this.buckets.visible = false;
-    this.group.add(this.buckets);
-
-    this.hideAll();
+    group.visible = false;
+    this.group.add(group);
+    return { group, cloth, clothMaterial };
   }
 
   private hideAll(): void {
@@ -206,36 +271,114 @@ export class ModeRenderer {
   }
 
   /** Called every frame. `time` drives the stash marker's idle animation. */
-  update(dt: number, mode: FortDefenseMode | null, projectiles: ProjectileSystem, time: number): void {
+  update(dt: number, mode: GameMode | null, projectiles: ProjectileSystem, time: number): void {
     this.updateBots(mode);
     this.updateBalloons(projectiles);
     this.updateSplashes(dt);
+    this.updateMarkers(mode, time);
+    this.updateStream(time);
+  }
 
-    if (mode === null) {
-      this.stash.visible = false;
-      this.buckets.visible = false;
+  /**
+   * Where the water is going this frame.
+   *
+   * Set every frame from the mode, because a stream that persists for one frame
+   * after the trigger is released reads as the weapon sticking.
+   */
+  setStream(
+    end: { x: number; y: number; z: number } | null,
+    fromX: number, fromY: number, fromZ: number,
+  ): void {
+    this.streamEnd = end;
+    this.streamFrom = end === null ? null : { x: fromX, y: fromY, z: fromZ };
+  }
+
+  private updateStream(time: number): void {
+    const from = this.streamFrom;
+    const to = this.streamEnd;
+    if (from === null || to === null) {
+      for (let i = 0; i < MAX_DROPS; i++) this.drops.setMatrixAt(i, ModeRenderer.HIDDEN);
+      this.drops.instanceMatrix.needsUpdate = true;
       return;
     }
 
-    this.buckets.visible = true;
-    this.bucketMarkers.forEach((marker, i) => {
-      marker.position.y = 1.3 + Math.sin(time * 2.6 + i * 1.7) * 0.1;
-      marker.rotation.y = time * 1.4;
-      // The one being used lifts and spins faster, so the channel is legible
-      // from third person where the HUD bar is easy to miss.
-      const active = mode.currentBucket === i;
-      marker.scale.setScalar(active ? 1.25 + mode.refillFraction * 0.35 : 1);
-    });
+    const dx = to.x - from.x;
+    const dy = to.y - from.y;
+    const dz = to.z - from.z;
+    const length = Math.hypot(dx, dy, dz);
+    const used = Math.max(2, Math.min(MAX_DROPS, Math.round(length * 2.6)));
 
-    this.stash.visible = true;
-    this.stash.position.set(mode.stash.x, mode.stash.y, mode.stash.z);
-    // A slow bob and spin, so the marker reads as a live objective rather than
-    // another piece of scenery.
-    this.stashGlow.position.y = 1.6 + Math.sin(time * 2.2) * 0.12;
-    this.stashGlow.rotation.y = time * 1.1;
+    for (let i = 0; i < MAX_DROPS; i++) {
+      if (i >= used) {
+        this.drops.setMatrixAt(i, ModeRenderer.HIDDEN);
+        continue;
+      }
+      const t = (i + 0.5) / used;
+      // A little sag and a little wobble: dead straight reads as a laser.
+      const sag = Math.sin(t * Math.PI) * length * 0.035;
+      const wobble = Math.sin(time * 22 + i * 1.7) * 0.035 * t;
+      this.pos.set(
+        from.x + dx * t + wobble,
+        from.y + dy * t - sag,
+        from.z + dz * t + wobble,
+      );
+      // Fattens along its length, so the jet has a direction you can read.
+      this.scale.setScalar(0.045 + t * 0.085);
+      this.matrix.compose(this.pos, ModeRenderer.NO_ROTATION, this.scale);
+      this.drops.setMatrixAt(i, this.matrix);
+    }
+    this.scale.setScalar(1);
+    this.drops.instanceMatrix.needsUpdate = true;
   }
 
-  private updateBots(mode: FortDefenseMode | null): void {
+  /**
+   * Position the pools from whatever the mode published.
+   *
+   * Pools rather than meshes created per round: a marker appearing mid-round
+   * would compile a shader on the frame it appeared, which is a visible hitch
+   * at exactly the moment something important just happened.
+   */
+  private updateMarkers(mode: GameMode | null, time: number): void {
+    const markers = mode?.markers() ?? [];
+    let standIndex = 0;
+    let flagIndex = 0;
+
+    for (const marker of markers) {
+      if (marker.kind === 'flag') {
+        const flag = this.flagPoles[flagIndex++];
+        if (flag === undefined) continue;
+        flag.group.visible = true;
+        flag.group.position.set(marker.x, marker.y, marker.z);
+        // Carried flags ride above the shoulder and spin; planted ones stand.
+        flag.group.position.y += marker.active === true ? 1.1 : 0;
+        flag.group.rotation.y = marker.active === true ? time * 2.2 : Math.sin(time * 0.7) * 0.25;
+        flag.clothMaterial.color.setHex(marker.color, THREE.SRGBColorSpace);
+        continue;
+      }
+
+      const stand = this.stands[standIndex++];
+      if (stand === undefined) continue;
+      stand.group.visible = true;
+      stand.group.position.set(marker.x, marker.y, marker.z);
+      stand.crateMaterial.color.setHex(marker.color, THREE.SRGBColorSpace);
+      stand.ringMaterial.color.setHex(marker.color, THREE.SRGBColorSpace);
+      stand.ring.visible = marker.kind === 'bucket';
+
+      // A slow bob and spin, so a marker reads as a live objective rather than
+      // as another piece of scenery. The active one lifts and spins faster,
+      // which is legible from third person where the HUD bar is easy to miss.
+      const active = marker.active === true;
+      stand.glow.position.y = 1.6 + Math.sin(time * 2.2 + standIndex * 1.7) * 0.12;
+      stand.glow.rotation.y = time * (active ? 2.6 : 1.1);
+      stand.glow.scale.setScalar(active ? 1.3 : 1);
+      stand.glowMaterial.opacity = marker.faded === true ? 0.35 : 0.85;
+    }
+
+    for (let i = standIndex; i < this.stands.length; i++) this.stands[i]!.group.visible = false;
+    for (let i = flagIndex; i < this.flagPoles.length; i++) this.flagPoles[i]!.group.visible = false;
+  }
+
+  private updateBots(mode: GameMode | null): void {
     let count = 0;
     if (mode !== null) {
       for (const bot of mode.bots) {
@@ -247,9 +390,14 @@ export class ModeRenderer {
         this.botBody.setMatrixAt(count, this.matrix);
 
         // Stunned bots wash out toward blue, so it is obvious at a glance which
-        // are still a threat.
-        const stunned = bot.state === 'stunned';
-        this.color.setHex(stunned ? 0x7fb8d8 : 0xe07a4f, THREE.SRGBColorSpace);
+        // are still a threat. Otherwise the shirt darkens as it soaks, which is
+        // how the player reads who is nearly finished and picks a target.
+        if (bot.state === 'stunned') {
+          this.color.setHex(0x7fb8d8, THREE.SRGBColorSpace);
+        } else {
+          this.color.copy(ModeRenderer.DRY_KID);
+          this.color.lerp(ModeRenderer.SOAKED_KID, wetBlend(mode.wetnessOf?.(bot.id) ?? 0));
+        }
         this.botBody.setColorAt(count, this.color);
 
         this.pos.set(bot.x, bot.y + CAP_HEIGHT - 0.05, bot.z);
@@ -310,12 +458,16 @@ export class ModeRenderer {
     this.splashMesh.instanceMatrix.needsUpdate = true;
   }
 
+  /**
+   * Toggle every outline shell.
+   *
+   * The old version walked the stash group looking for meshes whose material
+   * was outlineMaterials[0], which matched exactly one mesh and silently left
+   * every other outline on. Keeping a list of the shells removes the search and
+   * the class of bug with it.
+   */
   setOutlinesVisible(visible: boolean): void {
-    for (const child of this.stash.children) {
-      if (child instanceof THREE.Mesh && child.material === this.outlineMaterials[0]) {
-        child.visible = visible;
-      }
-    }
+    for (const shell of this.outlineMeshes) shell.visible = visible;
   }
 
   setViewportHeight(height: number): void {
@@ -326,7 +478,9 @@ export class ModeRenderer {
   clear(): void {
     this.hideAll();
     for (const s of this.splashes) s.active = false;
-    this.stash.visible = false;
-    this.buckets.visible = false;
+    for (const stand of this.stands) stand.group.visible = false;
+    for (const flag of this.flagPoles) flag.group.visible = false;
+    this.setStream(null, 0, 0, 0);
+    this.updateStream(0);
   }
 }
