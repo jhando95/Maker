@@ -632,6 +632,11 @@ export class WaterWarMode implements GameMode {
     return this.playerWet.value;
   }
 
+  /** True while the player is soaked and sitting the next few seconds out. */
+  get playerIsOut(): boolean {
+    return this.playerOut > 0;
+  }
+
   /** Wetness of a kid, for the renderer's tint. */
   wetnessOf(botId: number): number {
     return this.botWet.get(botId)?.value ?? 0;

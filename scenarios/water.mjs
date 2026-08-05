@@ -27,6 +27,7 @@ const state = (page) =>
       building: m.buildingAllowed,
       tank: m.tankLevel ?? null,
       wetness: m.playerWetness ?? null,
+      out: m.playerIsOut ?? false,
       stream: m.stream === null || m.stream === undefined ? null : { ...m.stream },
       bots: m.bots.filter((b) => b.alive).length,
       water: m.sources === undefined ? null : m.sources.map((s) => Math.round(s.water)),
@@ -74,6 +75,26 @@ async function painted(page, phase) {
     });
 }
 
+/**
+ * Send every kid home for a moment.
+ *
+ * The mechanics measured below — a stream drawing, a tank emptying, a tap
+ * refilling — are about water, not about winning a firefight. Left alone the
+ * player stands motionless at a tap while four kids pelt them, and a knockout
+ * mid-measurement stops the tank draining and teleports them off the tap: the
+ * assertion then fails for a reason with nothing to do with what it checks.
+ * That is exactly how this first went red on CI, at 0.55 wetness and climbing
+ * on the machine where it passed.
+ *
+ * Soaking them buys a clean window, and is the same thing the unit tests do.
+ */
+const clearTheLawn = (page) =>
+  page.evaluate(() => {
+    for (const bot of window.__maker.getMode().bots) {
+      for (let i = 0; i < 12 && bot.alive; i++) bot.soak();
+    }
+  });
+
 export default async function (page) {
   await page.evaluate(() => {
     window.__maker.setAutoQuality(false);
@@ -117,8 +138,20 @@ export default async function (page) {
   const hose = raid.weapons.find((w) => w.id === 'hose');
   assert(hose !== undefined, 'the hose should be in the loadout');
 
+  // ── The stream is drawn ────────────────────────────────────────────────────
+  // First, on a full tank and an unsoaked player, and with the lawn cleared:
+  // every one of those is a precondition for a stream existing at all, so
+  // measuring this at the end of a firefight was testing the wrong thing.
+  await clearTheLawn(page);
+  await page.evaluate(() => window.__maker.lookAt(0, 0));
+  await page.evaluate(() => window.__maker.fastForward(1.5, undefined, true));
+  const streaming = await state(page);
+  assert(!streaming.out, 'the player should still be in the fight for this check');
+  assert(streaming.tank > 0, `and should have water; tank is ${streaming.tank}`);
+  assert(streaming.stream !== null, 'holding fire with water in the tank should draw a stream');
+
   // ── Firing empties the tank ────────────────────────────────────────────────
-  const fullTank = raid.tank;
+  const fullTank = streaming.tank;
   await page.evaluate(() => window.__maker.fastForward(3, undefined, true));
   const fired = await state(page);
   assert(fired.tank < fullTank, `firing should cost water; ${fullTank} -> ${fired.tank}`);
@@ -132,6 +165,9 @@ export default async function (page) {
   // ── Refilling at a tap ─────────────────────────────────────────────────────
   // Stand in the paddling pool. The refill is proximity-based, so this is the
   // whole interaction: the mode has to notice, and it has to cost the tap.
+  // Lawn cleared again — being knocked off the tap mid-fill would fail this for
+  // reasons that have nothing to do with refilling.
+  await clearTheLawn(page);
   const poolWater = dry.water[0];
   await page.evaluate(() => {
     const m = window.__maker.getMode();
@@ -140,21 +176,12 @@ export default async function (page) {
   });
   await page.evaluate(() => window.__maker.fastForward(4));
   const filled = await state(page);
+  assert(!filled.out, 'the player should not have been knocked off the tap');
   assert(filled.tank > dry.tank + 10, `standing in the pool should refill; still ${filled.tank}`);
   assert(
     filled.water[0] < poolWater,
     `a refill has to come out of the tap; it stayed at ${filled.water[0]}`,
   );
-
-  // ── The stream is drawn, and stops at what it hits ─────────────────────────
-  await page.evaluate(() => {
-    const m = window.__maker.getMode();
-    const kid = m.bots.find((b) => b.alive);
-    if (kid !== undefined) window.__maker.lookAtPoint(kid.x, kid.y + 1, kid.z);
-  });
-  await page.evaluate(() => window.__maker.fastForward(1.5, undefined, true));
-  const streaming = await state(page);
-  assert(streaming.stream !== null, 'holding fire with water in the tank should draw a stream');
 
   // ── Being soaked is visible before it is fatal ─────────────────────────────
   // Drive the player's own meter up and check the screen says so. A meter
