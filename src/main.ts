@@ -43,7 +43,7 @@ renderer.shadowMap.needsUpdate = true;
 app.appendChild(renderer.domElement);
 
 // ── World ────────────────────────────────────────────────────────────────────
-const { scene, invalidateShadows } = createScene('backyard-01');
+const { scene, invalidateShadows, props: scenery } = createScene('backyard-01');
 const world = new CollisionWorld(1.0, 4096);
 const parts = new PartRenderer();
 scene.add(parts.group);
@@ -88,6 +88,7 @@ const hud = new Hud(app);
 const input = new Input(renderer.domElement);
 
 parts.setViewportHeight(window.innerHeight);
+scenery.setViewportHeight(window.innerHeight);
 // The starter structures are already in; draw their shadows on the first frame
 // rather than a quarter second later.
 invalidateShadows();
@@ -234,6 +235,7 @@ window.addEventListener('resize', () => {
   renderer.setSize(window.innerWidth, window.innerHeight);
   camera.setAspect(window.innerWidth / window.innerHeight);
   parts.setViewportHeight(window.innerHeight);
+  scenery.setViewportHeight(window.innerHeight);
 });
 
 // ── Debug API, also driven by the headless screenshot harness ────────────────
