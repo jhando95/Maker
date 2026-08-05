@@ -21,6 +21,12 @@ import { MAX_REACH } from './build/snapping.ts';
 import { seedStarterStructures } from './world/starter.ts';
 import { AudioBus } from './audio/audioBus.ts';
 import { GameSounds } from './audio/gameSounds.ts';
+import { Rng } from './core/rng.ts';
+import { ProjectileSystem } from './game/projectiles.ts';
+import { ModeRenderer } from './game/modeRenderer.ts';
+import { FortDefenseMode } from './game/fortDefense.ts';
+import type { GameEvent, ModeContext, ModeInput } from './game/gameMode.ts';
+import { SettingsStore, ghostColors } from './app/settings.ts';
 
 const app = document.getElementById('app')!;
 app.style.cssText = 'position:fixed;inset:0;overflow:hidden;';
@@ -94,6 +100,93 @@ const input = new Input(renderer.domElement);
 const audio = new AudioBus();
 const sounds = new GameSounds(audio, world);
 
+const settings = new SettingsStore();
+settings.subscribe((s) => {
+  camera.sensitivity = s.sensitivity;
+  audio.setMasterVolume(s.masterVolume);
+  audio.setSfxVolume(s.sfxVolume);
+  parts.setOutlinesVisible(s.outlines);
+  scenery.setOutlinesVisible(s.outlines);
+  renderer.shadowMap.enabled = s.shadows;
+  const g = ghostColors(s.colorblindGhost);
+  build.setGhostColors(g.valid, g.invalid);
+});
+
+// ── Mode plumbing ────────────────────────────────────────────────────────────
+const projectiles = new ProjectileSystem(world);
+const modeRenderer = new ModeRenderer();
+scene.add(modeRenderer.group);
+
+/**
+ * Events raised by simulation and drained here. Keeping presentation on this
+ * side of a queue is what stops the mode from having to know about audio.
+ */
+const events: GameEvent[] = [];
+
+const modeContext: ModeContext = {
+  world, build, player, camera, projectiles,
+  rng: new Rng('round-1'),
+  emit: (e) => events.push(e),
+  worldChanged: () => worldChanged(),
+};
+
+/** null means free build with no rules. */
+let mode: FortDefenseMode | null = null;
+
+function startRound(): void {
+  mode = new FortDefenseMode();
+  mode.start(modeContext);
+  audio.play('roundStart', { volume: 0.6 });
+}
+
+function stopRound(): void {
+  mode?.end(modeContext);
+  mode = null;
+  projectiles.clear();
+  modeRenderer.clear();
+}
+
+function drainEvents(): void {
+  for (const e of events) {
+    switch (e.type) {
+      case 'splash':
+        modeRenderer.splash(e.x, e.y, e.z);
+        audio.play('splash', {
+          ...spatialAt(e.x, e.y, e.z),
+          pitch: 0.9 + Math.random() * 0.25,
+        });
+        break;
+      case 'throw':
+        audio.play('throw', { ...spatialAt(e.x, e.y, e.z), volume: 0.5 });
+        break;
+      case 'botSoaked':
+        audio.play('hit', { ...spatialAt(e.x, e.y, e.z), volume: 0.5 });
+        break;
+      case 'playerSoaked':
+        audio.play('hit', { volume: 0.7, pitch: 0.7 });
+        break;
+      case 'stashHit':
+        audio.play('invalid', { volume: 0.8, pitch: 0.6 });
+        break;
+      case 'roundWon':
+        audio.play('roundWin', { volume: 0.7 });
+        break;
+      case 'roundLost':
+        audio.play('roundLose', { volume: 0.7 });
+        break;
+      case 'phaseChange':
+        audio.play('roundStart', { volume: 0.45 });
+        break;
+    }
+  }
+  events.length = 0;
+}
+
+function spatialAt(x: number, y: number, z: number) {
+  const basis = camera.getMoveBasis();
+  return AudioBus.spatial(x, y, z, player.x, player.y + 1.5, player.z, basis.rx, basis.rz, 28);
+}
+
 parts.setViewportHeight(window.innerHeight);
 scenery.setViewportHeight(window.innerHeight);
 // The starter structures are already in; draw their shadows on the first frame
@@ -138,6 +231,8 @@ let validPlacement = false;
 let placeHeldTicks = 0;
 /** Identity of the snap target the ghost is latched to, for the snap tick. */
 let lastSnapKey = '';
+/** Seconds left on the end-of-round screen before the world is handed back. */
+let modeOverTimer = 0;
 
 /** Place, and make a sound about it. Returns whether anything was placed. */
 function tryPlaceWithFeedback(): boolean {
@@ -219,12 +314,32 @@ function fixedUpdate(dt: number): void {
 
   // Sticky repeat while held: the difference between building a 20-rung ladder
   // and giving up on one.
-  if (input.wasPressed('placePart')) {
-    placeHeldTicks = 0;
-    if (!tryPlaceWithFeedback()) sounds.invalid();
-  } else if (input.isDown('placePart')) {
-    placeHeldTicks++;
-    if (placeHeldTicks % 10 === 0) tryPlaceWithFeedback();
+  // During a wave the mouse throws balloons instead of placing parts, so the
+  // player is never fumbling between two things bound to the same button.
+  const canBuild = mode === null || mode.buildingAllowed;
+  if (canBuild) {
+    if (input.wasPressed('placePart')) {
+      placeHeldTicks = 0;
+      if (!tryPlaceWithFeedback()) sounds.invalid();
+    } else if (input.isDown('placePart')) {
+      placeHeldTicks++;
+      if (placeHeldTicks % 10 === 0) tryPlaceWithFeedback();
+    }
+  }
+
+  // ── Mode tick ──────────────────────────────────────────────────────────────
+  if (mode !== null) {
+    const modeInput: ModeInput = {
+      fire: input.isDown('placePart'),
+      firePressed: input.wasPressed('placePart'),
+      fireReleased: input.wasReleased('placePart'),
+    };
+    mode.fixedUpdate(dt, modeContext, modeInput);
+    if (mode.finished && modeOverTimer <= 0) modeOverTimer = 4;
+  }
+  if (modeOverTimer > 0) {
+    modeOverTimer -= dt;
+    if (modeOverTimer <= 0) stopRound();
   }
 
   if (input.wasPressed('removePart')) {
@@ -258,6 +373,9 @@ function render(alpha: number, frameDt: number): void {
   avatar.rotation.y = camera.yaw;
 
   flushShadows(performance.now() / 1000);
+  drainEvents();
+  modeRenderer.update(frameDt, mode, projectiles, performance.now() / 1000);
+
   renderer.render(scene, camera.camera);
 
   hud.update({
@@ -270,6 +388,7 @@ function render(alpha: number, frameDt: number): void {
     partsPlaced: build.placedCount,
     cameraMode: camera.mode,
     climbing: state.climbing,
+    mode: mode?.hud() ?? null,
   });
   hud.updateDebug({
     fps: loop.fps,
@@ -349,6 +468,27 @@ window.__maker = {
     worldChanged();
   },
   audio,
+  settings,
+  startRound,
+  stopRound,
+  getMode: () => mode,
+  /**
+   * Advance the running mode without waiting in real time, using the real
+   * context. Scenarios that build their own context get subtly different
+   * behaviour, which is worse than useless for verification.
+   */
+  fastForward: (seconds: number, until?: string) => {
+    if (mode === null) return null;
+    const ticks = Math.round(seconds / DT);
+    const noFire = { fire: false, firePressed: false, fireReleased: false };
+    for (let i = 0; i < ticks; i++) {
+      mode.fixedUpdate(DT, modeContext, noFire);
+      if (until !== undefined && mode.phase === until) break;
+    }
+    drainEvents();
+    return { phase: mode.phase, wave: mode.wave, bots: mode.bots.length };
+  },
+  projectiles,
   world,
   build,
   player,

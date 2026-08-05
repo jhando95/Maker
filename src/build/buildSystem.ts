@@ -70,6 +70,9 @@ export class BuildSystem {
   /** Placements this session, for the HUD. */
   placedCount = 0;
 
+  private ghostValidColor = GHOST_VALID;
+  private ghostInvalidColor = GHOST_INVALID;
+
   constructor(world: CollisionWorld, renderer: PartRenderer) {
     this.world = world;
     this.renderer = renderer;
@@ -141,6 +144,12 @@ export class BuildSystem {
     this.cycleIndex++;
   }
 
+  /** Ghost tint, so settings can offer a colourblind-safe pair. */
+  setGhostColors(valid: number, invalid: number): void {
+    this.ghostValidColor = valid;
+    this.ghostInvalidColor = invalid;
+  }
+
   /**
    * Recompute the preview. Runs every frame; nothing here mutates world state.
    */
@@ -194,7 +203,7 @@ export class BuildSystem {
 
     this.ghostMesh.position.copy(this.ghostPos);
     this.ghostMesh.quaternion.copy(this.ghostQuat);
-    this.ghostMaterial.color.setHex(candidate.valid ? GHOST_VALID : GHOST_INVALID);
+    this.ghostMaterial.color.setHex(candidate.valid ? this.ghostValidColor : this.ghostInvalidColor);
     this.ghostMaterial.opacity = candidate.valid ? 0.45 : 0.3;
   }
 

@@ -74,7 +74,43 @@ const STYLE = `
 .maker-lock h1 { font-size: 42px; margin: 0 0 6px; letter-spacing: -0.5px; }
 .maker-lock p { margin: 0; opacity: 0.85; font-size: 14px; }
 .maker-hidden { display: none !important; }
+
+/* Mode banner: phase, timer and objective, centred at the top where the eye
+   goes when something changes. */
+.maker-mode {
+  position: absolute; left: 50%; top: 16px; transform: translateX(-50%);
+  display: flex; align-items: center; gap: 14px;
+  padding: 8px 16px; border-radius: 12px;
+  background: rgba(28, 22, 20, 0.55); backdrop-filter: blur(4px);
+}
+.maker-mode .phase { font-size: 15px; font-weight: 800; letter-spacing: 0.6px; }
+.maker-mode .timer { font-size: 22px; font-weight: 800; font-variant-numeric: tabular-nums; }
+.maker-mode .stat { font-size: 12px; opacity: 0.9; }
+.maker-mode .stat b { font-size: 15px; }
+.maker-mode .stash { color: #ffd76a; letter-spacing: 2px; }
+.maker-mode.urgent .timer { color: #ff9f6a; }
+
+.maker-message {
+  position: absolute; left: 50%; top: 96px; transform: translateX(-50%);
+  font-size: 30px; font-weight: 800; text-align: center;
+  text-shadow: 0 3px 0 rgba(58,44,42,0.55);
+}
+
+/* Ammo and charge sit just above the hotbar, near where the hands are. */
+.maker-ammo {
+  position: absolute; left: 50%; bottom: 92px; transform: translateX(-50%);
+  display: flex; flex-direction: column; align-items: center; gap: 5px;
+}
+.maker-ammo .pips { display: flex; gap: 3px; }
+.maker-ammo .pip { width: 7px; height: 15px; border-radius: 3px;
+  background: rgba(255,255,255,0.25); }
+.maker-ammo .pip.full { background: #6ec6ff; }
+.maker-charge { width: 128px; height: 6px; border-radius: 3px;
+  background: rgba(0,0,0,0.4); overflow: hidden; }
+.maker-charge i { display: block; height: 100%; background: #ffd76a; width: 0%; }
 `;
+
+import type { ModeHud } from '../game/gameMode.ts';
 
 export interface HudState {
   selectedKind: number;
@@ -86,6 +122,8 @@ export interface HudState {
   partsPlaced: number;
   cameraMode: string;
   climbing: boolean;
+  /** Null when no mode is running. */
+  mode: ModeHud | null;
 }
 
 export interface DebugState {
@@ -106,6 +144,9 @@ export class Hud {
   private readonly debug: HTMLDivElement;
   private readonly lock: HTMLDivElement;
   private readonly slots: HTMLDivElement[] = [];
+  private readonly modePanel: HTMLDivElement;
+  private readonly messageEl: HTMLDivElement;
+  private readonly ammoEl: HTMLDivElement;
 
   private debugVisible = false;
 
@@ -156,6 +197,18 @@ export class Hud {
     this.debug.className = 'maker-panel maker-debug maker-hidden';
     this.root.appendChild(this.debug);
 
+    this.modePanel = document.createElement('div');
+    this.modePanel.className = 'maker-mode maker-hidden';
+    this.root.appendChild(this.modePanel);
+
+    this.messageEl = document.createElement('div');
+    this.messageEl.className = 'maker-message maker-hidden';
+    this.root.appendChild(this.messageEl);
+
+    this.ammoEl = document.createElement('div');
+    this.ammoEl.className = 'maker-ammo maker-hidden';
+    this.root.appendChild(this.ammoEl);
+
     this.lock = document.createElement('div');
     this.lock.className = 'maker-lock';
     this.lock.innerHTML =
@@ -180,6 +233,7 @@ export class Hud {
 
   update(state: HudState): void {
     this.crosshair.classList.toggle('invalid', !state.validPlacement);
+    this.updateMode(state.mode);
 
     this.slots.forEach((slot, i) => {
       slot.classList.toggle('active', i === state.selectedKind);
@@ -201,6 +255,47 @@ export class Hud {
       `built: ${state.partsPlaced}`,
       state.climbing ? '<b>climbing</b>' : `camera: ${state.cameraMode}`,
     ].join('<br>');
+  }
+
+  /** Render the running mode's banner, message and ammo, or hide them all. */
+  private updateMode(mode: ModeHud | null): void {
+    const active = mode !== null;
+    this.modePanel.classList.toggle('maker-hidden', !active);
+    this.messageEl.classList.toggle('maker-hidden', !active || mode!.message === null);
+    this.ammoEl.classList.toggle('maker-hidden', !active || mode!.ammo === null);
+    // The hotbar is meaningless while throwing, so it goes away with the build
+    // controls rather than sitting there inert.
+    this.hotbar.classList.toggle('maker-hidden', active && mode!.ammo !== null);
+    if (!active) return;
+
+    const m = mode!;
+    const parts: string[] = [`<span class="phase">${m.phase}</span>`];
+    if (m.timer !== null) {
+      const seconds = Math.ceil(m.timer);
+      parts.push(`<span class="timer">${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}</span>`);
+    }
+    if (m.primary !== null) {
+      parts.push(`<span class="stat">${m.primary.label} <b class="stash">${m.primary.value}</b></span>`);
+    }
+    if (m.secondary !== null) {
+      parts.push(`<span class="stat">${m.secondary.label} <b>${m.secondary.value}</b></span>`);
+    }
+    this.modePanel.innerHTML = parts.join('');
+    // Under ten seconds the timer turns warm, which is the only cue a player
+    // reliably catches while looking at what they are building.
+    this.modePanel.classList.toggle('urgent', m.timer !== null && m.timer <= 10);
+
+    if (m.message !== null) this.messageEl.textContent = m.message;
+
+    if (m.ammo !== null) {
+      const pips: string[] = [];
+      for (let i = 0; i < m.ammo.max; i++) {
+        pips.push(`<div class="pip${i < m.ammo.current ? ' full' : ''}"></div>`);
+      }
+      const charge = m.charge === null ? '' :
+        `<div class="maker-charge"><i style="width:${Math.round(m.charge * 100)}%"></i></div>`;
+      this.ammoEl.innerHTML = `<div class="pips">${pips.join('')}</div>${charge}`;
+    }
   }
 
   updateDebug(state: DebugState): void {
