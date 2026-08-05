@@ -47,15 +47,42 @@ const state = (page) =>
     };
   });
 
+/**
+ * Wait until the HUD has repainted for a given phase.
+ *
+ * `fastForward` drives the simulation directly, but the HUD only redraws on an
+ * animation frame, so reading the DOM straight after one is a race — and it is
+ * the *fast* machine that loses it, since fewer simulated seconds pass per frame
+ * and the repaint is more likely to still be pending. This passed on every local
+ * run at 5fps under software GL and failed first time on a CI runner.
+ *
+ * The phase banner is the signal because `updateMode` writes it and the ammo,
+ * help and status elements in one synchronous pass: if the banner has caught up,
+ * everything else in that pass has too. Waiting on the banner rather than on the
+ * thing being asserted keeps the assertions honest — a genuinely missing tank
+ * gauge still fails as a missing tank gauge, not as a timeout.
+ */
+async function painted(page, phase) {
+  await page
+    .waitForFunction(
+      (p) => (document.querySelector('.maker-mode .phase')?.textContent ?? '').includes(p),
+      phase,
+      { timeout: 30_000 },
+    )
+    .catch(() => {
+      throw new Error(`water scenario: the HUD never repainted for phase ${phase}`);
+    });
+}
+
 export default async function (page) {
   await page.evaluate(() => {
     window.__maker.setAutoQuality(false);
     window.__maker.startRound('waterWar');
     window.__maker.hideOverlay();
   });
-  await page.waitForTimeout(400);
 
   // ── The build phase ────────────────────────────────────────────────────────
+  await painted(page, 'BUILD');
   const built = await state(page);
   assert(built.id === 'waterWar', `expected the water mode, got ${built.id}`);
   assert(built.building, 'you should be able to build before the first raid');
@@ -67,6 +94,7 @@ export default async function (page) {
 
   // ── Into a raid ────────────────────────────────────────────────────────────
   await page.evaluate(() => window.__maker.fastForward(75, 'RAID 1/4'));
+  await painted(page, 'RAID');
   const raid = await state(page);
   assert(raid.phase.startsWith('RAID'), `should be raiding, phase is ${raid.phase}`);
   assert(!raid.building, 'building is off once the kids are on the lawn');
