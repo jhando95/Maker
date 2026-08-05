@@ -5,9 +5,10 @@ you nail together whatever you want — ladders, staircases, towers, forts,
 bridges. The long-term goal is party modes played *inside* the things you build:
 capture the flag, water balloon battles, tag.
 
-Single-player so far: one backyard, the movement and building mechanics the
-whole game rests on, and the first game mode — **Fort Defense**. Build a fort,
-then hold off waves of kids coming for your stash of water balloons.
+Single-player so far: a neighborhood lot with a house in the middle of it, the
+movement and building mechanics the whole game rests on, and two modes —
+**Capture the Flag** across the two yards, and **Fort Defense** on the front
+lawn.
 
 ```bash
 npm install
@@ -29,7 +30,8 @@ npm run dev      # http://localhost:5173
 | `Q` / `E` | turn the held part 15° |
 | `Z` / `X` | tilt / roll |
 | `T` | reset rotation |
-| `1`–`8`, wheel | choose a part |
+| `Tab` (hold) | part wheel — flick a direction, let go |
+| `1`–`8`, scroll | choose a part |
 | `Shift` + wheel | change colour |
 | `V` | first ⇄ third person |
 | `G` | repeat the last step — hold to run a chain |
@@ -72,8 +74,44 @@ One browser limitation, not a design choice: entering the game needs a real
 click, because pointer lock cannot be granted from a controller button. After
 that, `Start` pauses and resumes without touching the mouse.
 
-During a wave the mouse throws balloons instead of placing parts — you are never
-fumbling between two things on one button.
+During a wave — or a capture phase — the mouse throws balloons instead of
+placing parts, so you are never fumbling between two things on one button.
+
+## Modes
+
+**Capture the Flag.** Your flag is in the left yard, theirs is in the right, and
+the house is in between. Take theirs, get it home, three times. Play alternates
+between a build phase and a capture phase, and a capture *ends the round* rather
+than scoring a point in a continuous one — so what you actually experience is:
+lose the flag, watch exactly how they got in, then get forty-five seconds to fix
+that. Enemy bots split into runners who come for your flag and guards who sit on
+theirs, and the mix shifts with the score.
+
+**Fort Defense.** Build a fort around the stash on the front lawn, then hold five
+waves. Between waves you get time to patch whatever failed.
+
+## The map
+
+A cul-de-sac with a house at the centre. Left yard is -X, right yard is +X, and
+the house stands between them, so the map has two halves before any mode says
+so. A fence would have been easier and wrong: a fence is a thing you walk
+around, a house is a thing you go over, and going over it is a building problem.
+
+Twelve metres of house in a forty-eight metre lot divided almost nothing —
+measured, walking round the front cost a quarter of a metre over the straight
+line — so the divide continues out to the boundary as a fence with two gates at
+opposite ends. Three routes across: the front gate, the back gate, and the roof.
+
+The climb up is deliberately unfinished. Porch roof at 2.6m, eaves at 5.0m,
+treehouse deck at 4.5m with eight metres of air to the house. Every stage is
+reachable except the last, and the last is the part you build.
+
+You can climb what you built; you cannot climb the neighbourhood. Any
+near-vertical surface is climbable for player-placed parts — nail rungs to a
+wall and the game recognises a ladder without being told — but applying that to
+the map would mean shimmying up flat stucco onto the roof, which is the one
+thing the house exists to prevent. The treehouse ladder is marked climbable
+explicitly.
 
 Walk into a near-vertical surface with rungs and you climb it. That is not a
 ladder object — it is any structure the game recognises as climbable, which
@@ -89,11 +127,11 @@ src/
   player/      character controller, camera rig
   build/       part kit, snapping, build system
   render/      cel shading, procedural geometry, instanced meshes
-  world/       backyard scene, starter structures
+  world/       neighborhood map, scene, starter structures
   game/        game modes, bots, flow-field navigation, projectiles
   audio/       synthesized sound
   app/         settings, persistence, crash handling
-  ui/          HUD
+  ui/          HUD, menus, radial part picker
 tools/
   shoot.mjs    headless screenshot + smoke-test harness
   bench.ts     simulation cost per tick, at 3000 parts
@@ -101,7 +139,7 @@ scenarios/     scripted checks driven through the harness
 ```
 
 ```bash
-npm test         # 310 unit tests
+npm test         # 411 unit tests
 npm run typecheck
 npm run bench    # what a tick costs, as a share of the 16.67ms budget
 node tools/shoot.mjs --out shots/x.png   # boot headless, screenshot, fail on any console error

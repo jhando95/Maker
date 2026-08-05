@@ -126,6 +126,11 @@ export class GameSounds {
     this.bus.play('invalid', { volume: 0.5 });
   }
 
+  /** A part chosen from the wheel. Quiet — it happens often and means little. */
+  pickPart(): void {
+    this.bus.play('uiClick', { volume: 0.45, pitch: 1.2 });
+  }
+
   private spatial(
     x: number, y: number, z: number,
     camera: CameraRig,

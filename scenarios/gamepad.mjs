@@ -70,8 +70,13 @@ export default async function (page) {
   // generous window. Distances here only have to separate "moved" from "did not
   // move" — how a stick maps to a speed is pinned exactly in the unit tests,
   // where the frame rate cannot get in the way.
+  // The front lawn, not the origin. The origin used to be open grass and is now
+  // the middle of the house, so a stick test there measured a player standing
+  // inside a wall and going nowhere.
+  const START = [-8, 0.6, -14];
+
   const push = async (axes, ms) => {
-    await page.evaluate(() => window.__maker.teleport(0, 0.6, 0));
+    await page.evaluate((p) => window.__maker.teleport(p[0], p[1], p[2]), START);
     await page.evaluate(() => window.__maker.lookAt(0, 0));
     await page.waitForTimeout(600); // land and settle before measuring
 
@@ -133,7 +138,7 @@ export default async function (page) {
   );
 
   // ── The trigger places a part ──────────────────────────────────────────────
-  await page.evaluate(() => window.__maker.teleport(0, 0.5, 0));
+  await page.evaluate((p) => window.__maker.teleport(p[0], p[1], p[2]), START);
   await page.evaluate(() => window.__maker.lookAt(0, -0.5));
   await page.waitForTimeout(250);
 
@@ -171,7 +176,9 @@ export default async function (page) {
   // Still pad hints: the device only changes back when a key or the mouse is
   // actually used, not when a controller is unplugged.
   const helpText = await page.evaluate(() => document.querySelector('.maker-help')?.textContent ?? '');
-  assert(helpText.includes('L Stick'), `hints should be pad hints while a pad is in use:\n${helpText}`);
+  // A token only the pad help contains. 'LT' rather than 'Alt', which the
+  // keyboard help shows and which differs only by case.
+  assert(helpText.includes('D←'), `hints should be pad hints while a pad is in use:\n${helpText}`);
 
   console.log('[gamepad] verified: analog move, rate-based look, trigger place, clean unplug, pad hints');
 }

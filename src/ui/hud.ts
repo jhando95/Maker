@@ -10,6 +10,7 @@
 
 import { PART_KINDS, COLORWAYS } from '../build/partKit.ts';
 import type { InputDevice } from '../core/input.ts';
+import { PartWheel, type WheelEntry } from './partWheel.ts';
 
 const STYLE = `
 .maker-hud {
@@ -32,26 +33,6 @@ const STYLE = `
 .maker-crosshair .h { left: 0; right: 0; top: 50%; height: 2px; margin-top: -1px; }
 .maker-crosshair .v { top: 0; bottom: 0; left: 50%; width: 2px; margin-left: -1px; }
 .maker-crosshair.invalid span { background: #ff6b6b; }
-
-.maker-hotbar {
-  position: absolute; left: 50%; bottom: 22px; transform: translateX(-50%);
-  display: flex; gap: 6px;
-}
-.maker-slot {
-  width: 62px; height: 58px; border-radius: 10px;
-  background: rgba(28, 22, 20, 0.55);
-  border: 2px solid rgba(255, 255, 255, 0.18);
-  display: flex; flex-direction: column; align-items: center; justify-content: center;
-  gap: 2px; backdrop-filter: blur(4px);
-}
-.maker-slot.active {
-  background: rgba(244, 162, 89, 0.9);
-  border-color: #fff;
-  transform: translateY(-4px);
-}
-.maker-slot .num { font-size: 10px; opacity: 0.75; }
-.maker-slot .name { font-size: 10.5px; font-weight: 700; text-align: center; line-height: 1.1; }
-.maker-slot .dims { font-size: 8.5px; opacity: 0.7; }
 
 .maker-panel {
   position: absolute; padding: 8px 11px; border-radius: 10px;
@@ -97,7 +78,7 @@ const STYLE = `
   text-shadow: 0 3px 0 rgba(58,44,42,0.55);
 }
 
-/* Ammo and charge sit just above the hotbar, near where the hands are. */
+/* Ammo and charge sit just above the part chip, near where the hands are. */
 .maker-ammo {
   position: absolute; left: 50%; bottom: 92px; transform: translateX(-50%);
   display: flex; flex-direction: column; align-items: center; gap: 5px;
@@ -144,14 +125,35 @@ export interface DebugState {
   throttled: boolean;
 }
 
+const dims = (i: number): string => {
+  const k = PART_KINDS[i]!;
+  return `${k.length}×${k.thickness}`;
+};
+
+/**
+ * The wheel's contents. Built once — the part kit does not change at runtime,
+ * and rebuilding this string list every frame would be pure churn.
+ */
+const WHEEL_ENTRIES: readonly WheelEntry[] = PART_KINDS.map((k, i) => ({
+  label: k.name,
+  detail: dims(i),
+  color: `#${COLORWAYS[0]!.toString(16).padStart(6, '0')}`,
+}));
+
 const key = (label: string) => `<span class="maker-key">${label}</span>`;
 
+/**
+ * Two lines, not five.
+ *
+ * A permanent five-line reference in the corner is a manual, and nobody reads a
+ * manual they cannot dismiss. What survives is the two things you cannot guess:
+ * how to rotate what you are holding, and how to change it. Everything else is
+ * either obvious (WASD), discoverable from the wheel itself, or listed in
+ * Settings → Controls where a reference belongs.
+ */
 const HELP_KEYBOARD = [
-  `${key('WASD')} move &nbsp; ${key('Space')} jump &nbsp; ${key('Shift')} sprint`,
-  `${key('LMB')} place &nbsp; ${key('RMB')} remove &nbsp; ${key('Alt')} free aim`,
-  `${key('Q')}${key('E')} turn &nbsp; ${key('Z')}${key('X')} tilt &nbsp; ${key('T')} reset`,
-  `${key('R')} next snap &nbsp; ${key('G')} repeat &nbsp; ${key('V')} camera`,
-  `${key('1-8')} pick part &nbsp; ${key('`')} debug`,
+  `${key('Q')}${key('E')} turn &nbsp; ${key('Z')}${key('X')} tilt &nbsp; ${key('R')} snap &nbsp; ${key('G')} repeat`,
+  `${key('Tab')} parts &nbsp; ${key('Alt')} free aim &nbsp; ${key('V')} camera &nbsp; ${key('`')} debug`,
 ];
 
 /**
@@ -161,26 +163,24 @@ const HELP_KEYBOARD = [
  * which no amount of iteration over that list would produce.
  */
 const HELP_GAMEPAD = [
-  `${key('L Stick')} move &nbsp; ${key('A')} jump &nbsp; ${key('L3')} sprint`,
-  `${key('RT')} place &nbsp; ${key('X')} remove &nbsp; ${key('LT')} free aim`,
-  `${key('LB')}${key('RB')} turn &nbsp; ${key('D↑')}${key('D↓')} tilt &nbsp; ${key('Back')} reset`,
-  `${key('Y')} next snap &nbsp; ${key('R3')} camera &nbsp; ${key('Start')} menu`,
-  `${key('D←')}${key('D→')} pick part &nbsp; keyboard for undo &amp; repeat`,
+  `${key('LB')}${key('RB')} turn &nbsp; ${key('D↑')}${key('D↓')} tilt &nbsp; ${key('Y')} snap`,
+  `${key('D←')}${key('D→')} parts &nbsp; ${key('LT')} free aim &nbsp; ${key('R3')} camera`,
 ];
 
 export class Hud {
   readonly root: HTMLDivElement;
 
   private readonly crosshair: HTMLDivElement;
-  private readonly hotbar: HTMLDivElement;
   private readonly status: HTMLDivElement;
   private readonly debug: HTMLDivElement;
   private readonly lock: HTMLDivElement;
-  private readonly slots: HTMLDivElement[] = [];
   private readonly modePanel: HTMLDivElement;
   private readonly messageEl: HTMLDivElement;
   private readonly ammoEl: HTMLDivElement;
   private readonly help: HTMLDivElement;
+  private readonly chip: HTMLDivElement;
+  private readonly wheel: PartWheel;
+  private chipKey = '';
 
   private debugVisible = false;
   private device: InputDevice = 'keyboard';
@@ -198,24 +198,20 @@ export class Hud {
     this.crosshair.innerHTML = '<span class="h"></span><span class="v"></span>';
     this.root.appendChild(this.crosshair);
 
-    this.hotbar = document.createElement('div');
-    this.hotbar.className = 'maker-hotbar';
-    PART_KINDS.forEach((kind, i) => {
-      const slot = document.createElement('div');
-      slot.className = 'maker-slot';
-      const dims = `${kind.length}×${kind.width}`;
-      slot.innerHTML =
-        `<div class="num">${i + 1}</div>` +
-        `<div class="name">${kind.name}</div>` +
-        `<div class="dims">${dims}</div>`;
-      this.slots.push(slot);
-      this.hotbar.appendChild(slot);
-    });
-    this.root.appendChild(this.hotbar);
-
     this.status = document.createElement('div');
     this.status.className = 'maker-panel maker-status';
     this.root.appendChild(this.status);
+
+    // One line under the crosshair instead of eight boxes across the bottom.
+    this.chip = document.createElement('div');
+    this.chip.className = 'mk-chip';
+    this.root.appendChild(this.chip);
+
+    this.wheel = new PartWheel(this.root);
+    // Once. The part kit does not change at runtime, and repainting eight
+    // chips every frame was both waste and — measured — enough restyling to
+    // stop CSS transitions on those chips from ever reaching their target.
+    this.wheel.setEntries(WHEEL_ENTRIES);
 
     this.help = document.createElement('div');
     this.help.className = 'maker-panel maker-help';
@@ -279,10 +275,6 @@ export class Hud {
     this.crosshair.classList.toggle('invalid', !state.validPlacement);
     this.updateMode(state.mode);
 
-    this.slots.forEach((slot, i) => {
-      slot.classList.toggle('active', i === state.selectedKind);
-    });
-
     const swatch = COLORWAYS[state.colorway % COLORWAYS.length]!
       .toString(16)
       .padStart(6, '0');
@@ -292,15 +284,32 @@ export class Hud {
         ? 'aligned'
         : `${rot.yaw}° / ${rot.pitch}° / ${rot.roll}°`;
 
+    // Two lines, not five. The part you are holding and its colour now live in
+    // the chip under the crosshair, and repeating what the chip already says in
+    // the corner is how a HUD ends up covering the game.
     this.status.innerHTML = [
-      `<span class="maker-swatch" style="background:#${swatch}"></span>${PART_KINDS[state.selectedKind]!.name}`,
-      `snap: <b>${state.snapKind}</b>${state.candidateCount > 1 ? ` (${state.candidateCount})` : ''}`,
-      `rotation: ${rotText}`,
-      `built: ${state.partsPlaced}`,
+      `snap <b>${state.snapKind}</b>${state.candidateCount > 1 ? ` (${state.candidateCount})` : ''}` +
+        `${rotText === 'aligned' ? '' : ` · ${rotText}`}`,
       state.canRepeat
         ? '<b>hold G</b> to repeat that step'
-        : state.climbing ? '<b>climbing</b>' : `camera: ${state.cameraMode}`,
+        : state.climbing ? '<b>climbing</b>' : `built ${state.partsPlaced}`,
     ].join('<br>');
+
+    // Only rewritten when it would actually differ; this runs every frame.
+    const chipKey = `${state.selectedKind}:${state.colorway}`;
+    if (chipKey !== this.chipKey) {
+      this.chipKey = chipKey;
+      this.chip.innerHTML =
+        `<span class="maker-swatch" style="background:#${swatch}"></span>` +
+        `<b>${PART_KINDS[state.selectedKind]!.name}</b>` +
+        `<span class="dims">${dims(state.selectedKind)}</span>` +
+        `<span class="hint">Tab</span>`;
+    }
+  }
+
+  /** The wheel, so the shell can open it and feed it mouse movement. */
+  get partWheel(): PartWheel {
+    return this.wheel;
   }
 
   /** Render the running mode's banner, message and ammo, or hide them all. */
@@ -309,9 +318,9 @@ export class Hud {
     this.modePanel.classList.toggle('maker-hidden', !active);
     this.messageEl.classList.toggle('maker-hidden', !active || mode!.message === null);
     this.ammoEl.classList.toggle('maker-hidden', !active || mode!.ammo === null);
-    // The hotbar is meaningless while throwing, so it goes away with the build
+    // The part chip is meaningless while throwing, so it goes with the build
     // controls rather than sitting there inert.
-    this.hotbar.classList.toggle('maker-hidden', active && mode!.ammo !== null);
+    this.chip.classList.toggle('maker-hidden', active && mode!.ammo !== null);
     if (!active) return;
 
     const m = mode!;

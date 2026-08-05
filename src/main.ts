@@ -523,8 +523,28 @@ function simulate(dt: number): void {
 
   // Look is sampled per tick from accumulated mouse movement, so a 1000Hz mouse
   // and a 60Hz simulation agree on how far the view turned.
+  // The part wheel takes the mouse while it is open.
+  //
+  // Under pointer lock there is no cursor, so the pick is made by direction —
+  // and the same movement cannot both aim the wheel and swing the camera, or
+  // choosing a plank spins you round to face the fence.
   const look = input.lookDelta;
-  if (look.x !== 0 || look.y !== 0) camera.look(look.x, look.y);
+  const picker = hud.partWheel;
+  if (input.wasPressed('partWheel') && (mode === null || mode.buildingAllowed)) {
+    picker.show(build.selectedKind);
+  }
+  if (picker.isOpen) {
+    picker.move(look.x, look.y);
+    if (!input.isDown('partWheel')) {
+      const picked = picker.hide();
+      if (picked !== null) {
+        build.selectKind(picked);
+        sounds.pickPart();
+      }
+    }
+  } else if (look.x !== 0 || look.y !== 0) {
+    camera.look(look.x, look.y);
+  }
 
   // A stick reports where it is, not how far it moved, so it is a rate and has
   // to be integrated. Without the dt the turn speed would follow the tick rate.
@@ -835,6 +855,12 @@ window.__maker = {
     camera.mode = mode;
   },
   selectPart: (i: number) => build.selectKind(i),
+  getSelectedPart: () => build.selectedKind,
+  actionDown: (a: string) => input.isDown(a as Action),
+  bindingFor: (code: string) => input.getBindings()[code] ?? null,
+  /** Move the mouse, for scenarios that cannot hold pointer lock. */
+  look: (dx: number, dy: number) => input.injectLook(dx, dy),
+  hud,
   /** Aim and place without a mouse, so scenarios can drive the build system. */
   placeAt: (yaw: number, pitch: number): boolean => {
     camera.yaw = yaw;
