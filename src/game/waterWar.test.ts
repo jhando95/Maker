@@ -12,6 +12,7 @@ import {
 import { TANK_MAX, SOURCE_RADIUS, WEAPONS } from './waterKit.ts';
 import type { GameEvent, ModeContext, ModeInput } from './gameMode.ts';
 import { Rng } from '../core/rng.ts';
+import { ActorRoster, LOCAL_ACTOR_ID } from './actor.ts';
 import { DT } from '../physics/constants.ts';
 import { WATER_SOURCES, neighborhoodSlabs, installFixtures } from '../world/neighborhood.ts';
 
@@ -30,6 +31,7 @@ function makeContext(): { ctx: ModeContext; events: GameEvent[]; world: Collisio
     events,
     ctx: {
       world, build, player, camera, projectiles,
+      actors: new ActorRoster({ id: LOCAL_ACTOR_ID, kind: 'local', team: 'left', controller: player }),
       rng: new Rng('war-test'),
       emit: (e) => events.push(e),
       worldChanged: () => {},

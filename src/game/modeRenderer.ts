@@ -15,6 +15,7 @@ import type { ProjectileSystem } from './projectiles.ts';
 import type { GameMode } from './gameMode.ts';
 import { CAP_HEIGHT, CAP_RADIUS } from '../physics/constants.ts';
 import { wetBlend } from './wetness.ts';
+import type { Actor } from './actor.ts';
 
 const MAX_BOTS = 24;
 /** Simultaneous splash bursts. */
@@ -81,6 +82,8 @@ export class ModeRenderer {
   /** Kept off-screen rather than resized, so instance counts never churn. */
   private static readonly HIDDEN = new THREE.Matrix4().makeTranslation(0, -9999, 0);
   private static readonly NO_ROTATION = new THREE.Quaternion();
+  /** Hoisted: composing a character's matrix allocated one of these per bot per frame. */
+  private static readonly UP = new THREE.Vector3(0, 1, 0);
   /** A dry shirt, and the same shirt wringing wet. */
   private static readonly DRY_KID = new THREE.Color().setHex(0xe07a4f, THREE.SRGBColorSpace);
   private static readonly SOAKED_KID = new THREE.Color().setHex(0x6b3524, THREE.SRGBColorSpace);
@@ -271,8 +274,22 @@ export class ModeRenderer {
   }
 
   /** Called every frame. `time` drives the stash marker's idle animation. */
-  update(dt: number, mode: GameMode | null, projectiles: ProjectileSystem, time: number): void {
-    this.updateBots(mode);
+  update(
+    dt: number,
+    mode: GameMode | null,
+    projectiles: ProjectileSystem,
+    time: number,
+    /**
+     * Everyone to draw except the person holding the camera.
+     *
+     * Passed in rather than read off the mode because a remote player is not
+     * the mode's business — the mode owns its bots, the session owns its
+     * people, and both need drawing the same way. Omitted, this falls back to
+     * the mode's bots, which is what the headless tests hand it.
+     */
+    others?: readonly Actor[],
+  ): void {
+    this.updateCharacters(others ?? mode?.bots ?? [], mode);
     this.updateBalloons(projectiles);
     this.updateSplashes(dt);
     this.updateMarkers(mode, time);
@@ -378,34 +395,41 @@ export class ModeRenderer {
     for (let i = flagIndex; i < this.flagPoles.length; i++) this.flagPoles[i]!.group.visible = false;
   }
 
-  private updateBots(mode: GameMode | null): void {
+  /**
+   * Draw everyone who is not holding the camera.
+   *
+   * Was `updateBots`, and the rename is the point: a bot and another person are
+   * the same silhouette moving through the same world, and the only thing this
+   * code ever needed from either was a position, a facing, and how wet they are.
+   */
+  private updateCharacters(others: readonly Actor[], mode: GameMode | null): void {
     let count = 0;
-    if (mode !== null) {
-      for (const bot of mode.bots) {
-        if (!bot.alive || count >= MAX_BOTS) continue;
+    for (const who of others) {
+      if (who.alive === false || count >= MAX_BOTS) continue;
 
-        this.pos.set(bot.x, bot.y + CAP_HEIGHT / 2, bot.z);
-        this.quat.setFromAxisAngle(new THREE.Vector3(0, 1, 0), bot.heading);
-        this.matrix.compose(this.pos, this.quat, this.scale);
-        this.botBody.setMatrixAt(count, this.matrix);
+      const body = who.controller;
+      const facing = who.heading ?? 0;
+      this.pos.set(body.x, body.y + CAP_HEIGHT / 2, body.z);
+      this.quat.setFromAxisAngle(ModeRenderer.UP, facing);
+      this.matrix.compose(this.pos, this.quat, this.scale);
+      this.botBody.setMatrixAt(count, this.matrix);
 
-        // Stunned bots wash out toward blue, so it is obvious at a glance which
-        // are still a threat. Otherwise the shirt darkens as it soaks, which is
-        // how the player reads who is nearly finished and picks a target.
-        if (bot.state === 'stunned') {
-          this.color.setHex(0x7fb8d8, THREE.SRGBColorSpace);
-        } else {
-          this.color.copy(ModeRenderer.DRY_KID);
-          this.color.lerp(ModeRenderer.SOAKED_KID, wetBlend(mode.wetnessOf?.(bot.id) ?? 0));
-        }
-        this.botBody.setColorAt(count, this.color);
-
-        this.pos.set(bot.x, bot.y + CAP_HEIGHT - 0.05, bot.z);
-        this.matrix.compose(this.pos, this.quat, this.scale);
-        this.botHead.setMatrixAt(count, this.matrix);
-
-        count++;
+      // Stunned characters wash out toward blue, so it is obvious at a glance
+      // who is still a threat. Otherwise the shirt darkens as it soaks, which is
+      // how the player reads who is nearly finished and picks a target.
+      if (who.stunned === true) {
+        this.color.setHex(0x7fb8d8, THREE.SRGBColorSpace);
+      } else {
+        this.color.copy(ModeRenderer.DRY_KID);
+        this.color.lerp(ModeRenderer.SOAKED_KID, wetBlend(mode?.wetnessOf?.(who.id) ?? 0));
       }
+      this.botBody.setColorAt(count, this.color);
+
+      this.pos.set(body.x, body.y + CAP_HEIGHT - 0.05, body.z);
+      this.matrix.compose(this.pos, this.quat, this.scale);
+      this.botHead.setMatrixAt(count, this.matrix);
+
+      count++;
     }
 
     for (let i = count; i < MAX_BOTS; i++) {

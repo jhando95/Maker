@@ -11,6 +11,7 @@ import {
 } from './fortDefense.ts';
 import type { GameEvent, ModeContext, ModeInput } from './gameMode.ts';
 import { Rng } from '../core/rng.ts';
+import { ActorRoster, LOCAL_ACTOR_ID } from './actor.ts';
 import { DT, CAP_HEIGHT, CAP_RADIUS } from '../physics/constants.ts';
 
 const noInput: ModeInput = { fire: false, firePressed: false, fireReleased: false };
@@ -27,6 +28,7 @@ function makeContext(): { ctx: ModeContext; events: GameEvent[]; world: Collisio
     events,
     ctx: {
       world, build, player, camera, projectiles,
+      actors: new ActorRoster({ id: LOCAL_ACTOR_ID, kind: 'local', team: 'left', controller: player }),
       rng: new Rng('test-round'),
       emit: (e) => events.push(e),
       worldChanged: () => {},

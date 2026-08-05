@@ -15,7 +15,7 @@ import { createScene } from './world/scene.ts';
 import { installFixtures } from './world/neighborhood.ts';
 import { PartRenderer } from './render/partRenderer.ts';
 import { BuildSystem, type PlacementRecord } from './build/buildSystem.ts';
-import { CharacterController, type MoveIntent } from './player/controller.ts';
+import { CharacterController } from './player/controller.ts';
 import { CameraRig } from './player/cameraRig.ts';
 import { Hud } from './ui/hud.ts';
 import { MAX_REACH } from './build/snapping.ts';
@@ -23,6 +23,8 @@ import { seedStarterStructures, STARTER_ORIGIN } from './world/starter.ts';
 import { AudioBus } from './audio/audioBus.ts';
 import { GameSounds } from './audio/gameSounds.ts';
 import { Rng } from './core/rng.ts';
+import { ActorRoster, LOCAL_ACTOR_ID, type Actor } from './game/actor.ts';
+import { BUTTON, commandToIntent, makeCommand } from './core/command.ts';
 import { ProjectileSystem } from './game/projectiles.ts';
 import { ModeRenderer } from './game/modeRenderer.ts';
 import { FortDefenseMode } from './game/fortDefense.ts';
@@ -232,8 +234,36 @@ settings.subscribe((s) => {
  */
 const events: GameEvent[] = [];
 
+/**
+ * The person at this keyboard, as an actor like any other.
+ *
+ * Left team because the player has always started in the left yard and every
+ * mode's bots have always been the other side; naming it makes that arrangement
+ * something a mode can read rather than something it assumes.
+ */
+const localActor: Actor = {
+  id: LOCAL_ACTOR_ID,
+  kind: 'local',
+  team: 'left',
+  controller: player,
+};
+const actors = new ActorRoster(localActor);
+
+/**
+ * This tick's input, reused rather than reallocated.
+ *
+ * One object per tick would be sixty short-lived allocations a second for the
+ * whole session, and the garbage collector pausing mid-jump is exactly the kind
+ * of hitch the fixed timestep exists to avoid.
+ */
+const localCommand = makeCommand();
+/** Monotonic tick counter, so a command can say which tick it belongs to. */
+let simTick = 0;
+/** Scratch list of who to draw, reused so rendering allocates nothing. */
+const drawnActors: Actor[] = [];
+
 const modeContext: ModeContext = {
-  world, build, player, camera, projectiles,
+  world, build, player, actors, camera, projectiles,
   rng: new Rng('round-1'),
   emit: (e) => events.push(e),
   worldChanged: () => worldChanged(),
@@ -593,24 +623,28 @@ function simulate(dt: number): void {
     sprintLatched = input.isDown('sprint');
   }
 
+  // What the player wants this tick, as data rather than as a function call.
+  // The controller is driven from a command whether it came from these keys, a
+  // recording, or eventually another machine — there is one path, so a replay
+  // cannot diverge from live play by taking a different one.
   const axis = input.moveAxis;
   const basis = camera.getMoveBasis();
-  const intent: MoveIntent = {
-    right: axis.z * basis.fx + axis.x * basis.rx,
-    forward: axis.z * basis.fz + axis.x * basis.rz,
-    jump: input.isDown('jump'),
-    sprint: sprintLatched,
-    crouch: crouchLatched,
-    climb: axis.z,
-  };
-  // Being soaked slows the player. Without this the mode's incoming fire is
-  // toothless and building cover is decoration.
-  if (mode !== null && mode.playerSpeedScale < 1) {
-    intent.right *= mode.playerSpeedScale;
-    intent.forward *= mode.playerSpeedScale;
-    intent.sprint = false;
-  }
-  player.step(dt, intent);
+  localCommand.tick = simTick;
+  localCommand.moveX = axis.z * basis.fx + axis.x * basis.rx;
+  localCommand.moveZ = axis.z * basis.fz + axis.x * basis.rz;
+  localCommand.climb = axis.z;
+  localCommand.yaw = camera.yaw;
+  localCommand.pitch = camera.pitch;
+  localCommand.buttons =
+    (input.isDown('jump') ? BUTTON.jump : 0) |
+    (sprintLatched ? BUTTON.sprint : 0) |
+    (crouchLatched ? BUTTON.crouch : 0);
+
+  // Being soaked slows the player. Applied here rather than baked into the
+  // command because it is a rule the mode applies to your intent, not part of
+  // the intent: a soaked player is pushing the stick just as hard.
+  player.step(dt, commandToIntent(localCommand, mode?.playerSpeedScale ?? 1));
+  simTick++;
   sounds.update(dt, player, camera);
 
   // ── Build actions ──────────────────────────────────────────────────────────
@@ -684,6 +718,11 @@ function simulate(dt: number): void {
       firePressed: input.wasPressed('placePart'),
       fireReleased: input.wasReleased('placePart'),
     };
+    // Rebuilt before the mode runs rather than after, so a mode asking who is in
+    // the world during its own tick gets this tick's answer. Bots spawned during
+    // the tick appear next tick, which is the same one-frame delay they already
+    // had before they could be drawn.
+    actors.refresh(mode.bots);
     mode.fixedUpdate(dt, modeContext, modeInput);
     if (mode.finished && modeOverTimer <= 0) modeOverTimer = 4;
   }
@@ -765,7 +804,13 @@ function draw(alpha: number, frameDt: number): void {
     mode?.stream ?? null,
     state.x, state.y + state.eyeHeight * 0.82, state.z,
   );
-  modeRenderer.update(frameDt, mode, projectiles, performance.now() / 1000);
+  // Everyone but the local player, who is drawn by the avatar below and would
+  // otherwise appear twice — once inside their own head.
+  drawnActors.length = 0;
+  for (const who of actors.all) {
+    if (who.id !== LOCAL_ACTOR_ID) drawnActors.push(who);
+  }
+  modeRenderer.update(frameDt, mode, projectiles, performance.now() / 1000, drawnActors);
 
   renderer.render(scene, camera.camera);
 

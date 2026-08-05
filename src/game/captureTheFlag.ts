@@ -25,6 +25,7 @@ import type { GameMode, Marker, ModeContext, ModeHud, ModeInput, ModeSummary } f
 import { CAP_HEIGHT, CAP_RADIUS } from '../physics/constants.ts';
 import { NavField } from './navField.ts';
 import { LEFT_FLAG, RIGHT_FLAG, LEFT_SPAWN, RIGHT_SPAWN } from '../world/neighborhood.ts';
+import type { Team } from './actor.ts';
 
 export type CtfPhase = 'setup' | 'capture' | 'over';
 
@@ -58,7 +59,7 @@ export const ENEMY_COUNT = 5;
 /** Seconds between nav-field rebuilds. */
 export const NAV_REBUILD_INTERVAL = 0.25;
 
-export type Team = 'left' | 'right';
+export type { Team } from './actor.ts';
 export type FlagStatus = 'home' | 'carried' | 'dropped';
 
 export interface FlagState {

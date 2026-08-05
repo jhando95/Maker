@@ -11,6 +11,7 @@ import {
 } from './captureTheFlag.ts';
 import type { GameEvent, ModeContext, ModeInput } from './gameMode.ts';
 import { Rng } from '../core/rng.ts';
+import { ActorRoster, LOCAL_ACTOR_ID } from './actor.ts';
 import { DT } from '../physics/constants.ts';
 import { LEFT_FLAG, RIGHT_FLAG, LEFT_SPAWN } from '../world/neighborhood.ts';
 
@@ -30,6 +31,7 @@ function makeContext(): { ctx: ModeContext; events: GameEvent[]; world: Collisio
     events,
     ctx: {
       world, build, player, camera, projectiles,
+      actors: new ActorRoster({ id: LOCAL_ACTOR_ID, kind: 'local', team: 'left', controller: player }),
       rng: new Rng('ctf-test'),
       emit: (e) => events.push(e),
       worldChanged: () => {},
