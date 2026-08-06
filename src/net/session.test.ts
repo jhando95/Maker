@@ -4,6 +4,7 @@ import { ProjectileSystem } from '../game/projectiles.ts';
 import type { Transport } from './transport.ts';
 import { PartRenderer } from '../render/partRenderer.ts';
 import { BuildSystem } from '../build/buildSystem.ts';
+import { PLAY_HALF } from '../world/bounds.ts';
 import { CharacterController } from '../player/controller.ts';
 import { ActorRoster, LOCAL_ACTOR_ID, type Actor } from '../game/actor.ts';
 import { BUTTON, commandToIntent, makeCommand, type Command } from '../core/command.ts';
@@ -412,6 +413,56 @@ describe('building together', () => {
     expect(clientCtx.world.partCount).toBe(1);
   });
 
+  it('refuses a placement the guest could not have reached', () => {
+    // The exploit this closes, stated plainly: a guest is a program, and a
+    // program does not have to use the snapper. `MAX_REACH` lives on the
+    // client, so it constrains an honest player and nobody else — a
+    // hand-written `build` message names any coordinates it likes, and until
+    // this check the host placed a part there and charged a plank for it. A
+    // staircase in somebody else's fort, a box around another player, a wall
+    // across a flag base from the far side of the lot.
+    const hostCtx = makeMachine();
+    const clientCtx = makeMachine();
+    const host = new NetHost(hostCtx);
+    const pipe = loopbackPair();
+    const client = new NetClient(clientCtx, pipe.client, 'guest');
+    host.accept(pipe.host);
+    run(host, hostCtx, client, clientCtx, 3);
+
+    // The guest spawns at (2, 0.5, 0); this is thirty metres away.
+    client.requestPlacement(plank(32, 0.5, 0));
+    run(host, hostCtx, client, clientCtx, 3);
+    expect(hostCtx.world.partCount).toBe(0);
+    expect(clientCtx.world.partCount).toBe(0);
+
+    // And the same guest can still build beside itself, so this is a reach
+    // limit rather than a refusal to let guests build at all.
+    client.requestPlacement(plank(4, 0.5, 0));
+    run(host, hostCtx, client, clientCtx, 3);
+    expect(hostCtx.world.partCount).toBe(1);
+    expect(clientCtx.world.partCount).toBe(1);
+  });
+
+  it('refuses a placement outside the world', () => {
+    // The other half, and a different rule in a different place: reach is about
+    // who asked, bounds are about where. A guest standing at the edge of the
+    // map is within arm's length of the outside of it.
+    const hostCtx = makeMachine();
+    const clientCtx = makeMachine();
+    const host = new NetHost(hostCtx);
+    const pipe = loopbackPair();
+    const client = new NetClient(clientCtx, pipe.client, 'guest');
+    host.accept(pipe.host);
+    run(host, hostCtx, client, clientCtx, 3);
+
+    // Put the guest's body on the boundary, so reach cannot be what refuses it.
+    const guest = hostCtx.actors.all.find((a) => a.kind === 'remote')!;
+    guest.controller.teleport(PLAY_HALF - 1, 0.5, 0);
+    client.requestPlacement(plank(PLAY_HALF + 2, 0.5, 0));
+    run(host, hostCtx, client, clientCtx, 3);
+    expect(hostCtx.world.partCount).toBe(0);
+  });
+
   it('a removal reaches everybody', () => {
     const hostCtx = makeMachine();
     const clientCtx = makeMachine();
@@ -500,10 +551,15 @@ describe('building together', () => {
     };
     tick(4);
 
-    clientA.requestPlacement(plank(6, 0.5, 6));
-    clientB.requestPlacement(plank(6, 0.5, 9));
-    hostCtx.build.applyPlace(plank(6, 0.5, 12));
-    host.announcePlacement(hostCtx.build.lastPlacedId!, plank(6, 0.5, 12));
+    // Each of the three builds beside itself. It used to be three planks in a
+    // row out at (6, 6), (6, 9) and (6, 12), which nobody noticed was ten to
+    // twelve metres from the guest asking for it — further than the client's own
+    // snapper would ever have allowed, so the test was exercising a placement no
+    // player could make. Measured: guest A sits at (2, 0), guest B at (-2, 0).
+    clientA.requestPlacement(plank(5, 0.5, 2));
+    clientB.requestPlacement(plank(-5, 0.5, 2));
+    hostCtx.build.applyPlace(plank(0, 0.5, 4));
+    host.announcePlacement(hostCtx.build.lastPlacedId!, plank(0, 0.5, 4));
     tick(6);
 
     expect(hostCtx.world.partCount).toBe(3);

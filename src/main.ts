@@ -35,6 +35,7 @@ import { SocketTransport, loopbackPair, type Transport } from './net/transport.t
 import { RelayHostLink, relayUrl } from './net/relayLink.ts';
 import { RemoteMode } from './net/remoteMode.ts';
 import { applyItems } from './game/itemField.ts';
+import { PLAY_HALF, enforceBounds, installBarrier } from './world/bounds.ts';
 import { IdentityStore } from './app/identity.ts';
 import { LobbyClient, lobbyUrl, socketLink, type Matched } from './net/lobby.ts';
 import { QUEUE_MODES } from './net/lobbyProtocol.ts';
@@ -156,6 +157,10 @@ const world = new CollisionWorld(1.0, 4096);
 // Installed before anything else touches the world so the starter structures
 // and the player both spawn against a house that is already there.
 installFixtures(world, slabs);
+// And the four walls at the edge of it. Separate because they are not scenery:
+// nothing draws them, and the slab list is a description of what the yard looks
+// like rather than of where it ends.
+installBarrier(world);
 const parts = new PartRenderer();
 scene.add(parts.group);
 
@@ -1237,6 +1242,13 @@ function simulate(dt: number): void {
   // means something else — a trampoline that clicks like a part snapping would
   // teach the wrong thing.
   applyItems(player);
+  // And last of all, the boundary — after the step and after the item, because
+  // both of them move a body and this is the one that gets the final say.
+  //
+  // On every machine for the same reason the item pass is: it is a pure
+  // function of position, so a guest leaning on the wall and the host stepping
+  // that guest agree, and nobody is corrected for standing still.
+  if (enforceBounds(player) === 'fell') hud.notice('You fell out of the garden.');
   // After the step, so a guest records what it predicted for this tick and the
   // host publishes where everybody actually ended up.
   if (net instanceof NetHost) net.afterTick(dt);
@@ -1320,6 +1332,14 @@ function simulate(dt: number): void {
   // ── Mode tick ──────────────────────────────────────────────────────────────
   if (mode !== null) {
     mode.fixedUpdate(dt, modeContext, modeInput);
+    // Kids are inside the boundary too. A bot steps its own controller from
+    // inside `bot.update`, so the shell is the only place with a view of all of
+    // them after the mode has finished moving them.
+    //
+    // Nothing sends a kid out today — they route on a flow field that reads the
+    // wall as solid — but "nothing sends them out" is a claim about every mode
+    // that will ever exist, and this costs one loop over at most fifteen bodies.
+    for (const bot of mode.bots) enforceBounds(bot.controller);
     if (mode.finished && modeOverTimer <= 0) modeOverTimer = 4;
   }
   if (modeOverTimer > 0) {
@@ -1799,6 +1819,8 @@ window.__maker = {
   },
   renderScale: () => ({ effective: governor.currentScale, throttled: governor.isThrottling }),
   inputDevice: () => input.lastDevice,
+  /** Half the width of the world, so a scenario cannot drift from the constant. */
+  playHalf: () => PLAY_HALF,
   /**
    * What the viewmodel is currently showing, or null for empty hands.
    *
@@ -1866,6 +1888,7 @@ window.__maker = {
   driveIntent: (seconds: number, partial: Partial<MoveIntent>) => {
     let mantled = false;
     let bounced = false;
+    let fell = false;
     let peakY = player.y;
     const ticks = Math.round(seconds / DT);
     for (let i = 0; i < ticks; i++) {
@@ -1874,12 +1897,18 @@ window.__maker = {
         ...partial,
       });
       if (applyItems(player)?.kind === 'trampoline') bounced = true;
+      // The boundary too, and in the same place `simulate` puts it — last.
+      // Leaving it out is how this driver told the bounds scenario that a body
+      // teleported to four thousand metres simply stayed there: the clamp was
+      // running in the game and not in the thing measuring the game, which is
+      // the exact trap `applyItems` fell into a commit earlier.
+      if (enforceBounds(player) === 'fell') fell = true;
       if (player.mantling) mantled = true;
       peakY = Math.max(peakY, player.y);
     }
     return {
       x: player.x, y: player.y, z: player.z,
-      mantled, bounced, peakY, onGround: player.onGround,
+      mantled, bounced, fell, peakY, onGround: player.onGround,
     };
   },
   /** Connect to a lobby, for the lobby scenario. */

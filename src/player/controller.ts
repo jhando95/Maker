@@ -191,6 +191,29 @@ export class CharacterController {
   }
 
   /**
+   * Move the body without stopping it.
+   *
+   * The other half of `teleport`, and the distinction is the whole of it.
+   * `teleport` means *start again here*: it drops the velocity and the previous
+   * position, so a spawn does not smear a metre of interpolation across the
+   * screen. This means *you were not quite where you thought you were*, which is
+   * what a correction is — the boundary clamp pushing a shoulder back inside,
+   * or a mode nudging somebody off a seam.
+   *
+   * Keeping the velocity matters more than it looks. The clamp writes it back
+   * deliberately: it zeroes the component pointing *out* of the world and leaves
+   * the one pointing back in, so a body that arrives at the wall stops and a
+   * body on its way home is not frozen against it. Routed through `teleport`
+   * that distinction cannot exist, because every clamp would drop both.
+   */
+  place(x: number, y: number, z: number): void {
+    this.x = x;
+    this.y = y;
+    this.z = z;
+    this.syncCapsule();
+  }
+
+  /**
    * Every bit of state a step depends on, so a step can be taken back.
    *
    * Client-side prediction needs exactly this: when the host says where you

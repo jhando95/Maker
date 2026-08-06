@@ -432,6 +432,9 @@ export class Hud {
    */
   private armed = false;
   private bannerKey = '';
+  /** A shell-owned line that outranks the mode's while it lasts. See `notice`. */
+  private noticeText: string | null = null;
+  private noticeUntil = 0;
   private readonly help: HTMLDivElement;
   private readonly chip: HTMLDivElement;
   private readonly wheel: PartWheel;
@@ -664,6 +667,25 @@ export class Hud {
    * looked identical from behind the crosshair, and the meter that moved was on
    * a body forty metres away.
    */
+  /**
+   * Say something that is not about the round.
+   *
+   * Every line on this banner has come from a mode until now, which was fine
+   * while the only things worth saying were phases and objectives. The shell
+   * has its own: it is the shell that puts a body back on the lawn after it
+   * falls out of the world, and a player teleported without a word learns that
+   * the game moves them at random.
+   *
+   * It borrows the mode's message line rather than opening a second one,
+   * because two lines of large text in the middle of the screen is not twice
+   * the communication — it is a paragraph nobody reads. A notice wins for as
+   * long as it lasts and then the mode has its line back.
+   */
+  notice(text: string, seconds = 3): void {
+    this.noticeText = text;
+    this.noticeUntil = performance.now() / 1000 + seconds;
+  }
+
   hitMarker(now: number): void {
     this.hitUntil = now + HIT_MARKER_TIME;
     this.crosshair.classList.add('hit');
@@ -712,7 +734,17 @@ export class Hud {
   private updateMode(mode: ModeHud | null, heldCost: number, canBuild: boolean): void {
     const active = mode !== null;
     this.modePanel.classList.toggle('maker-hidden', !active);
-    this.messageEl.classList.toggle('maker-hidden', !active || mode!.message === null);
+    // A shell notice outranks the mode's line while it lasts, and is shown even
+    // with no mode running — falling out of the world is not a thing that only
+    // happens during a round.
+    const notice = this.noticeText !== null && performance.now() / 1000 < this.noticeUntil
+      ? this.noticeText
+      : null;
+    if (notice !== null) this.messageEl.textContent = notice;
+    this.messageEl.classList.toggle(
+      'maker-hidden',
+      notice === null && (!active || mode!.message === null),
+    );
     this.ammoEl.classList.toggle('maker-hidden', !active || mode!.ammo === null);
     // The part chip is meaningless when you cannot place one, so it goes with
     // the build controls rather than sitting there inert. So do the snap
@@ -781,7 +813,7 @@ export class Hud {
     // reliably catches while looking at what they are building.
     this.modePanel.classList.toggle('urgent', m.timer !== null && m.timer <= 10);
 
-    if (m.message !== null) this.messageEl.textContent = m.message;
+    if (m.message !== null && notice === null) this.messageEl.textContent = m.message;
 
     // The vignette runs off wetness whether or not the mode shows ammo, so
     // being soaked reads the same during a lull as it does mid-raid.

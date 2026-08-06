@@ -19,6 +19,7 @@ import { chamferedBox, wedge } from '../render/geometry.ts';
 import { damp } from '../core/mathUtils.ts';
 import { Lumber, costOf } from './lumber.ts';
 import type { PartId } from '../physics/types.ts';
+import { boxInBounds } from '../world/bounds.ts';
 
 /** A committed placement. This is the wire format and the save format. */
 export interface PlacementRecord {
@@ -749,6 +750,17 @@ export class BuildSystem {
   private canPlaceAt(record: PlacementRecord, pending: readonly PlacementRecord[] = []): boolean {
     const box = worldAabb(record);
     if (box.minY < this.world.groundY - 0.02) return false;
+
+    // Inside the world, and under its ceiling.
+    //
+    // Checked here rather than in the snapper, and that is the whole point of
+    // where it sits: the snapper is the *intent* side, which only ever runs on
+    // the machine of the person holding the plank. This is the apply side, so
+    // it covers the local placement, a saved yard being restored, and — the one
+    // that matters — a guest's placement arriving over the wire. Without it a
+    // guest could hand the host any coordinates at all and the host would
+    // place a part there, four hundred metres away or forty storeys up.
+    if (!boxInBounds(box)) return false;
 
     // Shrunk, because parts placed flush touch exactly and must not read as
     // overlapping — the most common legitimate placement in the game.

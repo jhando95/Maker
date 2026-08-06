@@ -47,6 +47,8 @@ import {
 } from '../core/command.ts';
 import type { CollisionWorld } from '../physics/collisionWorld.ts';
 import type { BuildSystem, PlacementRecord } from '../build/buildSystem.ts';
+import { MAX_REACH } from '../build/snapping.ts';
+import { CAP_HEIGHT } from '../physics/constants.ts';
 import { ActorRoster, FIRST_REMOTE_ID, opposing, type Actor, type Team } from '../game/actor.ts';
 import {
   ACTOR_FLAG, PROTOCOL_VERSION, decode, indexToTeam, teamToIndex,
@@ -55,6 +57,7 @@ import {
 import { IDLE_INPUT, type ActorInput, type GameMode } from '../game/gameMode.ts';
 import type { ProjectileSystem } from '../game/projectiles.ts';
 import { applyItems } from '../game/itemField.ts';
+import { enforceBounds } from '../world/bounds.ts';
 import { packRound } from './roundPacket.ts';
 import type { Transport } from './transport.ts';
 
@@ -358,6 +361,14 @@ export class NetHost {
         // is infinite so nothing shows, and in a mode two people share a budget
         // that only one of them is spending. A shared pile has to be shared in
         // both directions or it is not a budget.
+        //
+        // And within arm's reach of the person asking. Until this line a guest
+        // could name any coordinates in the world and the host would place a
+        // part there: a staircase in somebody else's yard, a box around another
+        // player, a wall across a flag base from forty metres away. The client
+        // enforces `MAX_REACH` on itself, which stops an honest player and
+        // nobody else — a hand-written message goes nowhere near the snapper.
+        if (!this.withinReach(peer, message.r)) return;
         if (!this.ctx.build.buyPlacement(message.r)) return;
         const id = this.ctx.build.lastPlacedId;
         if (id === null) return;
@@ -424,6 +435,10 @@ export class NetHost {
       // The same item pass the guest just ran on its own prediction. Both sides
       // compute it from position alone, so they agree without a message.
       applyItems(peer.actor.controller);
+      // And the same boundary, for the same reason. The host is the authority on
+      // where a guest is, so this is the copy that decides — but the guest runs
+      // it too, so leaning on the wall does not produce a correction a tick.
+      enforceBounds(peer.actor.controller);
       this.headings.set(peer.id, command.yaw);
       peer.ack = command.tick;
       peer.wasFiring = pressed(command, 'fire');
@@ -497,6 +512,41 @@ export class NetHost {
         balloons,
       });
     }
+  }
+
+  /**
+   * Could this guest plausibly have placed that, from where they are?
+   *
+   * Deliberately loose, and the looseness is the design rather than a shortcut.
+   * Three things sit between what the guest saw and what the host knows:
+   *
+   * - **Reach is measured from the eye**, not the feet, and the host has a body
+   *   position. That is `CAP_HEIGHT` of slop before anything else.
+   * - **The guest was somewhere else when they aimed.** The message crossed a
+   *   network; at a sprint that is metres. `MOVED` covers a fifth of a second
+   *   of running, which is a long round trip.
+   * - **A part has size.** `MAX_REACH` is to the candidate's centre, and a
+   *   plank's own half-length is not nothing.
+   *
+   * Erring tight would drop legal placements from anybody with a slow
+   * connection, and a plank that silently fails to appear is a much worse bug
+   * than a generous bound — it is indistinguishable from the game being broken.
+   * Erring loose still turns "anywhere in the world" into "within about nine
+   * metres of yourself", which is the whole of the exploit.
+   *
+   * This is a reach check and not a line-of-sight check on purpose. Whether a
+   * placement is *legal* — overlapping, out of the world, unaffordable — is
+   * already decided by `buyPlacement`, and that decision belongs there.
+   */
+  private static readonly REACH_SLACK_MOVED = 2;
+
+  private withinReach(peer: Peer, record: PlacementRecord): boolean {
+    const body = peer.actor.controller;
+    const limit = MAX_REACH + CAP_HEIGHT + NetHost.REACH_SLACK_MOVED;
+    const dx = record.x - body.x;
+    const dy = record.y - body.y;
+    const dz = record.z - body.z;
+    return dx * dx + dy * dy + dz * dz <= limit * limit;
   }
 
   private broadcast(message: HostMessage): void {

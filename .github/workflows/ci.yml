@@ -171,6 +171,15 @@ jobs:
       - name: Tag scenario
         run: node tools/shoot.mjs --scenario scenarios/tag.mjs --auto-quality --out /tmp/ci-tag.png
 
+      # The edge of the world, and the only way to find out where it is: walk
+      # at it. All three holes this closes were found by driving the real player
+      # around and none of them was visible to a unit test — an infinite ground
+      # plane, a fence that is a picture, and a body under the world wedged in
+      # place. A boundary is a claim about what happens after twenty seconds of
+      # sprinting, which is a thing only a browser can spend.
+      - name: Bounds scenario
+        run: node tools/shoot.mjs --scenario scenarios/bounds.mjs --auto-quality --out /tmp/ci-bounds.png
+
       # The whole of the lobby, end to end against a real server: two browser
       # contexts, two friend codes, a party, a queue, and a round running in the
       # room it was matched into. It is also the only thing that exercises the
@@ -237,6 +246,7 @@ jobs:
             /tmp/ci-mantle.png
             /tmp/ci-items.png
             /tmp/ci-tag.png
+            /tmp/ci-bounds.png
             /tmp/ci-lobby-friends.png
           if-no-files-found: ignore
 

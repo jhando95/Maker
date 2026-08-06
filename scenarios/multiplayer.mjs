@@ -178,10 +178,24 @@ export default async function (page) {
   assert(snap.ack >= 0, 'and acknowledge a command, or prediction never converges');
 
   // ── They can build, and the host decides ───────────────────────────────────
+
+  // Beside the guest, read off the roster rather than written down.
+  //
+  // It used to be a fixed spot at (-18, 2), which is forty metres from where a
+  // guest actually spawns — a placement the client's own snapper would never
+  // have produced, and one the host now refuses because a guest cannot build
+  // across the map. Worth fixing rather than exempting: a scenario about a
+  // guest building has to ask for something a guest could build.
+  const spot = await page.evaluate((id) => {
+    const a = window.__maker.actors.get(id);
+    return a === undefined ? null : { x: +(a.controller.x + 2).toFixed(3), z: +a.controller.z.toFixed(3) };
+  }, welcome.id);
+  assert(spot !== null, 'the guest should be in the roster before they build');
+
   const before = await page.evaluate(() => window.__maker.stats().parts);
   await send(page, {
     t: 'build',
-    r: { kind: 0, colorway: 0, x: -18, y: 0.5, z: 2, qx: 0, qy: 0, qz: 0, qw: 1 },
+    r: { kind: 0, colorway: 0, x: spot.x, y: 0.5, z: spot.z, qx: 0, qy: 0, qz: 0, qw: 1 },
   });
   const { hit: built } = await await_(page, 'built');
   const after = await page.evaluate(() => window.__maker.stats().parts);
@@ -192,7 +206,7 @@ export default async function (page) {
   // the whole reason there is an authority.
   await send(page, {
     t: 'build',
-    r: { kind: 0, colorway: 0, x: -18, y: 0.5, z: 2, qx: 0, qy: 0, qz: 0, qw: 1 },
+    r: { kind: 0, colorway: 0, x: spot.x, y: 0.5, z: spot.z, qx: 0, qy: 0, qz: 0, qw: 1 },
   });
   await frames(page, 10);
   await drain(page);
