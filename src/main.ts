@@ -14,6 +14,7 @@ import { TICK_RATE, DT } from './physics/constants.ts';
 import { createScene } from './world/scene.ts';
 import { installFixtures } from './world/neighborhood.ts';
 import { PartRenderer } from './render/partRenderer.ts';
+import { chamferedBox } from './render/geometry.ts';
 import { BuildSystem, type PlacementRecord } from './build/buildSystem.ts';
 import { CharacterController } from './player/controller.ts';
 import { CameraRig } from './player/cameraRig.ts';
@@ -595,6 +596,68 @@ const avatar = new THREE.Group();
 }
 scene.add(avatar);
 
+/**
+ * What you are holding, in front of the camera.
+ *
+ * First person was an empty screen with a crosshair on it, which reads as a
+ * floating eye rather than a kid in a garden — and it also meant the only way to
+ * know what you were about to use was to read a chip in the corner.
+ *
+ * Positioned relative to the camera every frame rather than parented to it. A
+ * child of the camera would inherit its near-plane clipping and its shake, and
+ * this needs to lag the camera slightly, which is most of what makes a held
+ * object feel like it has weight.
+ */
+const viewmodel = new THREE.Group();
+const viewPlank = new THREE.Mesh(
+  chamferedBox(0.52, 0.045, 0.12, 0.01),
+  new THREE.MeshToonMaterial({ color: 0xd8a866 }),
+);
+viewPlank.rotation.set(0.05, 0.38, 0.20);
+const viewSoaker = new THREE.Group();
+{
+  const tank = new THREE.Mesh(
+    chamferedBox(0.3, 0.13, 0.13, 0.03),
+    new THREE.MeshToonMaterial({ color: 0x3fa8d8 }),
+  );
+  const nozzle = new THREE.Mesh(
+    chamferedBox(0.34, 0.05, 0.05, 0.015),
+    new THREE.MeshToonMaterial({ color: 0xf2c94c }),
+  );
+  nozzle.position.set(0.3, 0.02, 0);
+  const grip = new THREE.Mesh(
+    chamferedBox(0.07, 0.16, 0.07, 0.02),
+    new THREE.MeshToonMaterial({ color: 0xe06a4f }),
+  );
+  grip.position.set(-0.05, -0.13, 0);
+  viewSoaker.add(tank, nozzle, grip);
+  viewSoaker.rotation.set(0.04, -0.22, 0.06);
+}
+viewmodel.add(viewPlank, viewSoaker);
+// Never shadowed or shadowing: it is inches from the eye, so a shadow map at
+// world scale has nothing useful to say about it and only produces acne.
+viewmodel.traverse((o) => { o.castShadow = false; o.receiveShadow = false; });
+scene.add(viewmodel);
+
+/** Where the held thing sits relative to the eye: forward, right, and down. */
+const HOLD_FORWARD = 0.78;
+const HOLD_RIGHT = 0.34;
+const HOLD_DOWN = -0.42;
+
+/** Lagged copy of the camera's aim, so the held thing swings a beat behind. */
+const viewLag = { yaw: 0, pitch: 0, bob: 0 };
+
+/**
+ * The shortest way round from one angle to another.
+ *
+ * Yaw wraps at ±π, so chasing it by plain subtraction sends the viewmodel the
+ * long way round the moment the player crosses the seam — a full spin of the
+ * held object for a one-degree turn.
+ */
+function shortestAngle(from: number, to: number): number {
+  return Math.atan2(Math.sin(to - from), Math.cos(to - from));
+}
+
 // ── Input plumbing ───────────────────────────────────────────────────────────
 hud.onLockClick(() => enterPlay());
 
@@ -884,6 +947,40 @@ function draw(alpha: number, frameDt: number): void {
   avatar.visible = camera.showsPlayer;
   avatar.position.set(state.x, state.y, state.z);
   avatar.rotation.y = camera.yaw;
+
+  // ── What you are holding ───────────────────────────────────────────────────
+  // Hidden in third person, where the avatar already answers the question.
+  const holdingWeapon = mode !== null && !mode.buildingAllowed;
+  viewmodel.visible = !camera.showsPlayer;
+  viewPlank.visible = !holdingWeapon;
+  viewSoaker.visible = holdingWeapon;
+  if (viewmodel.visible) {
+    // Chases the camera rather than matching it. Exact tracking makes a held
+    // object feel welded to your eyes; a little lag reads as weight.
+    const chase = Math.min(1, frameDt * 14);
+    viewLag.yaw += shortestAngle(viewLag.yaw, camera.yaw) * chase;
+    viewLag.pitch += (camera.pitch - viewLag.pitch) * chase;
+    // Bob with ground speed, and only on the ground — a bobbing viewmodel in
+    // mid-air is the classic tell that it is driven by a timer, not by walking.
+    const walking = state.onGround ? Math.hypot(state.vx, state.vz) : 0;
+    viewLag.bob += frameDt * walking * 7.5;
+
+    // The camera's own basis, derived rather than guessed: at yaw 0 the rig
+    // looks along -Z, so forward is (-sin, 0, -cos) and right is (cos, 0, -sin).
+    // The first attempt used a hand-rolled pair of these and put a 0.6m plank
+    // half a metre from the eye, filling a quarter of the screen.
+    const sy = Math.sin(viewLag.yaw);
+    const cy = Math.cos(viewLag.yaw);
+    const eyeY = state.y + state.eyeHeight;
+    const bobY = Math.sin(viewLag.bob) * 0.014 * Math.min(1, walking / 4);
+    const bobX = Math.sin(viewLag.bob * 0.5) * 0.010 * Math.min(1, walking / 4);
+    viewmodel.position.set(
+      state.x + -sy * HOLD_FORWARD + cy * (HOLD_RIGHT + bobX),
+      eyeY + HOLD_DOWN + bobY,
+      state.z + -cy * HOLD_FORWARD + -sy * (HOLD_RIGHT + bobX),
+    );
+    viewmodel.rotation.set(viewLag.pitch * 0.4, viewLag.yaw, 0, 'YXZ');
+  }
 
   const nowSeconds = performance.now() / 1000;
   flushShadows(nowSeconds);

@@ -153,6 +153,29 @@ Colours are wired to the world's, not chosen beside it. The two teams' scores
 are painted in the exact shirt colours the renderer uses, so a number on the
 banner and a kid on the lawn are obviously the same fact.
 
+### Characters
+
+Kids are built out of a torso, a head and four limbs rather than a capsule with
+a ball on it, and the limbs swing. That is not only prettier — a capsule has no
+front, so a bot walking at you and a bot walking away were the same silhouette,
+and nothing about a standing kid said whether they were stopped or about to
+move. Six instanced draws instead of two, which is nothing.
+
+The stride advances by ground covered rather than by wall-clock, so feet keep
+pace with the world instead of skating, and everyone stopped eases back to a
+neutral stance rather than freezing mid-step. Joint heights are fractions of the
+collision capsule, so the drawing and the thing that collides cannot disagree
+about how tall somebody is.
+
+### In your hands
+
+First person was an empty screen with a crosshair, which reads as a floating eye
+rather than a kid in a garden. You now hold the plank you are about to place or
+the soaker you are about to fire, which also means the tool you have selected is
+legible without reading a chip in the corner. It chases the camera rather than
+matching it — exact tracking feels welded to your eyes, a little lag reads as
+weight — and bobs only while your feet are on the ground.
+
 Three things the HUD now does that it could not:
 
 - **Points at the objectives.** Water War puts three taps at three corners of a
