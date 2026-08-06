@@ -142,10 +142,25 @@ export default async function (page) {
   // First, on a full tank and an unsoaked player, and with the lawn cleared:
   // every one of those is a precondition for a stream existing at all, so
   // measuring this at the end of a firefight was testing the wrong thing.
+  //
+  // Fired and read in one evaluate, which matters more than it looks. The mode
+  // clears `streamTo` at the top of every tick and only sets it again while the
+  // trigger is held, and the real game loop keeps ticking between two separate
+  // calls into the page — with nothing held, because the fast-forward is over.
+  // So a single frame landing in that gap wipes the very thing being asserted.
+  // Nothing held it open on a machine rendering five frames a second; a CI
+  // runner managing thirty found it immediately.
   await clearTheLawn(page);
-  await page.evaluate(() => window.__maker.lookAt(0, 0));
-  await page.evaluate(() => window.__maker.fastForward(1.5, undefined, true));
-  const streaming = await state(page);
+  const streaming = await page.evaluate(() => {
+    window.__maker.lookAt(0, 0);
+    window.__maker.fastForward(1.5, undefined, true);
+    const m = window.__maker.getMode();
+    return {
+      out: m.playerIsOut,
+      tank: m.tankLevel,
+      stream: m.stream === null || m.stream === undefined ? null : { ...m.stream },
+    };
+  });
   assert(!streaming.out, 'the player should still be in the fight for this check');
   assert(streaming.tank > 0, `and should have water; tank is ${streaming.tank}`);
   assert(streaming.stream !== null, 'holding fire with water in the tank should draw a stream');
@@ -156,9 +171,20 @@ export default async function (page) {
   const fired = await state(page);
   assert(fired.tank < fullTank, `firing should cost water; ${fullTank} -> ${fired.tank}`);
 
-  // Run it dry and check the stream stops rather than firing for free.
-  await page.evaluate(() => window.__maker.fastForward(20, undefined, true));
-  const dry = await state(page);
+  // Run it dry and check the stream stops rather than firing for free. Read in
+  // the same evaluate as the firing, for the same reason as above and one more:
+  // "the stream is null" is exactly what a stray tick with nothing held
+  // produces, so read separately this passes whether or not the empty tank had
+  // anything to do with it.
+  const dry = await page.evaluate(() => {
+    window.__maker.fastForward(20, undefined, true);
+    const m = window.__maker.getMode();
+    return {
+      tank: m.tankLevel,
+      water: m.sources.map((s) => Math.round(s.water)),
+      stream: m.stream === null || m.stream === undefined ? null : { ...m.stream },
+    };
+  });
   assert(dry.tank < 1, `the tank should run dry, sitting at ${dry.tank}`);
   assert(dry.stream === null, 'an empty tank must not still be drawing a stream');
 

@@ -12,8 +12,10 @@ import {
 import { TANK_MAX, SOURCE_RADIUS, WEAPONS } from './waterKit.ts';
 import type { GameEvent, ModeContext, ModeInput } from './gameMode.ts';
 import { Rng } from '../core/rng.ts';
+import { ActorRoster, LOCAL_ACTOR_ID } from './actor.ts';
 import { DT } from '../physics/constants.ts';
 import { WATER_SOURCES, neighborhoodSlabs, installFixtures } from '../world/neighborhood.ts';
+import { STARTING_LUMBER } from '../build/lumber.ts';
 
 const noInput: ModeInput = { fire: false, firePressed: false, fireReleased: false };
 const firing: ModeInput = { fire: true, firePressed: true, fireReleased: false };
@@ -30,6 +32,7 @@ function makeContext(): { ctx: ModeContext; events: GameEvent[]; world: Collisio
     events,
     ctx: {
       world, build, player, camera, projectiles,
+      actors: new ActorRoster({ id: LOCAL_ACTOR_ID, kind: 'local', team: 'left', controller: player }),
       rng: new Rng('war-test'),
       emit: (e) => events.push(e),
       worldChanged: () => {},
@@ -39,6 +42,69 @@ function makeContext(): { ctx: ModeContext; events: GameEvent[]; world: Collisio
 
 function run(mode: WaterWarMode, ctx: ModeContext, seconds: number, input = noInput): void {
   for (let i = 0; i < Math.round(seconds / DT); i++) mode.fixedUpdate(DT, ctx, input);
+}
+
+/** Same, but stops early once the round is decided. */
+function run2(mode: WaterWarMode, ctx: ModeContext, seconds: number): void {
+  for (let i = 0; i < Math.round(seconds / DT) && !mode.finished; i++) {
+    mode.fixedUpdate(DT, ctx, noInput);
+  }
+}
+
+/**
+ * A plank stood on edge, tangent to a circle at angle `a`.
+ *
+ * Yawed to follow the ring and then rolled ninety degrees about its own length,
+ * so its 250mm width is the height of the course and its 50mm thickness is what
+ * you would walk into. Laid flat instead — which is what this measurement used
+ * to do — a "wall" is a stack of shelves with gaps between them, and any number
+ * measured against it is a number about something else.
+ */
+function upright(a: number): { qx: number; qy: number; qz: number; qw: number } {
+  const half = -a / 2;
+  const cy = Math.cos(half);
+  const sy = Math.sin(half);
+  const r = Math.SQRT1_2;
+  return { qx: cy * r, qy: sy * r, qz: -sy * r, qw: cy * r };
+}
+
+/**
+ * Fence the taps out of a fixed pile of wood, then leave the player standing
+ * still for a whole afternoon and report how much water survived.
+ *
+ * Courses go round every tap before the next course starts, which is what a
+ * player spreading a limited pile across three fronts would do. `budget` of
+ * zero builds nothing, which is the control.
+ */
+function idleAfternoon(budget: number, radius = 2.0): number {
+  const made = makeContext();
+  installFixtures(made.world, neighborhoodSlabs(new Rng('map')));
+
+  const perCourse = Math.max(4, Math.ceil((2 * Math.PI * radius) / 0.9));
+  let spent = 0;
+  build:
+  for (let course = 0; course < 16; course++) {
+    for (const tap of WATER_SOURCES) {
+      for (let i = 0; i < perCourse; i++) {
+        if (spent >= budget) break build;
+        const a = (i / perCourse) * Math.PI * 2;
+        const placed = made.ctx.build.applyPlaceIfClear({
+          kind: 0, colorway: 0,
+          x: tap.x + Math.sin(a) * radius,
+          y: 0.125 + course * 0.25,
+          z: tap.z + Math.cos(a) * radius,
+          ...upright(a),
+        });
+        if (placed) spent++;
+      }
+    }
+  }
+
+  const fresh = new WaterWarMode();
+  fresh.start(made.ctx);
+  made.ctx.player.teleport(-22, 0.5, -22);
+  run2(fresh, made.ctx, 420);
+  return fresh.waterFraction;
 }
 
 /** Park the player somewhere with nothing near it. */
@@ -156,6 +222,57 @@ describe('WaterWarMode', () => {
       const ratio = drained / (SOURCE_MAX * fresh.sources.length);
       expect(ratio).toBeGreaterThan(1.6);
       expect(ratio).toBeLessThan(3);
+    });
+
+    it('walls alone turn a lost afternoon into a held one', () => {
+      // The claim the whole game rests on: that what you build is worth
+      // building. Measured rather than asserted, and measured with the player
+      // doing nothing at all, so the difference is the walls and not skill.
+      //
+      // Same seed, same raids, same idle player — the only variable is whether
+      // there is a fence round each tap. Crucially the fence is built out of a
+      // pile a player is actually given, because a fortification nobody can
+      // afford proves nothing about whether building is worth doing. This test
+      // used to spend nine hundred and sixty-six planks.
+      const open = idleAfternoon(0);
+      const walled = idleAfternoon(STARTING_LUMBER);
+      // Unfortified and unattended, the street drains everything.
+      expect(open).toBeLessThan(0.02);
+      // Fortified and still unattended, enough survives that the round is not
+      // lost. Walls do not merely slow the bleeding, they change the outcome.
+      expect(walled).toBeGreaterThan(0.1);
+    });
+
+    it('a ring with a gap in it is worth almost nothing', () => {
+      // Why the budget is a decision rather than an allowance. The step that
+      // matters is closing the ring, so wood spent on a fence you do not finish
+      // is wood spent on nothing — and a player who spreads it across three
+      // taps and closes none of them is worse off than one who closes one.
+      const short = idleAfternoon(Math.round(STARTING_LUMBER / 2));
+      const closed = idleAfternoon(STARTING_LUMBER);
+      expect(short).toBeLessThan(closed / 2);
+    });
+
+    it('more wood spent worse is worse than less wood spent well', () => {
+      // The other half of the same point, and the reason the budget does not
+      // simply make the game harder. A loose fence at four times the price
+      // performs worse than a tight one, so the interesting question is where
+      // the wood goes rather than how much of it there is.
+      const tight = idleAfternoon(STARTING_LUMBER, 2.0);
+      const loose = idleAfternoon(STARTING_LUMBER * 4, 4.2);
+      expect(tight).toBeGreaterThan(loose);
+    });
+
+    it('the opening pile is enough to close the ring, and more is not better', () => {
+      // Where 120 comes from. A wall a kid can scramble over is worth nothing —
+      // MANTLE_MAX_HEIGHT is 1.6m — and the pile is sized to clear that round
+      // all three taps and no further. Spending three times as much adds height
+      // nobody uses, which is what makes the number a decision rather than an
+      // allowance the player should simply max out.
+      const budgeted = idleAfternoon(STARTING_LUMBER);
+      const lavish = idleAfternoon(STARTING_LUMBER * 3);
+      expect(budgeted).toBeGreaterThan(0.3);
+      expect(lavish).toBeCloseTo(budgeted, 2);
     });
 
     it('a passive player loses partway in, not on the first raid', () => {

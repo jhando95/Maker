@@ -41,6 +41,7 @@ import { SPLASH_RADIUS, type BalloonTarget } from './projectiles.ts';
 import type { GameMode, Loadout, Marker, ModeContext, ModeHud, ModeInput, ModeSummary } from './gameMode.ts';
 import { CAP_HEIGHT, CAP_RADIUS } from '../physics/constants.ts';
 import { NavField } from './navField.ts';
+import { Lumber, STARTING_LUMBER, PHASE_DELIVERY, LUMBER_CAP } from '../build/lumber.ts';
 import { WATER_SOURCES, FORT_YARD } from '../world/neighborhood.ts';
 import {
   WEAPONS, WEAPON_ORDER, TANK_MAX, SOURCE_RADIUS, REFILL_RATE, REFILL_DRAW,
@@ -154,6 +155,8 @@ export class WaterWarMode implements GameMode {
    */
   private readonly nav: NavField[] = WATER_SOURCES.map(() => new NavField(26));
   private navTimer = 0;
+  /** The pile in the corner of the yard, topped up before each build phase. */
+  readonly lumber = new Lumber(STARTING_LUMBER);
   private readonly targets: BalloonTarget[] = [];
   private readonly markerList: Marker[] = [];
 
@@ -175,6 +178,7 @@ export class WaterWarMode implements GameMode {
     this.respawns.clear();
     this.botWet.clear();
     resetWetness(this.playerWet);
+    this.lumber.set(STARTING_LUMBER);
     this.setMessage('Three taps, one afternoon. Fortify what you can reach.', 7);
     ctx.emit({ type: 'phaseChange', phase: 'build' });
   }
@@ -187,6 +191,9 @@ export class WaterWarMode implements GameMode {
   }
 
   fixedUpdate(dt: number, ctx: ModeContext, input: ModeInput): void {
+    // The mode owns its bots, so the mode keeps the roster honest — before the
+    // early return, so a finished round still draws the right people.
+    ctx.actors.refresh(this.bots);
     if (this.finished) return;
 
     this.messageTimer -= dt;
@@ -259,6 +266,9 @@ export class WaterWarMode implements GameMode {
     }
     this.phase = 'lull';
     this.timer = LULL_TIME;
+    // A delivery for the repair phase: enough to patch what broke, not enough
+    // to rebuild somewhere else, or every phase would reset the decision.
+    this.lumber.deliver(PHASE_DELIVERY, LUMBER_CAP);
     this.setMessage(`${Math.round(this.totalWater)} litres left. Patch what they got through.`, 6);
     ctx.emit({ type: 'phaseChange', phase: 'lull' });
   }
@@ -542,11 +552,11 @@ export class WaterWarMode implements GameMode {
     ctx.emit({ type: 'botSoaked', x: bot.x, y: bot.y + 1, z: bot.z });
   }
 
-  private soakPlayer(ctx: ModeContext): void {
+  private soakPlayer(ctx: ModeContext, from?: { x: number; y: number; z: number }): void {
     if (this.playerOut > 0) return;
     this.playerOut = PLAYER_SOAKED_TIME;
     this.streamTo = null;
-    ctx.emit({ type: 'playerSoaked' });
+    ctx.emit({ type: 'playerSoaked', x: from?.x, y: from?.y, z: from?.z });
     this.setMessage('Drenched! Back in a moment.', 2.5);
   }
 
@@ -578,7 +588,7 @@ export class WaterWarMode implements GameMode {
       // Direct and splash are kept apart deliberately — see waterKit. A centre
       // hit taking both is the difference between two balloons and three.
       if (hit.targetIndex >= 0) {
-        this.applyWet(ctx, this.targets[hit.targetIndex], WEAPONS.balloon.power);
+        this.applyWet(ctx, this.targets[hit.targetIndex], WEAPONS.balloon.power, hit);
         if (!DIRECT_HIT_TAKES_SPLASH) continue;
       }
       for (const index of ctx.projectiles.splashTargets(hit, this.targets)) {
@@ -586,17 +596,23 @@ export class WaterWarMode implements GameMode {
         const t = this.targets[index];
         if (t === undefined) continue;
         const d = Math.hypot(t.x - hit.x, t.y + t.height * 0.5 - hit.y, t.z - hit.z);
-        this.applyWet(ctx, t, splashPower(d, SPLASH_RADIUS));
+        this.applyWet(ctx, t, splashPower(d, SPLASH_RADIUS), hit);
       }
     }
   }
 
-  private applyWet(ctx: ModeContext, target: BalloonTarget | undefined, amount: number): void {
+  private applyWet(
+    ctx: ModeContext,
+    target: BalloonTarget | undefined,
+    amount: number,
+    /** Where the water came from, so the HUD can point at it. */
+    from?: { x: number; y: number; z: number },
+  ): void {
     if (target === undefined || amount <= 0) return;
 
     if (target.id === PLAYER_ID) {
       soak(this.playerWet, amount);
-      if (isSoaked(this.playerWet)) this.soakPlayer(ctx);
+      if (isSoaked(this.playerWet)) this.soakPlayer(ctx, from);
       return;
     }
     const bot = this.bots.find((b) => b.id === target.id);
@@ -673,6 +689,7 @@ export class WaterWarMode implements GameMode {
         ? null
         : { current: this.tank, max: TANK_MAX, gauge: true },
       refill: this.atSource !== -1 && this.tank < TANK_MAX ? this.tank / TANK_MAX : null,
+      lumber: this.buildingAllowed ? this.lumber.available : null,
     };
   }
 

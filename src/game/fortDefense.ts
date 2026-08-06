@@ -21,6 +21,7 @@ import { ProjectileSystem, type BalloonTarget } from './projectiles.ts';
 import type { GameMode, Marker, ModeContext, ModeHud, ModeInput, ModeSummary } from './gameMode.ts';
 import { CAP_HEIGHT, CAP_RADIUS } from '../physics/constants.ts';
 import { NavField } from './navField.ts';
+import { Lumber, STARTING_LUMBER, PHASE_DELIVERY, LUMBER_CAP } from '../build/lumber.ts';
 import { FORT_YARD } from '../world/neighborhood.ts';
 
 export type Phase = 'build' | 'wave' | 'intermission' | 'over';
@@ -152,6 +153,8 @@ export class FortDefenseMode implements GameMode {
    */
   private readonly nav = new NavField(26);
   private navTimer = 0;
+  /** The pile in the corner of the yard, topped up before each build phase. */
+  readonly lumber = new Lumber(STARTING_LUMBER);
   /** Reused so the per-tick target list does not allocate. */
   private readonly targets: BalloonTarget[] = [];
 
@@ -159,6 +162,7 @@ export class FortDefenseMode implements GameMode {
     this.phase = 'build';
     this.timer = BUILD_TIME;
     this.wave = 0;
+    this.lumber.set(STARTING_LUMBER);
     this.stash.supplies = STASH_SUPPLIES;
     this.bots.length = 0;
     this.ammo = PLAYER_AMMO_MAX;
@@ -176,6 +180,9 @@ export class FortDefenseMode implements GameMode {
   }
 
   fixedUpdate(dt: number, ctx: ModeContext, input: ModeInput): void {
+    // The mode owns its bots, so the mode keeps the roster honest — before the
+    // early return, so a finished round still draws the right people.
+    ctx.actors.refresh(this.bots);
     if (this.finished) return;
 
     this.messageTimer -= dt;
@@ -300,6 +307,7 @@ export class FortDefenseMode implements GameMode {
       } else {
         this.phase = 'intermission';
         this.timer = INTERMISSION_TIME;
+        this.lumber.deliver(PHASE_DELIVERY, LUMBER_CAP);
         this.setMessage(`Wave ${this.wave} held. Repair your fort.`, 5);
         ctx.emit({ type: 'phaseChange', phase: 'intermission' });
       }
@@ -516,6 +524,7 @@ export class FortDefenseMode implements GameMode {
       wetness: null,
       ammo: this.buildingAllowed ? null : { current: this.ammo, max: PLAYER_AMMO_MAX },
       refill: this.atBucket >= 0 && this.ammo < PLAYER_AMMO_MAX ? this.refillProgress : null,
+      lumber: this.buildingAllowed ? this.lumber.available : null,
     };
   }
 

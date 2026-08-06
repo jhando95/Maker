@@ -79,6 +79,37 @@ placing parts, so you are never fumbling between two things on one button. The
 on-screen hints follow, because half the build keys do nothing while you are
 holding a soaker and a player who tries them learns the wrong lesson.
 
+## Wood costs something
+
+In a mode you are handed a pile of lumber — a hundred and twenty planks — and
+another thirty-five before each later build phase, capped so hoarding cannot
+bank a fort. Parts are priced by size against a plank, so two ways of covering
+the same wall cost the same and the budget never argues for one part over
+another. Taking your own work down refunds it in full: scarcity should make you
+choose *what* to build, never make you afraid to change your mind.
+
+It is not a difficulty knob. Building was free, and free building has exactly
+one best play — build the maximum everywhere — which quietly deletes the
+decision from the part of the game named after it. What the pile buys, measured
+on the real map with the player standing still all afternoon, walling each tap
+with a ring of planks stood on edge:
+
+| what was built | planks | water kept |
+|---|---|---|
+| nothing | 0 | 0% |
+| rings 1.0m high — a kid vaults them | 60 | 0% |
+| rings 1.75m high, two metres out | 120 | 51% |
+| the same rings taken to 4m | 313 | 51% |
+| rings built 4.2m out instead of 2m | 682 | 20% |
+
+Building is worth doing. Height stops mattering once a kid can no longer
+scramble up, so 120 buys exactly that and no more. And more wood is not better
+wood — the six-hundred-plank version does worse than the hundred-and-twenty
+plank one, because what stops a kid is a closed ring near the tap and not a
+bigger wall further from it. Free lumber made none of that a choice.
+
+Free Build has no budget. It is where you go to just make things.
+
 ## Modes
 
 **Capture the Flag.** Your flag is in the left yard, theirs is in the right, and
@@ -86,8 +117,13 @@ the house is in between. Take theirs, get it home, three times. Play alternates
 between a build phase and a capture phase, and a capture *ends the round* rather
 than scoring a point in a continuous one — so what you actually experience is:
 lose the flag, watch exactly how they got in, then get forty-five seconds to fix
-that. Enemy bots split into runners who come for your flag and guards who sit on
-theirs, and the mix shifts with the score.
+that. Both sides split into runners who go for the other team's flag and guards
+who sit on their own, and the enemy's mix shifts with the score.
+
+You get two kids on your side — enough that it is a team game rather than a
+fetch quest with obstacles, few enough that you are still outnumbered and still
+have something to do. Shirts are coloured by side, which is not decoration: you
+cannot decide who to throw at if you cannot tell who is who.
 
 **Fort Defense.** Build a fort around the stash on the front lawn, then hold five
 waves. Between waves you get time to patch whatever failed.
@@ -126,6 +162,116 @@ you can be soaked, so being outnumbered is reliably bad rather than instant. The
 kids' shirts darken as they soak, which is how you tell the one you have nearly
 finished from the one who just arrived.
 
+## The interface
+
+Outlined, not frosted. Everything solid in this world has a hard dark outline
+drawn round it by the renderer, so the interface is drawn the same way: hard
+borders and hard offset shadows, never a blur. A translucent panel with a
+backdrop blur — which is what this was, and what most games ship — reads as a
+sheet of glass in front of the game. An outlined card reads as an object made of
+the same stuff as the fence, which is the point of a game where the kids built
+everything.
+
+Two surfaces, one language. Menus are cardboard with ink text, because a
+full-screen menu has nothing behind it worth seeing and can afford to be a sign
+somebody made. In-game panels stay dark, because they sit over a sunlit lawn you
+still need to see through. The outline, the radii, the type and the motion are
+shared; only the fill differs. The first pass kept the menu dark and the outline
+simply vanished — #2b201c on #3a2b25 is the same colour twice, and an outline
+needs something bright to outline.
+
+Colours are wired to the world's, not chosen beside it. The two teams' scores
+are painted in the exact shirt colours the renderer uses, so a number on the
+banner and a kid on the lawn are obviously the same fact.
+
+### Characters
+
+Kids are built out of a torso, a head and four limbs rather than a capsule with
+a ball on it, and the limbs swing. That is not only prettier — a capsule has no
+front, so a bot walking at you and a bot walking away were the same silhouette,
+and nothing about a standing kid said whether they were stopped or about to
+move. Six instanced draws instead of two, which is nothing.
+
+The stride advances by ground covered rather than by wall-clock, so feet keep
+pace with the world instead of skating, and everyone stopped eases back to a
+neutral stance rather than freezing mid-step. Joint heights are fractions of the
+collision capsule, so the drawing and the thing that collides cannot disagree
+about how tall somebody is.
+
+### Aiming a part
+
+The preview is outlined, not just tinted. A translucent fill is only visible
+against something a different colour from itself, and the most common thing to
+build onto is another plank — so the ghost vanished exactly when it mattered,
+lying flat on the surface it was snapping to. Aiming at a deck, you could not
+see where the board would land. The edges are drawn on top of everything now, in
+the same hard-line language as the rest of the game.
+
+### In your hands
+
+First person was an empty screen with a crosshair, which reads as a floating eye
+rather than a kid in a garden. You now hold the plank you are about to place or
+the soaker you are about to fire, which also means the tool you have selected is
+legible without reading a chip in the corner. It chases the camera rather than
+matching it — exact tracking feels welded to your eyes, a little lag reads as
+weight — and bobs only while your feet are on the ground.
+
+Three things the HUD now does that it could not:
+
+- **Points at the objectives.** Water War puts three taps at three corners of a
+  forty-eight metre lot; until now the only way to find out which was being
+  drained was to walk round and look. Off-screen objectives pin to the edge with
+  a chevron and a distance. The distance was hidden there at first, which is
+  exactly backwards — an objective you can see tells you roughly how far it is
+  by how big it looks, and one you cannot see tells you nothing at all.
+- **Says when you connect.** Hitting someone and missing them looked identical
+  from behind the crosshair, and the only thing that moved was a meter on a body
+  forty metres away.
+- **Says where you were hit from.** A wetness meter says how much trouble you
+  are in and never which way it is, which turns being ambushed into several
+  seconds of turning on the spot.
+
+## Towards more than one player
+
+The point of all of this is party modes played with other people, and the game
+now knows how to hold them even though nothing brings them yet.
+
+It grew up around one player and a bag of bots, which were different kinds of
+thing: a bot is an id, a body and a side, while the player was a bare character
+controller the shell happened to own. That costs nothing until a second person
+joins, at which point every piece of code that says "the player" has to decide
+which one it meant. An **actor** is the smallest thing that makes them the same,
+and deliberately carries nothing else — no health, no wetness, no flag, because
+those belong to whichever mode invented them. The three kinds of actor differ
+only in where their intent comes from: a keyboard, a behaviour tree, or a socket.
+
+A **command** is one tick of a player's will as data — movement, look, and a
+bitfield of buttons. Input, the camera basis and the controller used to be one
+straight line through the shell, which works for exactly one player on one
+machine. Pulling the reading apart from the acting means the thing in between
+can be a recording or a network. Movement is stored already rotated into world
+space: sending the raw stick would let a server re-derive and so validate it, but
+re-deriving means reproducing floating-point camera state, and a replay that has
+to reconstruct its own inputs is a replay that drifts.
+
+Then a **replay** test records a round, plays it into a fresh world and hashes
+the result, so nondeterminism fails at the commit that causes it rather than as
+a desync between two people a month later. That is not hypothetical here:
+`Math.random` is banned from world state for this reason, and a purely cosmetic
+splash was drawing from the simulation's own RNG until it was caught by hand.
+
+Checked by planting the bug it is meant to catch. A `Math.random` jitter on a
+bot's movement fails it immediately; the same call on a state timer at 1e-6 does
+not, because it moves nobody far enough to survive the hash's quantum. So it
+catches nondeterminism that changes what happens, not nondeterminism that merely
+exists — which is the trade that also stops float noise from failing honest runs.
+
+What is left is the transport. The plan is host-authoritative rather than
+server-authoritative: one player's browser runs the simulation and the others
+are told about it, which needs no deploy target. It is also the honest answer to
+the limit above, since determinism here does not prove float portability between
+two different CPUs.
+
 ## The map
 
 A cul-de-sac with a house at the centre. Left yard is -X, right yard is +X, and
@@ -149,25 +295,49 @@ the map would mean shimmying up flat stucco onto the roof, which is the one
 thing the house exists to prevent. The treehouse ladder is marked climbable
 explicitly.
 
-Walk into a near-vertical surface with rungs and you climb it. That is not a
-ladder object — it is any structure the game recognises as climbable, which
-means a ladder you nailed together yourself works exactly like one that shipped
-with the game.
+Walk into a near-vertical surface and you climb it, as long as you built it.
+There is no ladder object; a ladder you nailed together yourself works exactly
+like one that shipped with the game — which is checked now, by building one out
+of parts and climbing it.
+
+The rungs are load-bearing, not decoration. A surface is climbable when its
+**depth varies** as you go up — rungs stick out and give a near/far/near pattern
+as the probe alternately catches a rung and the board behind it, while a flush
+wall answers the same distance every time. That is what physically separates a
+ladder from a wall, so that is what gets measured, rather than anything about
+what a part is called.
+
+The threshold sits under one plank thickness, so boards nailed flat onto a wall
+face count — the cheapest improvised ladder there is, and the one a player is
+most likely to try first. Sampling is offset from the build grid on purpose: at
+the kit's own 0.25m module, samples 0.25m apart would land on every rung or
+between every rung and read a perfect ladder as a flat wall.
+
+This started the other way round — any near-vertical thing you built was
+climbable — and it is worth saying why that changed. It reads as generous and is
+quietly corrosive. A wall you build never stops *you*, so building tall costs
+nothing and the choice carries no trade. Worse, the moment a second person is in
+the yard, a fort stops working against the only opponent that matters, which is
+a problem you would hit on day one of multiplayer and pay much more to fix then.
+
+Known bug, found while checking this and older than it: the treehouse ladder
+stalls around 2.65m instead of reaching its 4.5m deck. Measured identical with
+and without the handhold rule, so it is not fallout from the change.
 
 ## What is here
 
 ```
 src/
-  core/        game loop, input, seeded RNG, math
+  core/        game loop, input, commands, replay, seeded RNG, math
   physics/     spatial hash, capsule-vs-OBB collision, part store, collision world
   player/      character controller, camera rig
-  build/       part kit, snapping, build system
+  build/       part kit, snapping, build system, the lumber budget
   render/      cel shading, procedural geometry, instanced meshes
   world/       neighborhood map, scene, starter structures
-  game/        game modes, bots, flow-field navigation, projectiles
+  game/        game modes, actors and teams, bots, flow-field navigation, projectiles
   audio/       synthesized sound
   app/         settings, persistence, crash handling
-  ui/          HUD, menus, radial part picker
+  ui/          design tokens, HUD, menus, radial part picker
 tools/
   shoot.mjs    headless screenshot + smoke-test harness
   bench.ts     simulation cost per tick, at 3000 parts
@@ -175,7 +345,7 @@ scenarios/     scripted checks driven through the harness
 ```
 
 ```bash
-npm test         # 476 unit tests
+npm test         # 547 unit tests
 npm run typecheck
 npm run bench    # what a tick costs, as a share of the 16.67ms budget
 node tools/shoot.mjs --out shots/x.png   # boot headless, screenshot, fail on any console error
@@ -187,8 +357,12 @@ cannot be honestly unit-tested: whether a throw inside the render loop actually
 produces a crash screen, whether a stick push actually reaches the character
 controller, whether a resolution decision actually reaches the drawing buffer,
 whether emptying a water tank and refilling it from a paddling pool works once
-the mode, the shell and the HUD are wired together. Each only happens in a
-browser, and each has broken at least once with the unit suite green.
+the mode, the shell and the HUD are wired together, whether a second person in
+the world reaches the renderer's instance buffers wearing the right shirt,
+whether the HUD can actually point at an objective that is behind you,
+whether running out of wood is ever visible to the player rather than just true. Each only
+happens in a browser, and each has broken at least once with the unit suite
+green.
 
 ## Design notes
 

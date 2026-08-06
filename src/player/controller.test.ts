@@ -3,6 +3,10 @@ import { CharacterController, type MoveIntent } from './controller.ts';
 import { CollisionWorld } from '../physics/collisionWorld.ts';
 import { DT, JUMP_HEIGHT, STEP_HEIGHT, WALK_SPEED, SPRINT_SPEED } from '../physics/constants.ts';
 import { MODULE, STAIR_RUN } from '../build/partKit.ts';
+import { BuildSystem } from '../build/buildSystem.ts';
+import { PartRenderer } from '../render/partRenderer.ts';
+import { neighborhoodSlabs, installFixtures, HOUSE, TREEHOUSE } from '../world/neighborhood.ts';
+import { Rng } from '../core/rng.ts';
 
 const I = [0, 0, 0, 1] as const;
 
@@ -329,5 +333,190 @@ describe('CharacterController — step height across its advertised range', () =
       run(c, 1.4, intent({ right: 1 }));
       expect(c.y, `rise ${rise}`).toBeLessThan(0.12);
     }
+  });
+});
+
+describe('a ladder you nailed together yourself', () => {
+  /**
+   * The payoff for the entire build system, and it had never been checked.
+   *
+   * The promise is that there is no ladder *object* — you nail rungs to
+   * something and the game recognises it. That is a claim about three systems
+   * agreeing (the part kit's module size, the collision world, and the climb
+   * probe) and nothing was holding them together. If the rung pitch ever drifts
+   * from the reach, every structure a player builds silently stops working and
+   * the only symptom is that climbing "feels broken".
+   */
+  function backyardLadder(rungPitch: number): CharacterController {
+    const world = new CollisionWorld();
+    const build = new BuildSystem(world, new PartRenderer());
+
+    // Ground to stand on.
+    for (let i = -3; i <= 3; i++) {
+      for (let j = -3; j <= 3; j++) {
+        build.applyPlace({
+          kind: 0, colorway: 0,
+          x: i * 0.9, y: -0.1, z: j * 0.9, qx: 0, qy: 0, qz: 0, qw: 1,
+        });
+      }
+    }
+    // A wall, planks on edge.
+    for (let course = 0; course < 12; course++) {
+      build.applyPlace({
+        kind: 0, colorway: 1,
+        x: 0, y: 0.125 + course * 0.25, z: -1,
+        qx: 0, qy: 0, qz: Math.sin(Math.PI / 4), qw: Math.cos(Math.PI / 4),
+      });
+    }
+    // Rungs on its face.
+    for (let r = 0; r < 10; r++) {
+      build.applyPlace({
+        kind: 0, colorway: 2,
+        x: 0, y: 0.3 + r * rungPitch, z: -0.86, qx: 0, qy: 0, qz: 0, qw: 1,
+      });
+    }
+    return new CharacterController(world, 0, 0.5, -0.2);
+  }
+
+  function climb(player: CharacterController, seconds = 8): number {
+    let highest = player.y;
+    for (let i = 0; i < Math.round(seconds / DT); i++) {
+      player.step(DT, {
+        forward: -1, right: 0, jump: false, sprint: false, crouch: false, climb: 1,
+      });
+      highest = Math.max(highest, player.y);
+    }
+    return highest;
+  }
+
+  it('can be climbed at the kit\u2019s own rung pitch', () => {
+    // One module. A player stacking parts on the grid gets this for free, which
+    // is the entire design — they are not told the rule, they land on it.
+    const player = backyardLadder(MODULE);
+    const highest = climb(player);
+    expect(player.climbing).toBe(true);
+    expect(highest).toBeGreaterThan(2);
+  });
+
+  it('but a flush wall is not, because there is nothing to hold', () => {
+    // The rule that makes the rungs mean something.
+    //
+    // This test first ran the other way round: any near-vertical thing you built
+    // was climbable, so a rungless wall took the player up three metres and
+    // rungs were decoration. That reads as generous and is quietly corrosive —
+    // a wall you build never stops *you*, so building tall costs nothing, and
+    // the moment a second person is in the yard a fort stops working against the
+    // only opponent that matters.
+    const world = new CollisionWorld();
+    const build = new BuildSystem(world, new PartRenderer());
+    for (let i = -3; i <= 3; i++) {
+      for (let j = -3; j <= 3; j++) {
+        build.applyPlace({
+          kind: 0, colorway: 0,
+          x: i * 0.9, y: -0.1, z: j * 0.9, qx: 0, qy: 0, qz: 0, qw: 1,
+        });
+      }
+    }
+    for (let course = 0; course < 12; course++) {
+      build.applyPlace({
+        kind: 0, colorway: 1,
+        x: 0, y: 0.125 + course * 0.25, z: -1,
+        qx: 0, qy: 0, qz: Math.sin(Math.PI / 4), qw: Math.cos(Math.PI / 4),
+      });
+    }
+
+    const player = new CharacterController(world, 0, 0.5, -0.2);
+    let highest = player.y;
+    for (let i = 0; i < Math.round(8 / DT); i++) {
+      player.step(DT, {
+        forward: -1, right: 0, jump: true, sprint: false, crouch: false, climb: 1,
+      });
+      highest = Math.max(highest, player.y);
+    }
+    expect(highest).toBeLessThan(0.5 + JUMP_HEIGHT + STEP_HEIGHT);
+  });
+
+  it('counts boards nailed flat to a wall, the cheapest ladder there is', () => {
+    // The threshold has to sit under one plank thickness or the most obvious
+    // improvised ladder — slap some boards on the face of a wall — would not
+    // work, and a player would conclude that ladders are broken rather than
+    // that theirs was subtly wrong.
+    const world = new CollisionWorld();
+    const build = new BuildSystem(world, new PartRenderer());
+    for (let i = -3; i <= 3; i++) {
+      for (let j = -3; j <= 3; j++) {
+        build.applyPlace({
+          kind: 0, colorway: 0, x: i * 0.9, y: -0.1, z: j * 0.9,
+          qx: 0, qy: 0, qz: 0, qw: 1,
+        });
+      }
+    }
+    for (let course = 0; course < 12; course++) {
+      build.applyPlace({
+        kind: 0, colorway: 1, x: 0, y: 0.125 + course * 0.25, z: -1,
+        qx: 0, qy: 0, qz: Math.sin(Math.PI / 4), qw: Math.cos(Math.PI / 4),
+      });
+    }
+    // Boards flat against the face, protruding by their own thickness.
+    for (let r = 0; r < 10; r++) {
+      build.applyPlace({
+        kind: 0, colorway: 2, x: 0, y: 0.35 + r * MODULE, z: -0.95,
+        qx: 0, qy: 0, qz: 0, qw: 1,
+      });
+    }
+    const player = new CharacterController(world, 0, 0.5, -0.2);
+    expect(climb(player)).toBeGreaterThan(2);
+  });
+
+  it('still lets you up the treehouse ladder the map ships', () => {
+    // The one ladder in the game a player did not build. Tightening the climb
+    // rule is exactly the kind of change that breaks it silently, so it gets a
+    // test of its own rather than being covered by the built-ladder cases.
+    //
+    // Only asserts that the ladder engages and gains real height. It stalls
+    // around 2.65m rather than reaching the 4.5m deck, which is a separate
+    // pre-existing bug — measured identical with and without the handhold rule,
+    // so this is not the place to pin a number that documents it.
+    const world = new CollisionWorld();
+    installFixtures(world, neighborhoodSlabs(new Rng('map')));
+    const player = new CharacterController(world, TREEHOUSE.x, 0.5, TREEHOUSE.z - 1.25);
+    let highest = player.y;
+    for (let i = 0; i < Math.round(10 / DT); i++) {
+      player.step(DT, {
+        forward: 1, right: 0, jump: false, sprint: false, crouch: false, climb: 1,
+      });
+      highest = Math.max(highest, player.y);
+    }
+    expect(player.climbing).toBe(true);
+    expect(highest).toBeGreaterThan(2);
+  });
+
+  it('and the neighbourhood is not climbable, however vertical it is', () => {
+    // The other half of the rule, and the reason it is worth having: the house
+    // is a wall you go over rather than up. Without the fixture exception, flat
+    // stucco would be a ladder and the map's whole shape would be optional.
+    const world = new CollisionWorld();
+    installFixtures(world, neighborhoodSlabs(new Rng('map')));
+
+    // A blank side wall, not the front. The first attempt stood at the front
+    // door and measured the player climbing the porch steps, which is a
+    // staircase doing exactly what a staircase should.
+    const player = new CharacterController(world, HOUSE.halfWidth + 0.4, 0.5, 0);
+    let highest = player.y;
+    for (let i = 0; i < Math.round(8 / DT); i++) {
+      // MoveIntent.right is world X despite the name, so this walks into the
+      // wall at -X.
+      player.step(DT, {
+        forward: 0, right: -1, jump: true, sprint: false, crouch: false, climb: 1,
+      });
+      highest = Math.max(highest, player.y);
+    }
+    expect(player.climbing).toBe(false);
+    // No better than jumping on the spot. Written from the constants rather
+    // than as a number, because the number is exactly what a jump reaches and
+    // a hand-picked threshold lands on the wrong side of it — this failed at
+    // 1.67m against a guessed 1.6m, which was the character jumping and nothing
+    // else. The eaves are at 5m, so a real climb fails this by miles.
+    expect(highest).toBeLessThan(0.5 + JUMP_HEIGHT + STEP_HEIGHT);
   });
 });

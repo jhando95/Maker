@@ -9,73 +9,148 @@
  */
 
 import { PART_KINDS, COLORWAYS } from '../build/partKit.ts';
+import { costOf } from '../build/lumber.ts';
 import type { InputDevice } from '../core/input.ts';
 import { PartWheel, type WheelEntry } from './partWheel.ts';
+import { installTheme } from './theme.ts';
+
+/** Objectives trackable at once. Pooled, so tracking them allocates nothing. */
+const MAX_PINS = 8;
+/** Overlapping directional cues. Four is more attackers than you can face. */
+const MAX_HURT_ARCS = 4;
+/** Seconds the crosshair stays kicked out after a hit. */
+const HIT_MARKER_TIME = 0.12;
+/** Seconds a damage arc lingers before fading. */
+const HURT_ARC_TIME = 0.7;
+
+/**
+ * An objective, already projected to the screen by the shell.
+ *
+ * Screen space rather than world space because the shell already owns a camera
+ * that can project a point, and a HUD that had to be handed one would be a HUD
+ * that knows about three.js.
+ */
+export interface ScreenPin {
+  x: number;
+  y: number;
+  /** True when the objective is off screen and this is a chevron on the edge. */
+  edge: boolean;
+  /** Which way the chevron points, radians. Ignored when on screen. */
+  angle: number;
+  distance: number;
+  color: string;
+  kind: 'stash' | 'bucket' | 'flag';
+  /** Dimmed — present, but not the one that needs you. */
+  quiet?: boolean;
+}
 
 const STYLE = `
 .maker-hud {
   position: fixed; inset: 0; pointer-events: none;
-  font-family: ui-rounded, "Nunito", "Segoe UI", system-ui, sans-serif;
-  color: #fff; user-select: none;
-  --ink: #3a2c2a;
+  font-family: var(--font);
+  color: var(--text); user-select: none;
 }
 .maker-crosshair {
   position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
   width: 22px; height: 22px;
+  transition: transform 0.12s var(--pop);
 }
 .maker-crosshair span {
-  position: absolute; background: #fff;
+  position: absolute; background: var(--text);
   /* Outlined rather than plain white: a bare crosshair disappears against the
      pale sky, which is where players spend most of their time aiming. */
-  box-shadow: 0 0 0 1.5px rgba(58, 44, 42, 0.85);
+  box-shadow: 0 0 0 1.5px var(--ink);
   border-radius: 1px;
 }
 .maker-crosshair .h { left: 0; right: 0; top: 50%; height: 2px; margin-top: -1px; }
 .maker-crosshair .v { top: 0; bottom: 0; left: 50%; width: 2px; margin-left: -1px; }
+.maker-crosshair .dot {
+  left: 50%; top: 50%; width: 3px; height: 3px; margin: -1.5px 0 0 -1.5px;
+  border-radius: 50%; opacity: 0;
+}
 .maker-crosshair.invalid span { background: #ff6b6b; }
+/* Kicks outward the moment something lands, which is the only cue that says
+   "that connected" rather than "a meter changed somewhere". */
+.maker-crosshair.hit { transform: translate(-50%, -50%) scale(1.45); }
+.maker-crosshair.hit span { background: var(--sun); }
 
 .maker-panel {
-  position: absolute; padding: 8px 11px; border-radius: 10px;
-  background: rgba(28, 22, 20, 0.5); backdrop-filter: blur(4px);
+  position: absolute; padding: 8px 12px;
+  background: var(--panel-fill);
+  border: var(--edge); border-radius: var(--r-md);
+  box-shadow: var(--drop);
   font-size: 12px; line-height: 1.5;
 }
-.maker-status { left: 14px; bottom: 14px; }
-.maker-help { right: 14px; bottom: 14px; text-align: right; opacity: 0.85; }
-.maker-debug { left: 14px; top: 14px; font-family: ui-monospace, monospace; font-size: 11px; }
-.maker-key { display: inline-block; padding: 0 4px; border-radius: 4px;
-  background: rgba(255,255,255,0.2); font-weight: 700; margin-right: 3px; }
+.maker-status { left: 16px; bottom: 16px; }
+.maker-help { right: 16px; bottom: 16px; text-align: right; }
+.maker-debug { left: 16px; top: 16px; font-family: ui-monospace, monospace; font-size: 11px; }
+.maker-key { display: inline-block; padding: 1px 5px; border-radius: var(--r-sm);
+  background: var(--card); color: var(--ink);
+  font-weight: 800; font-size: 11px; margin-right: 3px;
+  box-shadow: 0 1.5px 0 var(--ink-soft); }
 .maker-swatch { display: inline-block; width: 11px; height: 11px; border-radius: 3px;
-  border: 1.5px solid rgba(255,255,255,0.7); vertical-align: -1px; margin-right: 4px; }
+  border: 1.5px solid var(--ink); vertical-align: -1px; margin-right: 4px; }
 
 .maker-lock {
   position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
-  background: rgba(20, 16, 14, 0.55); backdrop-filter: blur(3px);
+  background: rgba(20, 16, 14, 0.55);
   pointer-events: auto; cursor: pointer;
 }
 .maker-lock div { text-align: center; }
-.maker-lock h1 { font-size: 42px; margin: 0 0 6px; letter-spacing: -0.5px; }
-.maker-lock p { margin: 0; opacity: 0.85; font-size: 14px; }
+.maker-lock h1 { font-size: 46px; margin: 0 0 8px; letter-spacing: -1px;
+  text-shadow: var(--text-edge); }
+.maker-lock p { margin: 0; font-size: 15px; font-weight: 700;
+  text-shadow: var(--text-edge); }
 .maker-hidden { display: none !important; }
 
-/* Mode banner: phase, timer and objective, centred at the top where the eye
-   goes when something changes. */
+/*
+ * The objective banner.
+ *
+ * Centred at the top because that is where the eye goes when something changes,
+ * and built as one card rather than a row of loose numbers: phase and timer are
+ * the headline, the score sits beside it, and everything else is smaller than
+ * both. The old version gave the phase, the clock and two stats the same weight,
+ * so a glance told you four things equally and none of them quickly.
+ */
 .maker-mode {
-  position: absolute; left: 50%; top: 16px; transform: translateX(-50%);
-  display: flex; align-items: center; gap: 14px;
-  padding: 8px 16px; border-radius: 12px;
-  background: rgba(28, 22, 20, 0.55); backdrop-filter: blur(4px);
+  position: absolute; left: 50%; top: 14px; transform: translateX(-50%);
+  display: flex; align-items: stretch; gap: 0;
+  background: var(--panel-fill);
+  border: var(--edge); border-radius: var(--r-lg);
+  box-shadow: var(--drop-lg);
+  overflow: hidden;
+  animation: mk-drop-in 0.28s var(--pop);
 }
-.maker-mode .phase { font-size: 15px; font-weight: 800; letter-spacing: 0.6px; }
-.maker-mode .timer { font-size: 22px; font-weight: 800; font-variant-numeric: tabular-nums; }
-.maker-mode .stat { font-size: 12px; opacity: 0.9; }
-.maker-mode .stat b { font-size: 15px; }
-.maker-mode .stash { color: #ffd76a; letter-spacing: 2px; }
-.maker-mode.urgent .timer { color: #ff9f6a; }
+.maker-mode .cell {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  padding: 6px 14px; gap: 1px;
+}
+.maker-mode .cell + .cell { border-left: 2px solid var(--ink-soft); }
+.maker-mode .cap {
+  font-size: 9px; font-weight: 800; letter-spacing: 1.4px; text-transform: uppercase;
+  color: var(--text-dim);
+}
+.maker-mode .phase { font-size: 16px; font-weight: 900; letter-spacing: 0.4px; }
+.maker-mode .timer { font-size: 24px; font-weight: 900; line-height: 1; }
+.maker-mode .val { font-size: 17px; font-weight: 900; line-height: 1.1; }
+.maker-mode .val.tint { color: var(--sun); }
+.maker-mode .val.wood { color: var(--wood); }
+/* Not enough for what you are holding. Same red the ghost turns. */
+.maker-mode .val.wood.short { color: var(--alarm); }
+.maker-mode.urgent .timer { color: var(--alarm); animation: mk-tick 1s steps(1) infinite; }
+@keyframes mk-tick { 0%, 60% { opacity: 1; } 61%, 100% { opacity: 0.55; } }
+
+/* Score, in the two sides' own colours so it matches the shirts on the lawn. */
+.maker-mode .score { display: flex; align-items: center; gap: 5px; font-size: 19px; font-weight: 900; }
+.maker-mode .score .l { color: var(--team-left); }
+.maker-mode .score .r { color: var(--team-right); }
+.maker-mode .score .sep { color: var(--text-dim); font-size: 14px; }
 
 .maker-message {
-  position: absolute; left: 50%; top: 96px; transform: translateX(-50%);
-  font-size: 30px; font-weight: 800; text-align: center;
-  text-shadow: 0 3px 0 rgba(58,44,42,0.55);
+  position: absolute; left: 50%; top: 92px; transform: translateX(-50%);
+  font-size: 32px; font-weight: 900; text-align: center; letter-spacing: -0.4px;
+  text-shadow: var(--text-edge);
+  animation: mk-pop-in 0.3s var(--pop);
 }
 
 /* Ammo and charge sit just above the part chip, near where the hands are. */
@@ -100,11 +175,13 @@ const STYLE = `
  * between them, and nothing said which was the water you have and which was
  * the water on you.
  */
-.maker-meter { display: flex; align-items: center; gap: 7px; }
-.maker-meter .cap { font-size: 10px; font-weight: 800; letter-spacing: 1px;
-  opacity: 0.75; width: 34px; text-align: right; }
-.maker-meter .track { width: 118px; height: 9px; border-radius: 5px;
-  background: rgba(0,0,0,0.42); overflow: hidden; }
+.maker-meter { display: flex; align-items: center; gap: 8px; }
+.maker-meter .cap { font-size: 10px; font-weight: 900; letter-spacing: 1px;
+  width: 38px; text-align: right; text-shadow: 0 1.5px 0 var(--ink); }
+.maker-meter .track { width: 122px; height: 11px; border-radius: var(--r-sm);
+  background: rgba(20, 14, 12, 0.75);
+  border: var(--edge); box-shadow: var(--drop);
+  overflow: hidden; }
 .maker-meter .track i { display: block; height: 100%; width: 0%;
   transition: width 0.1s linear; }
 
@@ -138,6 +215,68 @@ const STYLE = `
     radial-gradient(ellipse at center, rgba(214,242,255,0) 34%, rgba(214,242,255,0.34) 100%),
     radial-gradient(ellipse at center, rgba(28,74,116,0) 26%, rgba(28,74,116,0.62) 100%);
 }
+
+/*
+ * Objective markers, drawn over the world.
+ *
+ * The map is forty-eight metres of lot with a house in the middle of it, and
+ * Water War puts three taps at three corners of it. Until now the only way to
+ * find out which one was being drained was to walk round and look — the mode
+ * knew, the screen did not, and a triage mode where you cannot see what needs
+ * triaging is a mode you play by wandering.
+ *
+ * On-screen markers sit on the thing; off-screen ones pin to the edge with an
+ * arrow, so an objective behind you still has a direction and a distance.
+ */
+.maker-pins { position: absolute; inset: 0; overflow: hidden; }
+.maker-pin {
+  position: absolute; left: 0; top: 0;
+  display: flex; flex-direction: column; align-items: center; gap: 2px;
+  transform: translate(-50%, -50%);
+  will-change: transform;
+}
+.maker-pin .dot {
+  width: 15px; height: 15px; border-radius: 50%;
+  border: var(--edge); box-shadow: var(--drop);
+  background: var(--sun);
+}
+.maker-pin.flag .dot { border-radius: 3px; }
+.maker-pin .dist {
+  font-size: 10px; font-weight: 900; letter-spacing: 0.4px;
+  text-shadow: var(--text-edge);
+}
+/*
+ * Off the screen: a chevron pointing the way, with the distance kept.
+ *
+ * The distance was hidden here at first, to keep the edge uncluttered. Exactly
+ * backwards: an objective you can see tells you roughly how far it is by how
+ * big it looks, and one you cannot see tells you nothing at all. Off screen is
+ * the only place the number was ever load-bearing.
+ */
+.maker-pin.edge .dot { width: 0; height: 0; background: none; border: none; box-shadow: none;
+  border-left: 9px solid transparent; border-right: 9px solid transparent;
+  border-bottom: 14px solid var(--sun);
+  filter: drop-shadow(0 0 1.5px var(--ink)) drop-shadow(0 0 1.5px var(--ink)); }
+/* Faded when it is not the one that needs you. */
+.maker-pin.quiet { opacity: 0.45; }
+
+/*
+ * Which way the water came from.
+ *
+ * A wetness meter says how much trouble you are in; it never says where the
+ * trouble is. Four seconds of turning on the spot looking for whoever is
+ * soaking you is the least fun this game has to offer.
+ */
+.maker-hurt { position: absolute; left: 50%; top: 50%; width: 0; height: 0; }
+.maker-hurt i {
+  position: absolute; left: -22px; top: -128px;
+  width: 44px; height: 44px;
+  transform-origin: 22px 128px;
+  opacity: 0;
+  background: radial-gradient(ellipse at 50% 100%, rgba(126, 206, 255, 0.95), rgba(126, 206, 255, 0) 72%);
+  transition: opacity 0.45s var(--ease);
+}
+.maker-hurt i.show { opacity: 1; transition-duration: 0.06s; }
 `;
 
 import type { Loadout, ModeHud } from '../game/gameMode.ts';
@@ -156,6 +295,8 @@ export interface HudState {
   canRepeat: boolean;
   /** Null when no mode is running. */
   mode: ModeHud | null;
+  /** Seconds, for expiring timed cues without a second clock to keep in step. */
+  now: number;
 }
 
 export interface DebugState {
@@ -241,8 +382,16 @@ export class Hud {
   private readonly messageEl: HTMLDivElement;
   private readonly ammoEl: HTMLDivElement;
   private readonly vignette: HTMLDivElement;
+  private readonly pins: HTMLDivElement;
+  private readonly hurt: HTMLDivElement;
+  /** Pooled pin elements, so tracking objectives allocates nothing per frame. */
+  private readonly pinPool: HTMLDivElement[] = [];
+  private readonly hurtPool: HTMLElement[] = [];
+  private hurtNext = 0;
+  private hitUntil = 0;
   /** True while a mode has building switched off, so the hints follow the phase. */
   private fighting = false;
+  private bannerKey = '';
   private readonly help: HTMLDivElement;
   private readonly chip: HTMLDivElement;
   private readonly wheel: PartWheel;
@@ -252,6 +401,8 @@ export class Hud {
   private device: InputDevice = 'keyboard';
 
   constructor(parent: HTMLElement) {
+    // Tokens first, since everything below is written in terms of them.
+    installTheme();
     const style = document.createElement('style');
     style.textContent = STYLE;
     document.head.appendChild(style);
@@ -305,6 +456,28 @@ export class Hud {
     this.vignette.className = 'maker-vignette';
     this.root.insertBefore(this.vignette, this.crosshair);
 
+    // Objective pins live behind everything else, since they track things in
+    // the world and must never sit on top of a panel that is telling you why.
+    this.pins = document.createElement('div');
+    this.pins.className = 'maker-pins';
+    this.root.insertBefore(this.pins, this.crosshair);
+    for (let i = 0; i < MAX_PINS; i++) {
+      const pin = document.createElement('div');
+      pin.className = 'maker-pin maker-hidden';
+      pin.innerHTML = '<span class="dot"></span><span class="dist"></span>';
+      this.pins.appendChild(pin);
+      this.pinPool.push(pin);
+    }
+
+    this.hurt = document.createElement('div');
+    this.hurt.className = 'maker-hurt';
+    this.root.insertBefore(this.hurt, this.crosshair);
+    for (let i = 0; i < MAX_HURT_ARCS; i++) {
+      const arc = document.createElement('i');
+      this.hurt.appendChild(arc);
+      this.hurtPool.push(arc);
+    }
+
     this.lock = document.createElement('div');
     this.lock.className = 'maker-lock';
     this.lock.innerHTML =
@@ -352,7 +525,13 @@ export class Hud {
 
   update(state: HudState): void {
     this.crosshair.classList.toggle('invalid', !state.validPlacement);
-    this.updateMode(state.mode);
+    // Retired here rather than on a timer, so the kick lasts a real fraction of
+    // a second whatever the frame rate is doing.
+    if (this.hitUntil > 0 && state.now >= this.hitUntil) {
+      this.hitUntil = 0;
+      this.crosshair.classList.remove('hit');
+    }
+    this.updateMode(state.mode, costOf(state.selectedKind));
 
     const swatch = COLORWAYS[state.colorway % COLORWAYS.length]!
       .toString(16)
@@ -374,14 +553,21 @@ export class Hud {
         : state.climbing ? '<b>climbing</b>' : `built ${state.partsPlaced}`,
     ].join('<br>');
 
+    // The price goes on the chip rather than only in the banner, because the
+    // chip is what the player is reading while choosing what to hold — and the
+    // choice between a plank and a block is mostly a choice about cost.
+    const metered = state.mode?.lumber !== undefined && state.mode.lumber !== null;
+    const cost = costOf(state.selectedKind);
+
     // Only rewritten when it would actually differ; this runs every frame.
-    const chipKey = `${state.selectedKind}:${state.colorway}`;
+    const chipKey = `${state.selectedKind}:${state.colorway}:${metered ? cost : ''}`;
     if (chipKey !== this.chipKey) {
       this.chipKey = chipKey;
       this.chip.innerHTML =
         `<span class="maker-swatch" style="background:#${swatch}"></span>` +
         `<b>${PART_KINDS[state.selectedKind]!.name}</b>` +
         `<span class="dims">${dims(state.selectedKind)}</span>` +
+        (metered ? `<span class="cost">${cost} wood</span>` : '') +
         `<span class="hint">Tab</span>`;
     }
   }
@@ -389,6 +575,75 @@ export class Hud {
   /** The wheel, so the shell can open it and feed it mouse movement. */
   get partWheel(): PartWheel {
     return this.wheel;
+  }
+
+  /**
+   * Place the objective pins for this frame.
+   *
+   * Takes screen-space positions rather than world ones: the shell already owns
+   * a camera that can project a point, and a HUD that had to be handed one
+   * would be a HUD that knows about three.js. Anything off screen arrives with
+   * `edge` set and an angle to point along.
+   */
+  setPins(pins: readonly ScreenPin[]): void {
+    for (let i = 0; i < this.pinPool.length; i++) {
+      const el = this.pinPool[i]!;
+      const pin = pins[i];
+      if (pin === undefined) {
+        el.classList.add('maker-hidden');
+        continue;
+      }
+      el.classList.remove('maker-hidden');
+      el.classList.toggle('edge', pin.edge);
+      el.classList.toggle('quiet', pin.quiet === true);
+      el.classList.toggle('flag', pin.kind === 'flag');
+      el.style.left = `${pin.x}px`;
+      el.style.top = `${pin.y}px`;
+
+      const dot = el.firstElementChild as HTMLElement;
+      // The chevron turns, the label does not — rotating the whole pin would
+      // leave the distance upside down whenever the objective was behind you.
+      dot.style.transform = pin.edge ? `rotate(${pin.angle}rad)` : '';
+      // The chevron is a CSS triangle, so its colour is a border, not a fill.
+      if (pin.edge) dot.style.borderBottomColor = pin.color;
+      else dot.style.background = pin.color;
+
+      const dist = el.lastElementChild as HTMLElement;
+      const text = `${Math.round(pin.distance)}m`;
+      if (dist.textContent !== text) dist.textContent = text;
+    }
+  }
+
+  /**
+   * Something you threw connected.
+   *
+   * The crosshair kicks outward and flashes. It is the only thing on screen
+   * that says "that landed" — before this, hitting someone and missing them
+   * looked identical from behind the crosshair, and the meter that moved was on
+   * a body forty metres away.
+   */
+  hitMarker(now: number): void {
+    this.hitUntil = now + HIT_MARKER_TIME;
+    this.crosshair.classList.add('hit');
+  }
+
+  /**
+   * Water came from that direction, relative to where you are looking.
+   *
+   * Zero is straight ahead. A wetness meter says how much trouble you are in
+   * and never says where it is coming from, which turns being ambushed into
+   * several seconds of spinning on the spot.
+   */
+  hurtFrom(angle: number): void {
+    const arc = this.hurtPool[this.hurtNext % this.hurtPool.length]!;
+    this.hurtNext++;
+    arc.style.transform = `rotate(${angle}rad)`;
+    // Restart rather than extend: re-showing an arc that is already up should
+    // read as a second hit, not as one long one.
+    arc.classList.remove('show');
+    void arc.offsetWidth;
+    arc.classList.add('show');
+    setTimeout(() => arc.classList.remove('show'), HURT_ARC_TIME * 1000);
   }
 
   /** Point the wheel at the build kit. */
@@ -412,7 +667,7 @@ export class Hud {
   }
 
   /** Render the running mode's banner, message and ammo, or hide them all. */
-  private updateMode(mode: ModeHud | null): void {
+  private updateMode(mode: ModeHud | null, heldCost: number): void {
     const active = mode !== null;
     this.modePanel.classList.toggle('maker-hidden', !active);
     this.messageEl.classList.toggle('maker-hidden', !active || mode!.message === null);
@@ -431,18 +686,53 @@ export class Hud {
     if (!active) return;
 
     const m = mode!;
-    const parts: string[] = [`<span class="phase">${m.phase}</span>`];
+    // Cells rather than a row of loose spans, each captioned with what it is.
+    // The old banner gave the phase, the clock and two stats equal weight, so a
+    // glance told you four things equally and none of them quickly.
+    const cells: string[] = [`<div class="cell"><span class="phase">${m.phase}</span></div>`];
     if (m.timer !== null) {
-      const seconds = Math.ceil(m.timer);
-      parts.push(`<span class="timer">${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}</span>`);
+      const seconds = Math.max(0, Math.ceil(m.timer));
+      const clock = `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
+      cells.push(`<div class="cell"><span class="timer mk-tabular">${clock}</span></div>`);
+    }
+    if (m.score !== undefined && m.score !== null) {
+      // In the two sides' own colours, so the number on the banner and the shirt
+      // on the lawn are obviously the same fact.
+      cells.push(
+        '<div class="cell"><span class="cap">score</span><span class="score mk-tabular">' +
+        `<b class="l">${m.score.left}</b><span class="sep">–</span><b class="r">${m.score.right}</b>` +
+        '</span></div>',
+      );
     }
     if (m.primary !== null) {
-      parts.push(`<span class="stat">${m.primary.label} <b class="stash">${m.primary.value}</b></span>`);
+      cells.push(
+        `<div class="cell"><span class="cap">${m.primary.label}</span>` +
+        `<span class="val tint mk-tabular">${m.primary.value}</span></div>`,
+      );
     }
     if (m.secondary !== null) {
-      parts.push(`<span class="stat">${m.secondary.label} <b>${m.secondary.value}</b></span>`);
+      cells.push(
+        `<div class="cell"><span class="cap">${m.secondary.label}</span>` +
+        `<span class="val mk-tabular">${m.secondary.value}</span></div>`,
+      );
     }
-    this.modePanel.innerHTML = parts.join('');
+    // Last, and only while it can be spent. A wood count during a raid is a
+    // number you cannot act on, sitting in the one place the player looks when
+    // something has changed.
+    if (m.lumber !== undefined && m.lumber !== null) {
+      const short = m.lumber < heldCost ? ' short' : '';
+      cells.push(
+        '<div class="cell"><span class="cap">wood</span>' +
+        `<span class="val wood${short} mk-tabular">${m.lumber}</span></div>`,
+      );
+    }
+    // Rewritten only when it changed: this runs every frame, and re-parsing the
+    // banner sixty times a second also restarts its arrival animation.
+    const bannerKey = cells.join('');
+    if (bannerKey !== this.bannerKey) {
+      this.bannerKey = bannerKey;
+      this.modePanel.innerHTML = bannerKey;
+    }
     // Under ten seconds the timer turns warm, which is the only cue a player
     // reliably catches while looking at what they are building.
     this.modePanel.classList.toggle('urgent', m.timer !== null && m.timer <= 10);

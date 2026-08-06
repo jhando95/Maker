@@ -17,12 +17,26 @@ import type { CameraRig } from '../player/cameraRig.ts';
 import type { ProjectileSystem } from './projectiles.ts';
 import type { Rng } from '../core/rng.ts';
 import type { Bot } from './bot.ts';
+import type { ActorRoster } from './actor.ts';
+import type { Lumber } from '../build/lumber.ts';
 
 /** Everything a mode is allowed to touch. */
 export interface ModeContext {
   world: CollisionWorld;
   build: BuildSystem;
+  /**
+   * The local player's body.
+   *
+   * Kept alongside `actors` rather than replaced by it. Every mode reaches for
+   * this to answer "where is the person playing", which stays a real question
+   * however many people are in the game, and rewriting forty-odd call sites in
+   * the same change that introduces the roster would put a large mechanical diff
+   * on top of a design change — with no test able to tell which one broke
+   * something. New code that means "everyone" should use `actors`.
+   */
   player: CharacterController;
+  /** Everyone in the world: the local player, any remotes, and the mode's bots. */
+  actors: ActorRoster;
   camera: CameraRig;
   projectiles: ProjectileSystem;
   rng: Rng;
@@ -43,7 +57,15 @@ export type GameEvent =
   | { type: 'splash'; x: number; y: number; z: number }
   | { type: 'throw'; x: number; y: number; z: number }
   | { type: 'botSoaked'; x: number; y: number; z: number }
-  | { type: 'playerSoaked' }
+  /**
+   * Carries where the water came from, when the mode knows.
+   *
+   * It always did know — the balloon that got you has a position — and threw it
+   * away. The HUD needs it to point: a meter says how much trouble you are in
+   * and never says which way it is, which turns being ambushed into several
+   * seconds of turning on the spot.
+   */
+  | { type: 'playerSoaked'; x?: number; y?: number; z?: number }
   | { type: 'stashHit'; remaining: number }
   | { type: 'refilled'; x: number; y: number; z: number }
   | { type: 'phaseChange'; phase: string }
@@ -107,6 +129,13 @@ export interface ModeHud {
   /** Primary counter, e.g. supplies remaining. */
   primary: { label: string; value: string } | null;
   secondary: { label: string; value: string } | null;
+  /**
+   * The two sides' captures, when a mode is a contest between them.
+   *
+   * Its own field rather than squeezed into `primary`, because the HUD paints it
+   * in the teams' own shirt colours and cannot do that to an arbitrary string.
+   */
+  score?: { left: number; right: number } | null;
   /** A line of guidance, shown large when it changes. */
   message: string | null;
   /** 0..1 charge on the throw, or null when not aiming. */
@@ -129,6 +158,8 @@ export interface ModeHud {
   ammo: { current: number; max: number; gauge?: boolean } | null;
   /** 0..1 progress on a refill channel, or null when not at a bucket. */
   refill: number | null;
+  /** Planks left, or null when the mode does not meter them. */
+  lumber?: number | null;
 }
 
 export interface ModeInput {
@@ -165,6 +196,14 @@ export interface GameMode {
   readonly bots: readonly Bot[];
   /** Whether the player may place parts right now. */
   readonly buildingAllowed: boolean;
+  /**
+   * The player's lumber, or undefined in a mode that does not meter it.
+   *
+   * Owned by the mode rather than by the build system, because how much wood
+   * there is and when more arrives is a rule — and Free Build's rule is that
+   * there is no limit at all.
+   */
+  readonly lumber?: Lumber;
   /** Multiplier on player speed, for being soaked. */
   readonly playerSpeedScale: number;
   /** Weapons to offer in the picker, or undefined when there is one option. */

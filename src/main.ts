@@ -14,15 +14,19 @@ import { TICK_RATE, DT } from './physics/constants.ts';
 import { createScene } from './world/scene.ts';
 import { installFixtures } from './world/neighborhood.ts';
 import { PartRenderer } from './render/partRenderer.ts';
+import { chamferedBox } from './render/geometry.ts';
 import { BuildSystem, type PlacementRecord } from './build/buildSystem.ts';
-import { CharacterController, type MoveIntent } from './player/controller.ts';
+import { CharacterController } from './player/controller.ts';
 import { CameraRig } from './player/cameraRig.ts';
-import { Hud } from './ui/hud.ts';
+import { Hud, type ScreenPin } from './ui/hud.ts';
 import { MAX_REACH } from './build/snapping.ts';
 import { seedStarterStructures, STARTER_ORIGIN } from './world/starter.ts';
 import { AudioBus } from './audio/audioBus.ts';
 import { GameSounds } from './audio/gameSounds.ts';
 import { Rng } from './core/rng.ts';
+import { ActorRoster, LOCAL_ACTOR_ID, type Actor, type Team } from './game/actor.ts';
+import { BUTTON, commandToIntent, makeCommand } from './core/command.ts';
+
 import { ProjectileSystem } from './game/projectiles.ts';
 import { ModeRenderer } from './game/modeRenderer.ts';
 import { FortDefenseMode } from './game/fortDefense.ts';
@@ -37,6 +41,12 @@ import { Menu } from './ui/menu.ts';
 import { CrashHandler } from './app/crashHandler.ts';
 import { GamepadManager } from './core/gamepadManager.ts';
 import { PerformanceGovernor } from './app/performanceGovernor.ts';
+
+/** How far off the window edge an off-screen objective chevron sits. */
+const PIN_EDGE_MARGIN = 54;
+/** Objectives are pinned above the thing rather than at its feet. */
+const PIN_HEIGHT = 1.4;
+
 
 /**
  * The modes a player can start.
@@ -232,8 +242,114 @@ settings.subscribe((s) => {
  */
 const events: GameEvent[] = [];
 
+/**
+ * The person at this keyboard, as an actor like any other.
+ *
+ * Left team because the player has always started in the left yard and every
+ * mode's bots have always been the other side; naming it makes that arrangement
+ * something a mode can read rather than something it assumes.
+ */
+const localActor: Actor = {
+  id: LOCAL_ACTOR_ID,
+  kind: 'local',
+  team: 'left',
+  controller: player,
+};
+const actors = new ActorRoster(localActor);
+
+/**
+ * This tick's input, reused rather than reallocated.
+ *
+ * One object per tick would be sixty short-lived allocations a second for the
+ * whole session, and the garbage collector pausing mid-jump is exactly the kind
+ * of hitch the fixed timestep exists to avoid.
+ */
+const localCommand = makeCommand();
+/** Monotonic tick counter, so a command can say which tick it belongs to. */
+let simTick = 0;
+/** Scratch list of who to draw, reused so rendering allocates nothing. */
+const drawnActors: Actor[] = [];
+
+/**
+ * Turn the objectives a mode publishes into pins on the screen.
+ *
+ * Reads `mode.markers()`, which already exists for the 3D renderer, so no mode
+ * needs to know this feature happened. Screen-space maths lives here rather than
+ * in the HUD because the camera lives here — a HUD that could project a point
+ * would be a HUD that imports three.js.
+ *
+ * Off-screen objectives are pinned to the edge with a chevron. That is the part
+ * that matters: Water War spreads three taps across a forty-eight metre lot, so
+ * the one being drained is usually behind you, and until now the only way to
+ * find out was to walk round and look.
+ */
+const pinScratch: ScreenPin[] = [];
+const pinVec = new THREE.Vector3();
+
+function projectPins(active: GameMode | null, eye: { x: number; y: number; z: number }): ScreenPin[] {
+  pinScratch.length = 0;
+  if (active === null) return pinScratch;
+
+  const width = window.innerWidth;
+  const height = window.innerHeight;
+  const cx = width / 2;
+  const cy = height / 2;
+  // Kept off the very edge, or half the chevron sits outside the window.
+  const marginX = width / 2 - PIN_EDGE_MARGIN;
+  const marginY = height / 2 - PIN_EDGE_MARGIN;
+
+  // Dimming is relative: with nothing marked active every pin came out dim,
+  // which is the same as none of them being dim except harder to read.
+  const markers = active.markers();
+  let anyActive = false;
+  for (const marker of markers) anyActive ||= marker.active === true;
+
+  for (const marker of markers) {
+    pinVec.set(marker.x, marker.y + PIN_HEIGHT, marker.z);
+    pinVec.project(camera.camera);
+
+    // `project` gives normalised device coords, and z > 1 means behind the eye —
+    // where x and y are mirrored and meaningless, so they get recomputed from
+    // the world direction instead.
+    const behind = pinVec.z > 1;
+    let sx = pinVec.x * cx;
+    let sy = -pinVec.y * cy;
+    if (behind) {
+      sx = -sx;
+      sy = -sy;
+    }
+
+    const outside = behind || Math.abs(sx) > marginX || Math.abs(sy) > marginY;
+    let angle = 0;
+    if (outside) {
+      // Push out along the direction to the objective until it meets the frame,
+      // so a chevron sits where you would turn to find the thing.
+      angle = Math.atan2(sy, sx);
+      const scale = Math.min(
+        marginX / Math.max(Math.abs(sx), 1e-3),
+        marginY / Math.max(Math.abs(sy), 1e-3),
+      );
+      sx *= scale;
+      sy *= scale;
+    }
+
+    pinScratch.push({
+      x: cx + sx,
+      y: cy + sy,
+      edge: outside,
+      // The chevron points along the direction of travel; its art points up.
+      angle: angle + Math.PI / 2,
+      distance: Math.hypot(marker.x - eye.x, marker.z - eye.z),
+      color: `#${marker.color.toString(16).padStart(6, '0')}`,
+      kind: marker.kind,
+      quiet: anyActive && marker.active !== true,
+    });
+  }
+  return pinScratch;
+}
+
 const modeContext: ModeContext = {
-  world, build, player, camera, projectiles,
+  world, build, player, actors, camera, projectiles,
   rng: new Rng('round-1'),
   emit: (e) => events.push(e),
   worldChanged: () => worldChanged(),
@@ -252,6 +368,8 @@ function startRound(id: ModeId = lastModeId): void {
   roundSnapshot = build.serialize();
   mode = createMode(id);
   mode.start(modeContext);
+  // After start(), which is where a mode sets its opening pile.
+  build.setLumber(mode.lumber);
   audio.play('roundStart', { volume: 0.6 });
   resetPlayerToSpawn(id);
 }
@@ -259,8 +377,13 @@ function startRound(id: ModeId = lastModeId): void {
 function stopRound(): void {
   mode?.end(modeContext);
   mode = null;
+  // Free build has no budget; leaving a round has to hand the sandbox back.
+  build.setLumber();
   projectiles.clear();
   modeRenderer.clear();
+  // A mode keeps the roster in step while it is ticking; when it stops ticking
+  // there is nobody left to draw but the player.
+  actors.refresh([]);
 }
 
 function restartRound(): void {
@@ -399,6 +522,10 @@ function drainEvents(): void {
         break;
       case 'botSoaked':
         audio.play('hit', { ...spatialAt(e.x, e.y, e.z), volume: 0.5 });
+        // Says "that was you". Before this, connecting and missing looked the
+        // same from behind the crosshair, and the only thing that moved was a
+        // meter on a body forty metres away.
+        hud.hitMarker(performance.now() / 1000);
         break;
       case 'playerSoaked':
         audio.play('hit', { volume: 0.7, pitch: 0.7 });
@@ -472,6 +599,68 @@ const avatar = new THREE.Group();
   avatar.add(cap);
 }
 scene.add(avatar);
+
+/**
+ * What you are holding, in front of the camera.
+ *
+ * First person was an empty screen with a crosshair on it, which reads as a
+ * floating eye rather than a kid in a garden — and it also meant the only way to
+ * know what you were about to use was to read a chip in the corner.
+ *
+ * Positioned relative to the camera every frame rather than parented to it. A
+ * child of the camera would inherit its near-plane clipping and its shake, and
+ * this needs to lag the camera slightly, which is most of what makes a held
+ * object feel like it has weight.
+ */
+const viewmodel = new THREE.Group();
+const viewPlank = new THREE.Mesh(
+  chamferedBox(0.52, 0.045, 0.12, 0.01),
+  new THREE.MeshToonMaterial({ color: 0xd8a866 }),
+);
+viewPlank.rotation.set(0.05, 0.38, 0.20);
+const viewSoaker = new THREE.Group();
+{
+  const tank = new THREE.Mesh(
+    chamferedBox(0.3, 0.13, 0.13, 0.03),
+    new THREE.MeshToonMaterial({ color: 0x3fa8d8 }),
+  );
+  const nozzle = new THREE.Mesh(
+    chamferedBox(0.34, 0.05, 0.05, 0.015),
+    new THREE.MeshToonMaterial({ color: 0xf2c94c }),
+  );
+  nozzle.position.set(0.3, 0.02, 0);
+  const grip = new THREE.Mesh(
+    chamferedBox(0.07, 0.16, 0.07, 0.02),
+    new THREE.MeshToonMaterial({ color: 0xe06a4f }),
+  );
+  grip.position.set(-0.05, -0.13, 0);
+  viewSoaker.add(tank, nozzle, grip);
+  viewSoaker.rotation.set(0.04, -0.22, 0.06);
+}
+viewmodel.add(viewPlank, viewSoaker);
+// Never shadowed or shadowing: it is inches from the eye, so a shadow map at
+// world scale has nothing useful to say about it and only produces acne.
+viewmodel.traverse((o) => { o.castShadow = false; o.receiveShadow = false; });
+scene.add(viewmodel);
+
+/** Where the held thing sits relative to the eye: forward, right, and down. */
+const HOLD_FORWARD = 0.78;
+const HOLD_RIGHT = 0.34;
+const HOLD_DOWN = -0.42;
+
+/** Lagged copy of the camera's aim, so the held thing swings a beat behind. */
+const viewLag = { yaw: 0, pitch: 0, bob: 0 };
+
+/**
+ * The shortest way round from one angle to another.
+ *
+ * Yaw wraps at ±π, so chasing it by plain subtraction sends the viewmodel the
+ * long way round the moment the player crosses the seam — a full spin of the
+ * held object for a one-degree turn.
+ */
+function shortestAngle(from: number, to: number): number {
+  return Math.atan2(Math.sin(to - from), Math.cos(to - from));
+}
 
 // ── Input plumbing ───────────────────────────────────────────────────────────
 hud.onLockClick(() => enterPlay());
@@ -593,24 +782,28 @@ function simulate(dt: number): void {
     sprintLatched = input.isDown('sprint');
   }
 
+  // What the player wants this tick, as data rather than as a function call.
+  // The controller is driven from a command whether it came from these keys, a
+  // recording, or eventually another machine — there is one path, so a replay
+  // cannot diverge from live play by taking a different one.
   const axis = input.moveAxis;
   const basis = camera.getMoveBasis();
-  const intent: MoveIntent = {
-    right: axis.z * basis.fx + axis.x * basis.rx,
-    forward: axis.z * basis.fz + axis.x * basis.rz,
-    jump: input.isDown('jump'),
-    sprint: sprintLatched,
-    crouch: crouchLatched,
-    climb: axis.z,
-  };
-  // Being soaked slows the player. Without this the mode's incoming fire is
-  // toothless and building cover is decoration.
-  if (mode !== null && mode.playerSpeedScale < 1) {
-    intent.right *= mode.playerSpeedScale;
-    intent.forward *= mode.playerSpeedScale;
-    intent.sprint = false;
-  }
-  player.step(dt, intent);
+  localCommand.tick = simTick;
+  localCommand.moveX = axis.z * basis.fx + axis.x * basis.rx;
+  localCommand.moveZ = axis.z * basis.fz + axis.x * basis.rz;
+  localCommand.climb = axis.z;
+  localCommand.yaw = camera.yaw;
+  localCommand.pitch = camera.pitch;
+  localCommand.buttons =
+    (input.isDown('jump') ? BUTTON.jump : 0) |
+    (sprintLatched ? BUTTON.sprint : 0) |
+    (crouchLatched ? BUTTON.crouch : 0);
+
+  // Being soaked slows the player. Applied here rather than baked into the
+  // command because it is a rule the mode applies to your intent, not part of
+  // the intent: a soaked player is pushing the stick just as hard.
+  player.step(dt, commandToIntent(localCommand, mode?.playerSpeedScale ?? 1));
+  simTick++;
   sounds.update(dt, player, camera);
 
   // ── Build actions ──────────────────────────────────────────────────────────
@@ -759,13 +952,54 @@ function draw(alpha: number, frameDt: number): void {
   avatar.position.set(state.x, state.y, state.z);
   avatar.rotation.y = camera.yaw;
 
-  flushShadows(performance.now() / 1000);
+  // ── What you are holding ───────────────────────────────────────────────────
+  // Hidden in third person, where the avatar already answers the question.
+  const holdingWeapon = mode !== null && !mode.buildingAllowed;
+  viewmodel.visible = !camera.showsPlayer;
+  viewPlank.visible = !holdingWeapon;
+  viewSoaker.visible = holdingWeapon;
+  if (viewmodel.visible) {
+    // Chases the camera rather than matching it. Exact tracking makes a held
+    // object feel welded to your eyes; a little lag reads as weight.
+    const chase = Math.min(1, frameDt * 14);
+    viewLag.yaw += shortestAngle(viewLag.yaw, camera.yaw) * chase;
+    viewLag.pitch += (camera.pitch - viewLag.pitch) * chase;
+    // Bob with ground speed, and only on the ground — a bobbing viewmodel in
+    // mid-air is the classic tell that it is driven by a timer, not by walking.
+    const walking = state.onGround ? Math.hypot(state.vx, state.vz) : 0;
+    viewLag.bob += frameDt * walking * 7.5;
+
+    // The camera's own basis, derived rather than guessed: at yaw 0 the rig
+    // looks along -Z, so forward is (-sin, 0, -cos) and right is (cos, 0, -sin).
+    // The first attempt used a hand-rolled pair of these and put a 0.6m plank
+    // half a metre from the eye, filling a quarter of the screen.
+    const sy = Math.sin(viewLag.yaw);
+    const cy = Math.cos(viewLag.yaw);
+    const eyeY = state.y + state.eyeHeight;
+    const bobY = Math.sin(viewLag.bob) * 0.014 * Math.min(1, walking / 4);
+    const bobX = Math.sin(viewLag.bob * 0.5) * 0.010 * Math.min(1, walking / 4);
+    viewmodel.position.set(
+      state.x + -sy * HOLD_FORWARD + cy * (HOLD_RIGHT + bobX),
+      eyeY + HOLD_DOWN + bobY,
+      state.z + -cy * HOLD_FORWARD + -sy * (HOLD_RIGHT + bobX),
+    );
+    viewmodel.rotation.set(viewLag.pitch * 0.4, viewLag.yaw, 0, 'YXZ');
+  }
+
+  const nowSeconds = performance.now() / 1000;
+  flushShadows(nowSeconds);
   drainEvents();
   modeRenderer.setStream(
     mode?.stream ?? null,
     state.x, state.y + state.eyeHeight * 0.82, state.z,
   );
-  modeRenderer.update(frameDt, mode, projectiles, performance.now() / 1000);
+  // Everyone but the local player, who is drawn by the avatar below and would
+  // otherwise appear twice — once inside their own head.
+  drawnActors.length = 0;
+  for (const who of actors.all) {
+    if (who.id !== LOCAL_ACTOR_ID) drawnActors.push(who);
+  }
+  modeRenderer.update(frameDt, mode, projectiles, performance.now() / 1000, drawnActors);
 
   renderer.render(scene, camera.camera);
 
@@ -781,7 +1015,9 @@ function draw(alpha: number, frameDt: number): void {
     cameraMode: camera.mode,
     climbing: state.climbing,
     mode: mode?.hud() ?? null,
+    now: nowSeconds,
   });
+  hud.setPins(projectPins(mode, state));
   hud.updateDebug({
     fps: loop.fps,
     parts: world.partCount,
@@ -882,6 +1118,18 @@ window.__maker = {
   },
   selectPart: (i: number) => build.selectKind(i),
   getSelectedPart: () => build.selectedKind,
+  /** Wood left, and what the held part costs, for the budget scenario. */
+  lumber: () => ({
+    // A boolean rather than trusting Infinity to survive the bridge into a
+    // scenario, where it would arrive as null and read as "no wood at all".
+    unlimited: build.lumber.unlimited,
+    available: build.lumber.unlimited ? -1 : build.lumber.available,
+    cost: build.selectedCost,
+    affordable: build.canAffordSelected,
+  }),
+  setLumber: (amount: number) => build.lumber.set(amount),
+  /** The preview's current outline colour, for checking it says "no". */
+  ghostTint: () => build.ghostTint,
   actionDown: (a: string) => input.isDown(a as Action),
   /**
    * Movement intent this frame, stick and keys summed.
@@ -893,6 +1141,32 @@ window.__maker = {
   moveAxis: () => input.moveAxis,
   /** Stick look rate this frame, for the same reason as moveAxis. */
   padLook: () => input.padLook,
+  actors,
+  /**
+   * Put a second person in the world without a network to bring them.
+   *
+   * The whole remote path — roster, collision, drawing, team colour — exists
+   * before any socket does, and this is what lets it be checked. When a
+   * transport arrives it will call exactly this, so the scenario driving it is
+   * testing the real thing rather than a stand-in.
+   */
+  addRemoteActor: (id: number, team: Team, x: number, y: number, z: number) => {
+    actors.addRemote({
+      id, kind: 'remote', team,
+      controller: new CharacterController(world, x, y, z),
+    });
+  },
+  removeRemoteActor: (id: number) => actors.removeRemote(id),
+  /** Drive a remote actor the way a received command would. */
+  stepRemoteActor: (id: number, moveX: number, moveZ: number) => {
+    const who = actors.get(id);
+    if (who === undefined || who.kind !== 'remote') return null;
+    const command = makeCommand(simTick);
+    command.moveX = moveX;
+    command.moveZ = moveZ;
+    who.controller.step(DT, commandToIntent(command));
+    return { x: who.controller.x, y: who.controller.y, z: who.controller.z };
+  },
   bindingFor: (code: string) => input.getBindings()[code] ?? null,
   /** Move the mouse, for scenarios that cannot hold pointer lock. */
   look: (dx: number, dy: number) => input.injectLook(dx, dy),
@@ -908,6 +1182,27 @@ window.__maker = {
     if (ok) worldChanged();
     return ok;
   },
+  /**
+   * Aim at a world point and take down what is there.
+   *
+   * By point rather than by the angle that placed it, because those are not the
+   * same ray: a placement snaps to a surface, so the part ends up next to where
+   * you were pointing rather than on it. Re-aiming at the old angle happened to
+   * hit it on one machine and missed on a slower one.
+   */
+  removeAtPoint: (x: number, y: number, z: number): boolean => {
+    const state = player.sample(1);
+    const ex = state.x, ey = state.y + state.eyeHeight, ez = state.z;
+    camera.yaw = Math.atan2(-(x - ex), -(z - ez));
+    camera.pitch = Math.atan2(y - ey, Math.hypot(x - ex, z - ez));
+    const ray = camera.getAimRay(ex, ey, ez, MAX_REACH);
+    build.update(DT, ray.ox, ray.oy, ray.oz, ray.dx, ray.dy, ray.dz, false, false);
+    const ok = build.removeAimed();
+    if (ok) worldChanged();
+    return ok;
+  },
+  /** Where the last placement landed, so a scenario can aim back at it. */
+  lastPlacedAt: () => build.lastPlacedAt,
   save: (): PlacementRecord[] => build.serialize(),
   load: (records: PlacementRecord[]) => {
     build.deserialize(records);

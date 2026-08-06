@@ -25,6 +25,7 @@ import type { Rng } from '../core/rng.ts';
 import { ProjectileSystem } from './projectiles.ts';
 import type { BalloonTarget } from './projectiles.ts';
 import type { NavField } from './navField.ts';
+import type { Actor, Team } from './actor.ts';
 
 export type BotState = 'approach' | 'divert' | 'attack' | 'stunned' | 'done';
 
@@ -61,8 +62,18 @@ const DIVERT_ANGLES = [0.6, -0.6, 1.2, -1.2, 2.0, -2.0];
  */
 const CELL_TRUST_DISTANCE = 2.5;
 
-export class Bot {
+export class Bot implements Actor {
   readonly id: number;
+  /** Intent comes from the behaviour below rather than a keyboard or a socket. */
+  readonly kind = 'ai';
+  /**
+   * Which side this kid is on.
+   *
+   * Defaults to the side opposite the player because that is what every bot has
+   * been so far. It is a field rather than a constant so a mode can put one on
+   * your side without inventing a second kind of character to do it.
+   */
+  team: Team = 'right';
   readonly controller: CharacterController;
   private readonly world: CollisionWorld;
   private readonly config: BotConfig;
@@ -115,6 +126,8 @@ export class Bot {
   get y(): number { return this.controller.y; }
   get z(): number { return this.controller.z; }
   get alive(): boolean { return this.state !== 'done'; }
+  /** Washed out by the renderer, so it reads at a glance who is still a threat. */
+  get stunned(): boolean { return this.state === 'stunned'; }
 
   /** Shape the projectile system tests against. */
   asTarget(): BalloonTarget {

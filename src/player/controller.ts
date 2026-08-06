@@ -36,6 +36,19 @@ import {
   WALK_SPEED,
 } from '../physics/constants.ts';
 
+/**
+ * How the face is sampled when looking for something to grab.
+ *
+ * The spacing is 0.15m against a 0.25m build module on purpose — see
+ * hasHandholds. The relief threshold is under one plank thickness (0.05m), so
+ * boards nailed flat to a wall count as rungs, which is the cheapest ladder a
+ * player can improvise and should work.
+ */
+const HANDHOLD_SAMPLES = 8;
+const HANDHOLD_LOW = 0.45;
+const HANDHOLD_SPACING = 0.15;
+const HANDHOLD_RELIEF = 0.04;
+
 export interface MoveIntent {
   /** Desired direction in world space, already rotated by the camera yaw. */
   forward: number;
@@ -390,8 +403,51 @@ export class CharacterController {
     const maxY = Math.sin((CLIMB_MAX_TILT_DEG * Math.PI) / 180);
     if (Math.abs(hit.ny) > maxY) return false;
 
+    if (!this.hasHandholds(dx, dz)) return false;
+
     this.climbing = true;
     return true;
+  }
+
+  /**
+   * Is there anything on this surface to actually hold on to?
+   *
+   * The rule used to be "any near-vertical thing you built", which made rungs
+   * decoration — a flush wall was as climbable as a ladder. That reads as
+   * generous and is quietly corrosive: a wall you build never stops *you*, so
+   * building tall has no cost, and the moment a second person is in the yard a
+   * fort stops working against the only opponent that matters.
+   *
+   * What separates a ladder from a wall is not how it looks, it is that a ladder
+   * has things sticking out of it. So that is what gets measured: sample the
+   * face at several heights and see whether its **depth varies**. Rungs give a
+   * near/far/near pattern as the ray alternately catches a rung and the board
+   * behind it; a flush wall returns the same distance every time.
+   *
+   * Sampling is deliberately offset from the build grid. At the kit's own 0.25m
+   * module, samples 0.25m apart would land on every rung or between every rung,
+   * and read a perfect ladder as a flat wall.
+   */
+  private hasHandholds(dx: number, dz: number): boolean {
+    let nearest = Infinity;
+    let furthest = -Infinity;
+    let found = 0;
+
+    for (let i = 0; i < HANDHOLD_SAMPLES; i++) {
+      const probe = this.world.raycast(
+        this.x, this.y + HANDHOLD_LOW + i * HANDHOLD_SPACING, this.z,
+        dx, 0, dz,
+        CAP_RADIUS + CLIMB_REACH,
+      );
+      if (probe === null || probe.isGround || !this.world.isClimbable(probe.part)) continue;
+      found++;
+      if (probe.distance < nearest) nearest = probe.distance;
+      if (probe.distance > furthest) furthest = probe.distance;
+    }
+
+    // One lonely sample is a lip, not a ladder.
+    if (found < 2) return false;
+    return furthest - nearest > HANDHOLD_RELIEF;
   }
 
   private stepClimbing(dt: number, intent: MoveIntent): void {

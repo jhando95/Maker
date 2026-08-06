@@ -135,6 +135,11 @@ const STYLE = `
 }
 .mk-chip b { font-weight: 800; }
 .mk-chip .dims { opacity: 0.6; font-size: 10.5px; }
+.mk-chip .cost {
+  color: var(--wood); font-weight: 800; font-size: 10.5px;
+  padding: 1px 5px; border-radius: var(--r-sm);
+  background: rgba(224, 176, 112, 0.16);
+}
 .mk-chip .hint { opacity: 0.5; font-size: 10.5px; margin-left: 3px; }
 `;
 

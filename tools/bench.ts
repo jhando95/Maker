@@ -22,6 +22,7 @@ import { NavField } from '../src/game/navField.ts';
 import { Bot, BOT_TIERS } from '../src/game/bot.ts';
 import { FortDefenseMode } from '../src/game/fortDefense.ts';
 import type { ModeContext } from '../src/game/gameMode.ts';
+import { ActorRoster, LOCAL_ACTOR_ID } from '../src/game/actor.ts';
 import { CameraRig } from '../src/player/cameraRig.ts';
 import { Rng } from '../src/core/rng.ts';
 import { DT } from '../src/physics/constants.ts';
@@ -161,6 +162,7 @@ bench('projectiles.update (40 live)', 5000, () => {
 const camera = new CameraRig(world, 1.6);
 const ctx: ModeContext = {
   world, build, player, camera, projectiles,
+  actors: new ActorRoster({ id: LOCAL_ACTOR_ID, kind: 'local', team: 'left', controller: player }),
   rng: new Rng('bench-round'),
   emit: () => {},
   worldChanged: () => {},

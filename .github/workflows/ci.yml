@@ -65,6 +65,27 @@ jobs:
       - name: Water-fight scenario
         run: node tools/shoot.mjs --scenario scenarios/water.mjs --auto-quality --out /tmp/ci-water.png
 
+      # Multiple people in one world, with no network yet to bring them. The
+      # roster and teams are unit-tested; that a second body reaches the
+      # renderer's instance buffers, wears the right shirt and moves on its own
+      # commands only happens in a browser.
+      - name: Multiple-actor scenario
+        run: node tools/shoot.mjs --scenario scenarios/actors.mjs --auto-quality --out /tmp/ci-actors.png
+
+      # The HUD's job is to say what a mode knows, and every part of that is a
+      # seam between two systems rather than logic inside either — so the unit
+      # suite stays green with the objective compass, the hit marker and the
+      # damage cue all broken.
+      - name: HUD scenario
+        run: node tools/shoot.mjs --scenario scenarios/hud.mjs --auto-quality --out /tmp/ci-hud.png
+
+      # The budget is the first rule that can make a legal placement fail. The
+      # arithmetic is unit-tested; whether the player is ever told — a counter
+      # on the banner, a price on the chip, a ghost that turns red — is a chain
+      # from the mode to a pixel that only exists in a browser.
+      - name: Lumber-budget scenario
+        run: node tools/shoot.mjs --scenario scenarios/lumber.mjs --auto-quality --out /tmp/ci-lumber.png
+
       # A CI runner has no GPU either, so it is a genuine instance of the case
       # adaptive quality exists for. The decision logic is unit-tested; this
       # checks the decision reaches the drawing buffer.
@@ -82,6 +103,9 @@ jobs:
             /tmp/ci-quality.png
             /tmp/ci-wheel.png
             /tmp/ci-water.png
+            /tmp/ci-actors.png
+            /tmp/ci-hud.png
+            /tmp/ci-lumber.png
           if-no-files-found: ignore
 
   benchmark:
