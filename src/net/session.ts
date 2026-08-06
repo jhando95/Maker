@@ -48,8 +48,10 @@ import type { BuildSystem, PlacementRecord } from '../build/buildSystem.ts';
 import { ActorRoster, opposing, type Actor, type Team } from '../game/actor.ts';
 import {
   ACTOR_FLAG, PROTOCOL_VERSION, decode, indexToTeam, teamToIndex,
-  type HostMessage, type PackedActor,
+  type HostMessage, type PackedActor, type PackedRound,
 } from './protocol.ts';
+import type { GameMode } from '../game/gameMode.ts';
+import { packRound } from './roundPacket.ts';
 import type { Transport } from './transport.ts';
 
 /**
@@ -124,6 +126,23 @@ export interface SessionContext {
    * than a broken spawn.
    */
   spawnFor(team: Team): { x: number; y: number; z: number };
+  /**
+   * What the host is running, or null for free build. Never called on a guest.
+   *
+   * A getter rather than a field the shell writes on every round change, because
+   * a mode is started and stopped from four places — the menu, a restart, a quit
+   * to title, the debug API — and any one of them forgetting to tell the session
+   * would leave guests playing a round that had ended.
+   */
+  mode?(): GameMode | null;
+  /**
+   * The host's round, as it stands. Only ever called on a guest.
+   *
+   * Handed out rather than applied here, because what a guest does with it is a
+   * question about the shell — which mode object is live, whether the result
+   * screen is up — and the session has no business answering that.
+   */
+  setRound?(round: PackedRound | null): void;
 }
 
 /** One snapshot of one actor, kept for interpolation. */
@@ -281,7 +300,14 @@ export class NetHost {
       }
       case 'build': {
         // The host decides. A guest asks; it does not place.
-        if (!this.ctx.build.applyPlaceIfClear(message.r)) return;
+        //
+        // Paid for out of the same pile the host builds from. This went through
+        // `applyPlaceIfClear` directly at first, which is the natural thing to
+        // write and quietly means guests build for free: in free build the pile
+        // is infinite so nothing shows, and in a mode two people share a budget
+        // that only one of them is spending. A shared pile has to be shared in
+        // both directions or it is not a budget.
+        if (!this.ctx.build.buyPlacement(message.r)) return;
         const id = this.ctx.build.lastPlacedId;
         if (id === null) return;
         this.ctx.worldChanged();
@@ -307,6 +333,8 @@ export class NetHost {
    * late, who simply repeats their last input rather than freezing.
    */
   afterTick(dt: number): void {
+    this.noticeRoundChange();
+
     for (const peer of this.peers.values()) {
       const command = peer.latest;
       if (command === null) continue;
@@ -323,6 +351,31 @@ export class NetHost {
     }
   }
 
+  /**
+   * Put everybody on their mark when a new round starts.
+   *
+   * Noticed rather than announced. A round is started and stopped from the menu,
+   * a restart, a quit to title and the debug API, and a session that had to be
+   * told by each of them would eventually be told by three of them — leaving one
+   * path where guests spend a round standing wherever the last one left them,
+   * quite possibly inside the fort they are meant to be attacking.
+   *
+   * The host's own player is repositioned by the shell, which already does it.
+   * This is only for the people the host is running on their behalf.
+   */
+  private noticeRoundChange(): void {
+    const id = this.ctx.mode?.()?.id ?? null;
+    if (id === this.roundId) return;
+    this.roundId = id;
+    if (id === null) return;
+    for (const peer of this.peers.values()) {
+      const where = this.ctx.spawnFor(peer.actor.team);
+      peer.actor.controller.teleport(where.x, where.y, where.z);
+    }
+  }
+
+  private roundId: string | null = null;
+
   /** Tell everybody the host built something, so guests see it too. */
   announcePlacement(id: number, record: PlacementRecord): void {
     this.broadcast({ t: 'built', id, r: record });
@@ -333,15 +386,17 @@ export class NetHost {
   }
 
   private publish(): void {
+    const mode = this.ctx.mode?.() ?? null;
     const actors: PackedActor[] = [];
     for (const who of this.ctx.actors.all) {
       // Bots are the host's own simulation and are published like anyone else:
       // a guest has to see them, and they are the same shape on the wire.
-      actors.push(packActor(who));
+      actors.push(packActor(who, mode?.wetnessOf?.(who.id) ?? 0));
     }
+    const round = packRound(mode);
     // One array, but each peer needs its own ack, so the message is per peer.
     for (const peer of this.peers.values()) {
-      peer.transport.send({ t: 'snap', tick: this.tick, ack: peer.ack, actors });
+      peer.transport.send({ t: 'snap', tick: this.tick, ack: peer.ack, actors, round });
     }
   }
 
@@ -366,7 +421,7 @@ export class NetHost {
   }
 }
 
-function packActor(who: Actor): PackedActor {
+function packActor(who: Actor, wet: number): PackedActor {
   const b = who.controller;
   return [
     who.id,
@@ -377,6 +432,7 @@ function packActor(who: Actor): PackedActor {
     (b.onGround ? ACTOR_FLAG.onGround : 0)
     | (who.alive === false ? 0 : ACTOR_FLAG.alive)
     | (who.stunned === true ? ACTOR_FLAG.stunned : 0),
+    round(wet, 1e-2),
   ];
 }
 
@@ -412,6 +468,8 @@ export class NetClient {
   private readonly samples = new Map<number, Sample[]>();
   private readonly remotes = new Map<number, Actor>();
   private readonly headings = new Map<number, number>();
+  /** How soaked everybody is, by actor id, for the shirt colours. */
+  private readonly wetness = new Map<number, number>();
   /** Seconds since the session started, the clock interpolation runs on. */
   private clock = 0;
   private corrections = 0;
@@ -437,6 +495,17 @@ export class NetClient {
   /** How many times the host has had to correct us. For the debug overlay. */
   get correctionCount(): number {
     return this.corrections;
+  }
+
+  /**
+   * How soaked somebody is, 0..1, as of the last snapshot.
+   *
+   * Includes the local player, whose own wetness is the host's business too — a
+   * guest that decided for itself how wet it was would disagree with the machine
+   * that is actually knocking it out of the fight.
+   */
+  wetnessOf(actorId: number): number {
+    return this.wetness.get(actorId) ?? 0;
   }
 
   beforeTick(): void {
@@ -486,6 +555,9 @@ export class NetClient {
 
       case 'snap':
         this.applySnapshot(message.tick, message.ack, message.actors);
+        // After the actors, so the shell sees a round whose objectives and
+        // people came out of the same instant.
+        this.ctx.setRound?.(message.round ?? null);
         break;
 
       case 'built': {
@@ -518,6 +590,7 @@ export class NetClient {
     this.remotes.delete(id);
     this.samples.delete(id);
     this.headings.delete(id);
+    this.wetness.delete(id);
     this.ctx.actors.removeRemote(id);
   }
 
@@ -526,8 +599,9 @@ export class NetClient {
     const seen = new Set<number>();
 
     for (const packed of actors) {
-      const [id, team, x, y, z, vx, , vz, yaw, flags] = packed;
+      const [id, team, x, y, z, vx, , vz, yaw, flags, wet] = packed;
       seen.add(id);
+      this.wetness.set(id, wet ?? 0);
 
       if (id === this.localId) {
         // Your own side can change under you — the host assigns it — so it is

@@ -33,6 +33,8 @@ import { CharacterBatch } from './render/character.ts';
 import { NetHost, NetClient, type SessionContext } from './net/session.ts';
 import { SocketTransport, loopbackPair, type Transport } from './net/transport.ts';
 import { RelayHostLink, relayUrl } from './net/relayLink.ts';
+import { RemoteMode } from './net/remoteMode.ts';
+import { PROTOCOL_VERSION, type PackedRound } from './net/protocol.ts';
 import { FortDefenseMode } from './game/fortDefense.ts';
 import { CaptureTheFlagMode } from './game/captureTheFlag.ts';
 import { WaterWarMode } from './game/waterWar.ts';
@@ -401,7 +403,44 @@ const sessionContext: SessionContext = {
   world, build, actors, local: player,
   worldChanged: () => worldChanged(),
   spawnFor: (team) => (team === 'left' ? LEFT_SPAWN : RIGHT_SPAWN),
+  mode: () => (isGuest() ? null : mode),
+  setRound: (round) => adoptRound(round),
 };
+
+/**
+ * The host's round, arriving on a guest.
+ *
+ * A guest never builds a mode object of its own — it wears one. `RemoteMode` is
+ * a `GameMode` that answers every question from what the host last said, so the
+ * HUD, the compass, the result screen and the build gate all run through code
+ * that has no idea a network is involved.
+ *
+ * The lumber deserves a note. The build system is handed the remote mode's
+ * mirrored pile, so a guest's ghost turns red when the *yard* runs out rather
+ * than a round trip after they click. Its own placements are still refused or
+ * allowed by the host, which is the only opinion that counts; this just stops
+ * the local preview from lying in between.
+ */
+function adoptRound(round: PackedRound | null): void {
+  if (round === null || round.id === null) {
+    if (remoteMode !== null) {
+      remoteMode = null;
+      mode = null;
+      build.setLumber(undefined);
+    }
+    return;
+  }
+  if (remoteMode === null) {
+    remoteMode = new RemoteMode((id) => (net instanceof NetClient ? net.wetnessOf(id) : 0));
+    mode = remoteMode;
+    modeOverTimer = 0;
+  }
+  remoteMode.apply(round);
+  build.setLumber(round.wood === null ? undefined : remoteMode.lumber);
+}
+
+/** The round a guest is watching, or null when hosting or alone. */
+let remoteMode: RemoteMode | null = null;
 
 let net: NetHost | NetClient | null = null;
 
@@ -414,6 +453,8 @@ function isGuest(): boolean {
 let relayLink: RelayHostLink | null = null;
 /** A scenario standing in for a second player. Null in a real session. */
 let fakeGuest: Transport | null = null;
+/** A scenario standing in for the host, when the page is the guest. */
+let fakeHost: Transport | null = null;
 let netMessage: string | null = null;
 
 /**
@@ -431,6 +472,7 @@ function startHosting(url: string, room: string): NetHost {
     netMessage = m;
   });
   netMessage = `hosting "${room}"`;
+  applyPause();
   return host;
 }
 
@@ -439,6 +481,7 @@ function joinSession(url: string, room: string, name = 'kid'): NetClient {
   const client = new NetClient(sessionContext, new SocketTransport(relayUrl(url, room)), name);
   net = client;
   netMessage = `joining "${room}"`;
+  applyPause();
   return client;
 }
 
@@ -454,10 +497,19 @@ function startHostingHeadless(): NetHost {
   const host = new NetHost(sessionContext);
   net = host;
   netMessage = 'hosting';
+  applyPause();
   return host;
 }
 
 function leaveSession(): void {
+  // A round belonging to a host you are no longer connected to would otherwise
+  // keep its last frame forever: a frozen timer, a score nobody is playing for,
+  // and objectives pinned to a game that is still going on without you.
+  if (remoteMode !== null) {
+    remoteMode = null;
+    mode = null;
+    build.setLumber();
+  }
   net?.close();
   net = null;
   relayLink?.close();
@@ -467,6 +519,8 @@ function leaveSession(): void {
   // everyone who was in it standing on the lawn forever.
   actors.identifyLocal(LOCAL_ACTOR_ID);
   actors.refresh(mode?.bots ?? []);
+  // Alone again, so a menu means what it used to mean.
+  applyPause();
 }
 
 /** A line about the connection for the menu, or null when playing alone. */
@@ -485,19 +539,21 @@ let roundSnapshot: ReturnType<typeof build.serialize> | null = null;
 let lastModeId: ModeId = 'fortDefense';
 
 /**
- * Why a mode cannot start, or null.
+ * Why a mode cannot be *started* here, or null.
  *
- * Modes run on the authority only. A guest that started one would spawn its own
- * bots into its own roster, run its own timers and score, hand itself a lumber
- * budget the host has never heard of, and teleport itself to a spawn the host
- * immediately corrects it away from — a world silently forked from everybody
- * else's, reachable from the title screen in two clicks and failing without a
- * word. The multiplayer work documented this as a limitation; documenting a
- * limitation does not stop anyone walking into it.
+ * A guest plays every mode; it just does not start one. The rules run on the
+ * authority and nowhere else — a guest that ran its own would spawn its own bots
+ * into its own roster, roll its own RNG for its own timings, keep its own score
+ * and hand itself a budget the host has never heard of. Two games with the same
+ * name, diverging from the opening tick.
+ *
+ * So this is not a lock on the door any more, it is an answer to "who deals".
+ * The host picks; everybody joins whatever was picked, within a couple of
+ * hundred milliseconds, without touching this menu at all.
  */
 function modesBlocked(): string | null {
   if (!isGuest()) return null;
-  return 'The person hosting starts the game. You can build with them meanwhile.';
+  return 'Whoever is hosting picks the game — you will join it the moment they do.';
 }
 
 function startRound(id: ModeId = lastModeId): void {
@@ -517,6 +573,11 @@ function startRound(id: ModeId = lastModeId): void {
 function stopRound(): void {
   mode?.end(modeContext);
   mode = null;
+  // A guest's round is a view of somebody else's, so dropping the view is all
+  // there is to stop. Without this the shell has no mode and the session still
+  // has a `RemoteMode`, and the next snapshot updates an object nothing is
+  // reading — the HUD goes blank while the round carries on around you.
+  remoteMode = null;
   // Free build has no budget; leaving a round has to hand the sandbox back.
   build.setLumber();
   projectiles.clear();
@@ -528,6 +589,11 @@ function stopRound(): void {
 }
 
 function restartRound(): void {
+  // A guest cannot restart somebody else's round, and the failure if it tried
+  // would be quiet and nasty: `stopRound` then puts the yard back to *this*
+  // machine's snapshot of it, so the guest would be standing in a world the host
+  // has never seen and every placement either side made would disagree.
+  if (modesBlocked() !== null) return;
   stopRound();
   // Put the yard back the way it was, so a retry starts from the same problem
   // rather than from whatever the last attempt left standing.
@@ -579,6 +645,11 @@ const menu = new Menu(app, settings, {
   onResume: () => enterPlay(),
   onRestart: () => restartRound(),
   onQuitToTitle: () => {
+    // Leaving somebody else's round means leaving their yard. Quitting the round
+    // alone would put a guest on the title screen and then hand them straight
+    // back into it on the next snapshot, because the round is not theirs to end
+    // — which reads as a broken button rather than as a rule.
+    if (isGuest()) leaveSession();
     stopRound();
     enterMenu('title');
   },
@@ -623,11 +694,29 @@ function enterPlay(): void {
 
 function enterMenu(screen: 'title' | 'pause' | 'result', result?: Parameters<Menu['show']>[1]): void {
   menu.show(screen, result);
-  loop.setPaused(true);
+  applyPause();
   // The HUD is about the world, and the world is not running.
   hud.root.style.display = screen === 'pause' ? '' : 'none';
   input.setEnabled(false);
   input.exitPointerLock();
+}
+
+/**
+ * Stop the world, but only if it is yours to stop.
+ *
+ * You cannot pause a game other people are playing, and trying to does more than
+ * fail politely. The loop is where the session drains the wire, so a paused guest
+ * stops hearing about the round entirely — while the host, which has no idea a
+ * menu is open, goes on running that guest's body from the last command it
+ * received. Their character keeps walking on everybody else's screen, and the
+ * moment they resume they are dragged back across however far it got.
+ *
+ * So in a session the world keeps turning and the menu only takes the cursor and
+ * the controls. Standing still with your hands off the keyboard is what being
+ * away actually looks like, and it is what everybody else sees.
+ */
+function applyPause(): void {
+  loop.setPaused(menu.isOpen && net === null);
 }
 
 // Losing pointer lock — Escape, or alt-tab — is the player leaving the game.
@@ -1390,10 +1479,53 @@ window.__maker = {
     fakeGuest?.send(message as Parameters<Transport['send']>[0]);
   },
   guestDrain: (): unknown[] => fakeGuest?.drain() ?? [],
+  /**
+   * The mirror image: this page becomes the guest, and the caller plays host.
+   *
+   * Needed because the two halves of a session make very different claims, and
+   * only one of them has ever been checked in a browser. Hosting proves that
+   * somebody who joined is drawn. Being a guest is the claim that a round
+   * somebody else is running arrives as *pixels on this screen* — a phase on the
+   * banner, a clock counting down, a pin on the compass — and no amount of
+   * unit-testing the session reaches those.
+   */
+  joinFakeHost: (): void => {
+    leaveSession();
+    const pipe = loopbackPair();
+    fakeHost = pipe.host;
+    const client = new NetClient(sessionContext, pipe.client, 'scenario');
+    net = client;
+    netMessage = 'joined';
+    applyPause();
+  },
+  hostSend: (message: unknown): void => {
+    fakeHost?.send(message as Parameters<Transport['send']>[0]);
+  },
+  hostDrain: (): unknown[] => fakeHost?.drain() ?? [],
   netStatus: () => net?.status ?? null,
+  /**
+   * What this build speaks.
+   *
+   * Read by the scenarios rather than written into them. A scenario with the
+   * version typed in as a literal starts being refused the moment the protocol
+   * changes, and the failure — "expected a welcome, saw refused" — says nothing
+   * about the version being the reason.
+   */
+  protocolVersion: PROTOCOL_VERSION,
+  /** What is being played here, and whether this machine is the one deciding. */
+  roundInfo: () => ({
+    mode: mode?.id ?? 'none',
+    phase: mode?.hud().phase ?? null,
+    guest: isGuest(),
+    wood: mode?.hud().lumber ?? null,
+    markers: mode?.markers().length ?? 0,
+    finished: mode?.finished ?? false,
+  }),
   leaveSession: () => {
     fakeGuest?.close();
     fakeGuest = null;
+    fakeHost?.close();
+    fakeHost = null;
     leaveSession();
   },
   bindingFor: (code: string) => input.getBindings()[code] ?? null,

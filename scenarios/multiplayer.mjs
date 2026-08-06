@@ -78,7 +78,12 @@ export default async function (page) {
   });
 
   // ── The handshake ──────────────────────────────────────────────────────────
-  await send(page, { t: 'hello', version: 1, name: 'the other kid' });
+  // The version is read out of the page rather than typed in here. Written as a
+  // literal it silently goes stale the next time the protocol changes, and the
+  // failure — "expected a welcome, saw refused" — points at the handshake rather
+  // than at the number.
+  const version = await page.evaluate(() => window.__maker.protocolVersion);
+  await send(page, { t: 'hello', version, name: 'the other kid' });
   const { hit: welcome } = await await_(page, 'welcome');
 
   assert(typeof welcome.id === 'number' && welcome.id > 0,

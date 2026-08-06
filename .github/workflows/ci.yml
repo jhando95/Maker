@@ -86,6 +86,12 @@ jobs:
       - name: Multiplayer scenario
         run: node tools/shoot.mjs --scenario scenarios/multiplayer.mjs --auto-quality --out /tmp/ci-multiplayer.png
 
+      # The other half of a session, and a different claim: that a round nobody
+      # on this machine is running arrives as pixels. The page joins and the
+      # scenario plays host, which is the mirror of the one above.
+      - name: Guest-in-a-round scenario
+        run: node tools/shoot.mjs --scenario scenarios/party.mjs --auto-quality --out /tmp/ci-party.png
+
       # The character rig is almost entirely a claim about pixels, and two of the
       # three things it is for went wrong in ways no unit test would have caught:
       # eyes placed inside the skull, and hair that grew down over the face. The
@@ -131,6 +137,7 @@ jobs:
             /tmp/ci-lumber.png
             /tmp/ci-kids.png
             /tmp/ci-lawn.png
+            /tmp/ci-party.png
             /tmp/ci-multiplayer.png
           if-no-files-found: ignore
 

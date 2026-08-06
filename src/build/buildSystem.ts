@@ -594,6 +594,21 @@ export class BuildSystem {
     return true;
   }
 
+  /**
+   * Apply somebody else's placement, if the space is free and the pile can pay.
+   *
+   * The authority's version of `tryPlace`, for a request that arrived over the
+   * wire. It has to charge, and charging is easy to leave out: a guest's request
+   * went straight to `applyPlaceIfClear` at first, which reads as correct
+   * because the placement really does get validated — but nobody pays for it,
+   * and a pile two people are drawing from that only one of them spends is not a
+   * shared budget, it is the host's budget with a hole in it.
+   */
+  buyPlacement(record: PlacementRecord): boolean {
+    if (!this.canPlaceAt(record)) return false;
+    return this.buy(record);
+  }
+
   /** Place what the preview currently shows, if it is legal and affordable. */
   tryPlace(): boolean {
     const record = this.place();

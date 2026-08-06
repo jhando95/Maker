@@ -38,7 +38,7 @@ import type { PlacementRecord } from '../build/buildSystem.ts';
 import type { Team } from '../game/actor.ts';
 
 /** Bumped whenever a message shape changes. Mismatched peers are turned away. */
-export const PROTOCOL_VERSION = 1;
+export const PROTOCOL_VERSION = 2;
 
 /**
  * One person in a snapshot, as a flat tuple.
@@ -56,6 +56,16 @@ export type PackedActor = [
   yaw: number,
   /** Bit 0: on the ground. Bit 1: alive. Bit 2: stunned. */
   flags: number,
+  /**
+   * How soaked they are, 0..1.
+   *
+   * On the wire because it is on the shirt. A kid's colour washes out as they
+   * get wet, and that is the whole reason the meter is worth having — it is how
+   * you choose who to throw at. Left out, every guest sees a lawn full of people
+   * at full colour and the one decision the mode is built around becomes a
+   * guess.
+   */
+  wet: number,
 ];
 
 export const ACTOR_FLAG = {
@@ -70,6 +80,64 @@ export function teamToIndex(team: Team): number {
 
 export function indexToTeam(index: number): Team {
   return index === 0 ? 'left' : 'right';
+}
+
+/**
+ * An objective, as a flat tuple. Kind is 0 stash, 1 bucket, 2 flag.
+ *
+ * Sent rather than derived, even though a guest holds the same map constants and
+ * could work out where the flag bases are. Half the markers move — a carried
+ * flag, the bucket currently being channelled — and a guest that computed the
+ * static half and was told the moving half would have two sources of truth for
+ * one list, which is how the compass ends up pointing at a flag that is no
+ * longer there.
+ */
+export type PackedMarker = [
+  kind: number,
+  x: number, y: number, z: number,
+  color: number,
+  /** Bit 0: active. Bit 1: faded. */
+  flags: number,
+];
+
+export const MARKER_FLAG = {
+  active: 1 << 0,
+  faded: 1 << 1,
+} as const;
+
+export const MARKER_KINDS = ['stash', 'bucket', 'flag'] as const;
+
+/**
+ * The round, as everybody watching it sees it.
+ *
+ * Everything here is true of the round rather than of one player, which is the
+ * line that decides what belongs in this message. Phase, timer, score and the
+ * objectives are the same on every screen; how wet *you* are and how much water
+ * is in *your* tank are not, and travel in the actor snapshot instead.
+ *
+ * The wood is the exception that proves the rule, and it is deliberate: one pile
+ * in the corner of the yard that everybody draws from. A per-player allowance
+ * would mean two people building the same fort each hit their own limit at a
+ * different moment, which is a strange thing to explain and a stranger thing to
+ * play. A shared pile is also just what a pile of wood in a garden is.
+ */
+export interface PackedRound {
+  /** Mode id, or null when nobody is playing anything. */
+  id: string | null;
+  name: string;
+  phase: string;
+  timer: number | null;
+  msg: string | null;
+  pri: [label: string, value: string] | null;
+  sec: [label: string, value: string] | null;
+  score: [left: number, right: number] | null;
+  /** Whether placing parts is allowed right now. */
+  build: boolean;
+  /** The shared pile, or null when the mode does not meter wood. */
+  wood: number | null;
+  markers: PackedMarker[];
+  /** Present once the round is decided, so a guest gets the result screen too. */
+  over: { won: boolean; headline: string; lines: Array<[string, string]> } | null;
 }
 
 /** Everything a client can say. */
@@ -109,7 +177,20 @@ export type HostMessage =
    * onto the authoritative state, so its own character does not rubber-band by
    * the round trip on every single snapshot.
    */
-  | { t: 'snap'; tick: number; ack: number; actors: PackedActor[] }
+  | {
+    t: 'snap'; tick: number; ack: number; actors: PackedActor[];
+    /**
+     * What is being played, or null for free build.
+     *
+     * Carried on the snapshot rather than sent on change, which is the less
+     * obvious choice and the right one: half of it — a carried flag's position,
+     * a timer, a channel's progress — changes every tick anyway, so an
+     * on-change message would fire at snapshot rate regardless and add a second
+     * ordering to reason about. Riding along means the objectives a guest draws
+     * are always from the same instant as the people they are drawn among.
+     */
+    round: PackedRound | null;
+  }
   /** Somebody built something. Includes the host's own placements. */
   | { t: 'built'; id: number; r: PlacementRecord }
   | { t: 'unbuilt'; p: number }

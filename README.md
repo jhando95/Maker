@@ -120,7 +120,30 @@ space from opposite sides of a wall and ending up with two different worlds. Par
 ids are translated per machine, because two stores allocate them independently
 and "remove part 7" otherwise means two different planks.
 
-Not yet: repeat-place and undo are host-only, and modes run on the host alone.
+**Every mode is played together.** The host picks what to play and everybody
+joins it within a snapshot — the same phase, the same clock, the same score, the
+same objectives on the compass, the same result screen at the end. A guest never
+runs the rules. It wears a `RemoteMode`, which is a `GameMode` that computes
+nothing and answers every question from the last thing the host said, so the HUD
+and the renderer go through code that has no idea a network is involved. That
+only works because modes have never rendered: they publish state and the
+presentation layer reads it, which was written down as the thing that would one
+day let a server run a mode headlessly.
+
+The wood is one pile in the corner of the yard that everybody draws from. A
+per-player allowance would mean two people building the same fort hit their own
+limits at different moments, which is a strange thing to explain and a stranger
+thing to play.
+
+**You cannot pause a game other people are playing.** Opening a menu in a session
+takes the cursor and the controls and leaves the world running. Freezing the loop
+would stop a guest hearing about the round at all, while the host — which has no
+idea a menu is open — went on walking their character from the last command it
+received.
+
+Not yet: repeat-place and undo are host-only, and only the host and its bots
+fight. Guests move, build and score with everybody else; throwing, soaking and
+carrying a flag are the next piece of work.
 
 ## Wood costs something
 
@@ -392,7 +415,7 @@ scenarios/     scripted checks driven through the harness
 ```
 
 ```bash
-npm test         # 609 unit tests
+npm test         # 628 unit tests
 npm run typecheck
 npm run bench    # what a tick costs, as a share of the 16.67ms budget
 node tools/shoot.mjs --out shots/x.png   # boot headless, screenshot, fail on any console error
@@ -408,7 +431,8 @@ the mode, the shell and the HUD are wired together, whether a second person in
 the world reaches the renderer's instance buffers wearing the right shirt,
 whether the HUD can actually point at an objective that is behind you,
 whether running out of wood is ever visible to the player rather than just true,
-whether somebody who joined over the network is ever actually drawn, whether the
+whether somebody who joined over the network is ever actually drawn, whether a
+round somebody else is running reaches your banner and your compass, whether the
 ground's vertex colours survive the toon shader. Each only happens in a browser,
 and each has broken at least once with the unit suite green.
 
