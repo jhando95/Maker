@@ -5,7 +5,7 @@ import { DT, JUMP_HEIGHT, STEP_HEIGHT, WALK_SPEED, SPRINT_SPEED } from '../physi
 import { MODULE, STAIR_RUN } from '../build/partKit.ts';
 import { BuildSystem } from '../build/buildSystem.ts';
 import { PartRenderer } from '../render/partRenderer.ts';
-import { neighborhoodSlabs, installFixtures, HOUSE } from '../world/neighborhood.ts';
+import { neighborhoodSlabs, installFixtures, HOUSE, TREEHOUSE } from '../world/neighborhood.ts';
 import { Rng } from '../core/rng.ts';
 
 const I = [0, 0, 0, 1] as const;
@@ -398,17 +398,15 @@ describe('a ladder you nailed together yourself', () => {
     expect(highest).toBeGreaterThan(2);
   });
 
-  it('so is a bare wall you built, which is the actual rule', () => {
-    // Two wrong controls before this one, and the second is the interesting
-    // failure: I expected a rungless wall to be unclimbable, and the player went
-    // up three metres of it.
+  it('but a flush wall is not, because there is nothing to hold', () => {
+    // The rule that makes the rungs mean something.
     //
-    // That is not a bug — it is the rule, stated plainly for the first time
-    // here. The climb probe accepts *any* near-vertical player-placed surface,
-    // so **rungs are decoration**: what makes a ladder is that you built it, not
-    // that it looks like one. Worth pinning precisely, because it means a wall
-    // is never a barrier to the person who built it, and anyone tightening the
-    // rule later will land on this test rather than on a confused player.
+    // This test first ran the other way round: any near-vertical thing you built
+    // was climbable, so a rungless wall took the player up three metres and
+    // rungs were decoration. That reads as generous and is quietly corrosive —
+    // a wall you build never stops *you*, so building tall costs nothing, and
+    // the moment a second person is in the yard a fort stops working against the
+    // only opponent that matters.
     const world = new CollisionWorld();
     const build = new BuildSystem(world, new PartRenderer());
     for (let i = -3; i <= 3; i++) {
@@ -435,10 +433,65 @@ describe('a ladder you nailed together yourself', () => {
       });
       highest = Math.max(highest, player.y);
     }
+    expect(highest).toBeLessThan(0.5 + JUMP_HEIGHT + STEP_HEIGHT);
+  });
+
+  it('counts boards nailed flat to a wall, the cheapest ladder there is', () => {
+    // The threshold has to sit under one plank thickness or the most obvious
+    // improvised ladder — slap some boards on the face of a wall — would not
+    // work, and a player would conclude that ladders are broken rather than
+    // that theirs was subtly wrong.
+    const world = new CollisionWorld();
+    const build = new BuildSystem(world, new PartRenderer());
+    for (let i = -3; i <= 3; i++) {
+      for (let j = -3; j <= 3; j++) {
+        build.applyPlace({
+          kind: 0, colorway: 0, x: i * 0.9, y: -0.1, z: j * 0.9,
+          qx: 0, qy: 0, qz: 0, qw: 1,
+        });
+      }
+    }
+    for (let course = 0; course < 12; course++) {
+      build.applyPlace({
+        kind: 0, colorway: 1, x: 0, y: 0.125 + course * 0.25, z: -1,
+        qx: 0, qy: 0, qz: Math.sin(Math.PI / 4), qw: Math.cos(Math.PI / 4),
+      });
+    }
+    // Boards flat against the face, protruding by their own thickness.
+    for (let r = 0; r < 10; r++) {
+      build.applyPlace({
+        kind: 0, colorway: 2, x: 0, y: 0.35 + r * MODULE, z: -0.95,
+        qx: 0, qy: 0, qz: 0, qw: 1,
+      });
+    }
+    const player = new CharacterController(world, 0, 0.5, -0.2);
+    expect(climb(player)).toBeGreaterThan(2);
+  });
+
+  it('still lets you up the treehouse ladder the map ships', () => {
+    // The one ladder in the game a player did not build. Tightening the climb
+    // rule is exactly the kind of change that breaks it silently, so it gets a
+    // test of its own rather than being covered by the built-ladder cases.
+    //
+    // Only asserts that the ladder engages and gains real height. It stalls
+    // around 2.65m rather than reaching the 4.5m deck, which is a separate
+    // pre-existing bug — measured identical with and without the handhold rule,
+    // so this is not the place to pin a number that documents it.
+    const world = new CollisionWorld();
+    installFixtures(world, neighborhoodSlabs(new Rng('map')));
+    const player = new CharacterController(world, TREEHOUSE.x, 0.5, TREEHOUSE.z - 1.25);
+    let highest = player.y;
+    for (let i = 0; i < Math.round(10 / DT); i++) {
+      player.step(DT, {
+        forward: 1, right: 0, jump: false, sprint: false, crouch: false, climb: 1,
+      });
+      highest = Math.max(highest, player.y);
+    }
+    expect(player.climbing).toBe(true);
     expect(highest).toBeGreaterThan(2);
   });
 
-  it('but the neighbourhood is not climbable, however vertical it is', () => {
+  it('and the neighbourhood is not climbable, however vertical it is', () => {
     // The other half of the rule, and the reason it is worth having: the house
     // is a wall you go over rather than up. Without the fixture exception, flat
     // stucco would be a ladder and the map's whole shape would be optional.

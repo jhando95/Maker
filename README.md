@@ -269,14 +269,29 @@ There is no ladder object; a ladder you nailed together yourself works exactly
 like one that shipped with the game — which is checked now, by building one out
 of parts and climbing it.
 
-Worth stating plainly, because writing that test turned it up: **the rungs are
-decoration.** The probe accepts any near-vertical player-placed face, so a flush
-wall is as climbable as a ladder. What makes something climbable is that you
-built it, not that it looks like a ladder. That is generous and consistent, and
-it does mean a wall is never a barrier to the person who built it — the bots do
-not climb, so walls still hold them, but you can always get over your own. If
-that is ever tightened to need real rungs, the tests say exactly what would
-change.
+The rungs are load-bearing, not decoration. A surface is climbable when its
+**depth varies** as you go up — rungs stick out and give a near/far/near pattern
+as the probe alternately catches a rung and the board behind it, while a flush
+wall answers the same distance every time. That is what physically separates a
+ladder from a wall, so that is what gets measured, rather than anything about
+what a part is called.
+
+The threshold sits under one plank thickness, so boards nailed flat onto a wall
+face count — the cheapest improvised ladder there is, and the one a player is
+most likely to try first. Sampling is offset from the build grid on purpose: at
+the kit's own 0.25m module, samples 0.25m apart would land on every rung or
+between every rung and read a perfect ladder as a flat wall.
+
+This started the other way round — any near-vertical thing you built was
+climbable — and it is worth saying why that changed. It reads as generous and is
+quietly corrosive. A wall you build never stops *you*, so building tall costs
+nothing and the choice carries no trade. Worse, the moment a second person is in
+the yard, a fort stops working against the only opponent that matters, which is
+a problem you would hit on day one of multiplayer and pay much more to fix then.
+
+Known bug, found while checking this and older than it: the treehouse ladder
+stalls around 2.65m instead of reaching its 4.5m deck. Measured identical with
+and without the handhold rule, so it is not fallout from the change.
 
 ## What is here
 
@@ -299,7 +314,7 @@ scenarios/     scripted checks driven through the harness
 ```
 
 ```bash
-npm test         # 523 unit tests
+npm test         # 525 unit tests
 npm run typecheck
 npm run bench    # what a tick costs, as a share of the 16.67ms budget
 node tools/shoot.mjs --out shots/x.png   # boot headless, screenshot, fail on any console error
