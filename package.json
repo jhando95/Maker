@@ -11,7 +11,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "bench": "vite-node tools/bench.ts",
-    "server": "node server/relay.mjs"
+    "server": "vite-node server/serve.ts"
   },
   "repository": {
     "type": "git",
