@@ -145,6 +145,15 @@ jobs:
       - name: Mantle scenario
         run: node tools/shoot.mjs --scenario scenarios/mantle.mjs --auto-quality --out /tmp/ci-mantle.png
 
+      # The garden's items, which are two claims about the map rather than
+      # about the effect: that the prop is where the effect thinks it is, and
+      # that a launch reaches the thing it was sized against. The unit suite
+      # can check neither, and both have been wrong once — a mat left under
+      # the treehouse deck, and a speed picked against a gravity the game does
+      # not use.
+      - name: Items scenario
+        run: node tools/shoot.mjs --scenario scenarios/items.mjs --auto-quality --out /tmp/ci-items.png
+
       # The whole of the lobby, end to end against a real server: two browser
       # contexts, two friend codes, a party, a queue, and a round running in the
       # room it was matched into. It is also the only thing that exercises the
@@ -209,6 +218,7 @@ jobs:
             /tmp/ci-multiplayer.png
             /tmp/ci-lobby.png
             /tmp/ci-mantle.png
+            /tmp/ci-items.png
             /tmp/ci-lobby-friends.png
           if-no-files-found: ignore
 

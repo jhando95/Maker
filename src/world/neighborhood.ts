@@ -21,6 +21,7 @@
 
 import * as THREE from 'three';
 import { Rng } from '../core/rng.ts';
+import { ITEMS } from './items.ts';
 import { culDeSacSlabs } from './culDeSac.ts';
 import { surroundsSlabs } from './surrounds.ts';
 import type { CollisionWorld } from '../physics/collisionWorld.ts';
@@ -231,6 +232,7 @@ export function neighborhoodSlabs(rng: Rng): Slab[] {
   // the other's reasons.
   for (const s of culDeSacSlabs()) put(s);
   clutter(rng);
+  playthings();
   waterworks();
 
   // Its own Rng, unconnected to the yard's, rather than a fork of it.
@@ -742,6 +744,53 @@ function street(): void {
  * diagram of a map rather than a place, and there is nowhere to take cover on
  * the way across.
  */
+/**
+ * The trampolines and the slides, as things you can see and stand on.
+ *
+ * Built from the item list rather than typed out again, so a pad that moves
+ * moves its picture with it. The one thing that must line up is the top
+ * surface: `items.ts` states a `y` and the effect keys on it, so the geometry
+ * has to put a real surface there or the player falls through a working
+ * trampoline. `items.test.ts` holds the two together.
+ */
+function playthings(): void {
+  for (const item of ITEMS) {
+    if (item.kind === 'trampoline') {
+      // A sprung mat on a frame: the mat is the surface the effect keys on, the
+      // legs are why it is off the ground.
+      timber(item.halfW * 2, 0.1, item.halfD * 2, item.x, item.y - 0.05, item.z,
+        0x2b4c8c, { outline: 0x16294d, chamfer: 0.04 });
+      timber(item.halfW * 2 + 0.18, 0.12, item.halfD * 2 + 0.18,
+        item.x, item.y - 0.16, item.z, 0x3a3f45, { chamfer: 0.05 });
+      for (const sx of [-1, 1]) {
+        for (const sz of [-1, 1]) {
+          timber(0.12, item.y - 0.2, 0.12,
+            item.x + sx * (item.halfW - 0.05), (item.y - 0.2) / 2, item.z + sz * (item.halfD - 0.05),
+            0x3a3f45);
+        }
+      }
+      continue;
+    }
+
+    // A slide is a wet plastic sheet: almost flat, and bright enough that
+    // somebody sprinting past reads it as a lane rather than as a puddle.
+    //
+    // Ghosted, and that is load-bearing rather than tidy. A sheet six
+    // centimetres thick is walked straight over by any character — the step-up
+    // clears nine times that — but the flow field the kids route on marks a
+    // cell occupied when anything solid is in it, whatever its height. Solid,
+    // these two lanes quietly diverted every bot on their side of the house
+    // and three of Water War's balance measurements moved. The effect keys on
+    // position, not on standing on a slab, so nothing is lost by making it
+    // scenery.
+    timber(item.halfW * 2, 0.06, item.halfD * 2, item.x, item.y - 0.03, item.z,
+      0x37b9d8, { ry: item.ry, outline: 0x1d7791, chamfer: 0.03, ghost: true });
+    // A darker stripe down the middle, ghosted so it cannot catch a toe.
+    timber(item.halfW * 0.5, 0.02, item.halfD * 2 - 0.3, item.x, item.y + 0.01, item.z,
+      0x1d7791, { ry: item.ry, ghost: true });
+  }
+}
+
 function clutter(rng: Rng): void {
   const crate = (x: number, z: number, y = 0.45, tint: number = LOT.plank) =>
     timber(0.9, 0.9, 0.9, x, y, z, tint, { ry: rng.range(0, Math.PI) });

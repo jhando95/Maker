@@ -34,6 +34,7 @@ import { NetHost, NetClient, type SessionContext } from './net/session.ts';
 import { SocketTransport, loopbackPair, type Transport } from './net/transport.ts';
 import { RelayHostLink, relayUrl } from './net/relayLink.ts';
 import { RemoteMode } from './net/remoteMode.ts';
+import { applyItems } from './game/itemField.ts';
 import { IdentityStore } from './app/identity.ts';
 import { LobbyClient, lobbyUrl, socketLink, type Matched } from './net/lobby.ts';
 import { QUEUE_MODES } from './net/lobbyProtocol.ts';
@@ -1196,6 +1197,15 @@ function simulate(dt: number): void {
   // command because it is a rule the mode applies to your intent, not part of
   // the intent: a soaked player is pushing the stick just as hard.
   player.step(dt, commandToIntent(localCommand, mode?.playerSpeedScale ?? 1));
+  // After the step, so the item sees where the body actually ended up. Run on
+  // every machine rather than only the host: the effect is a pure function of
+  // position, so a guest predicting its own bounce reaches the same answer on
+  // the same tick and never gets corrected for it.
+  // The returned item is what a bounce sound and a squash animation would hang
+  // off. Neither exists yet, so it is dropped rather than wired to a cue that
+  // means something else — a trampoline that clicks like a part snapping would
+  // teach the wrong thing.
+  applyItems(player);
   // After the step, so a guest records what it predicted for this tick and the
   // host publishes where everybody actually ended up.
   if (net instanceof NetHost) net.afterTick(dt);
@@ -1786,21 +1796,35 @@ window.__maker = {
   /**
    * Drive the local player from a fixed intent for a while, and report.
    *
-   * For the mantle scenario, which needs to hold a direction and a jump the
-   * way a player does. Goes through the controller rather than teleporting, so
-   * what is measured is the movement code and not a shortcut past it.
+   * For the mantle and item scenarios, which need to hold a direction and a
+   * jump the way a player does. Goes through the controller rather than
+   * teleporting, so what is measured is the movement code and not a shortcut
+   * past it — and it runs the same step-then-items pair `simulate` does, in
+   * the same order, because an item that only fires from the real loop is an
+   * item this cannot see.
+   *
+   * `peakY` is what a launch is measured by. The end of the drive is wherever
+   * gravity put you, which for a bounce is back on the ground, so a test that
+   * only read the final height would be asking about the landing.
    */
   driveIntent: (seconds: number, partial: Partial<MoveIntent>) => {
     let mantled = false;
+    let bounced = false;
+    let peakY = player.y;
     const ticks = Math.round(seconds / DT);
     for (let i = 0; i < ticks; i++) {
       player.step(DT, {
         forward: 0, right: 0, jump: false, sprint: false, crouch: false, climb: 0,
         ...partial,
       });
+      if (applyItems(player)?.kind === 'trampoline') bounced = true;
       if (player.mantling) mantled = true;
+      peakY = Math.max(peakY, player.y);
     }
-    return { x: player.x, y: player.y, z: player.z, mantled, onGround: player.onGround };
+    return {
+      x: player.x, y: player.y, z: player.z,
+      mantled, bounced, peakY, onGround: player.onGround,
+    };
   },
   /** Connect to a lobby, for the lobby scenario. */
   openLobby: (url: string) => { connectLobby(url); },

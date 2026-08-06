@@ -54,6 +54,7 @@ import {
 } from './protocol.ts';
 import { IDLE_INPUT, type ActorInput, type GameMode } from '../game/gameMode.ts';
 import type { ProjectileSystem } from '../game/projectiles.ts';
+import { applyItems } from '../game/itemField.ts';
 import { packRound } from './roundPacket.ts';
 import type { Transport } from './transport.ts';
 
@@ -420,6 +421,9 @@ export class NetHost {
       // cosmetic thing to happen to anybody who was not the authority.
       const scale = mode?.speedScaleFor?.(peer.id) ?? 1;
       peer.actor.controller.step(dt, commandToIntent(command, scale));
+      // The same item pass the guest just ran on its own prediction. Both sides
+      // compute it from position alone, so they agree without a message.
+      applyItems(peer.actor.controller);
       this.headings.set(peer.id, command.yaw);
       peer.ack = command.tick;
       peer.wasFiring = pressed(command, 'fire');
