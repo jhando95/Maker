@@ -457,10 +457,14 @@ src/
   game/        game modes, actors and teams, per-person combat state, bots,
                flow-field navigation, projectiles
   audio/       synthesized sound
-  app/         settings, persistence, crash handling
+  app/         settings, persistence, identity, crash handling
   ui/          design tokens, HUD, menus, radial part picker
 server/
-  relay.mjs    development WebSocket relay between two browsers
+  serve.ts     one process: the relay, and the lobby on /lobby
+  websocket.ts the parts of RFC 6455 both of them stand on
+  relay.ts     carries bytes between browsers; never parses a game message
+  lobbyCore.ts friends, parties and the matchmaker, with no socket in sight
+  lobby.ts     the socket wiring around it
 tools/
   shoot.mjs    headless screenshot + smoke-test harness
   imgdiff.mjs  counts changed pixels between two PNGs
