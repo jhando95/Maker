@@ -551,6 +551,12 @@ export class BuildSystem {
     return this.ghostEdgeMaterial.color.getHex();
   }
 
+  /** Where the most recent placement landed, or null. */
+  get lastPlacedAt(): { x: number; y: number; z: number } | null {
+    const p = this.lastPlacement;
+    return p === null ? null : { x: p.x, y: p.y, z: p.z };
+  }
+
   /** What the held part costs. */
   get selectedCost(): number {
     return costOf(this.selectedKind);

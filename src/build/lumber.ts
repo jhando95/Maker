@@ -8,21 +8,25 @@
  *
  * The measurement that made this concrete, taken on the real map with the
  * player standing still for the whole afternoon so the only variable is what
- * was built:
+ * was built. Walls are planks stood on edge, ringing each tap at two metres:
  *
- *   nothing built                                 keeps   0% of the water
- *   a tight fence round all three taps (80)       keeps  61%
- *   the same fence one plank short of closing (60) keeps   8%
- *   one tap walled properly, head height (78)     keeps  20%
- *   a loose fence round all three (510)           keeps  22%
+ *   nothing built                            0 planks   keeps   0% of the water
+ *   rings 1.0m high — a kid vaults them     60 planks   keeps   0%
+ *   rings 1.75m high                       120 planks   keeps  51%
+ *   the same rings taken to 4m             313 planks   keeps  51%
+ *   rings at 4.2m out instead of 2m        682 planks   keeps  20%
  *
- * Two things fall out of that. Building is worth doing — nothing to sixty-one
- * per cent is the difference between losing and winning. And more wood is not
- * better wood: the five-hundred-plank version does worse than the eighty-plank
- * one, because what stops a kid is a closed ring near the tap and not a big
- * wall somewhere near it. With free lumber neither of those is a decision. You
- * build the maximum everywhere, and the only thing separating two players is
- * how fast they can click during the build phase.
+ * Three things fall out of that. Building is worth doing — nothing to fifty-one
+ * per cent is the difference between losing and winning. Height stops mattering
+ * the moment a kid can no longer scramble up (MANTLE_MAX_HEIGHT is 1.6m), so
+ * the pile is sized to reach exactly that and no further. And more wood is not
+ * better wood: the six-hundred-plank version does worse than the
+ * hundred-and-twenty-plank one, because what stops a kid is a closed ring near
+ * the tap and not a bigger wall further from it.
+ *
+ * With free lumber none of that is a decision. You build the maximum
+ * everywhere, and the only thing separating two players is how fast they can
+ * click during the build phase.
  *
  * ## Why a stack rather than a resource to harvest
  *
@@ -144,13 +148,13 @@ export class Lumber {
 /**
  * Starting pile, and what arrives before each later build phase.
  *
- * Sized against the measurement above. A hundred and twenty is a little over
- * what it takes to fence all three taps thinly, and a little over half of what
- * it takes to wall two of them to head height — so the opening build phase is
- * spent choosing between covering everything badly and covering something
- * properly, which is the question the mode is made of. In general terms it is
- * thirty square metres of wall: near enough four walls of a small fort, which
- * is what makes it feel like a pile of wood rather than a currency.
+ * Sized against the measurement above: a hundred and twenty is what it takes to
+ * ring all three taps just past the height a kid can scramble, with nothing
+ * spare. Every plank spent elsewhere is a plank missing from one of those
+ * rings, and a ring that falls short is worth nothing at all — which is the
+ * decision the opening build phase is made of. In general terms it is thirty
+ * square metres of wall, near enough four walls of a small fort, which is what
+ * makes it feel like a pile of wood rather than a currency.
  *
  * The top-up is deliberately much smaller. A repair phase should be enough to
  * patch what broke, not enough to rebuild somewhere else — otherwise every

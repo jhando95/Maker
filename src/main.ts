@@ -1182,17 +1182,27 @@ window.__maker = {
     if (ok) worldChanged();
     return ok;
   },
-  /** Aim and take down, the other half of what the build controls do. */
-  removeAt: (yaw: number, pitch: number): boolean => {
-    camera.yaw = yaw;
-    camera.pitch = pitch;
+  /**
+   * Aim at a world point and take down what is there.
+   *
+   * By point rather than by the angle that placed it, because those are not the
+   * same ray: a placement snaps to a surface, so the part ends up next to where
+   * you were pointing rather than on it. Re-aiming at the old angle happened to
+   * hit it on one machine and missed on a slower one.
+   */
+  removeAtPoint: (x: number, y: number, z: number): boolean => {
     const state = player.sample(1);
-    const ray = camera.getAimRay(state.x, state.y + state.eyeHeight, state.z, MAX_REACH);
+    const ex = state.x, ey = state.y + state.eyeHeight, ez = state.z;
+    camera.yaw = Math.atan2(-(x - ex), -(z - ez));
+    camera.pitch = Math.atan2(y - ey, Math.hypot(x - ex, z - ez));
+    const ray = camera.getAimRay(ex, ey, ez, MAX_REACH);
     build.update(DT, ray.ox, ray.oy, ray.oz, ray.dx, ray.dy, ray.dz, false, false);
     const ok = build.removeAimed();
     if (ok) worldChanged();
     return ok;
   },
+  /** Where the last placement landed, so a scenario can aim back at it. */
+  lastPlacedAt: () => build.lastPlacedAt,
   save: (): PlacementRecord[] => build.serialize(),
   load: (records: PlacementRecord[]) => {
     build.deserialize(records);

@@ -52,6 +52,23 @@ function run2(mode: WaterWarMode, ctx: ModeContext, seconds: number): void {
 }
 
 /**
+ * A plank stood on edge, tangent to a circle at angle `a`.
+ *
+ * Yawed to follow the ring and then rolled ninety degrees about its own length,
+ * so its 250mm width is the height of the course and its 50mm thickness is what
+ * you would walk into. Laid flat instead — which is what this measurement used
+ * to do — a "wall" is a stack of shelves with gaps between them, and any number
+ * measured against it is a number about something else.
+ */
+function upright(a: number): { qx: number; qy: number; qz: number; qw: number } {
+  const half = -a / 2;
+  const cy = Math.cos(half);
+  const sy = Math.sin(half);
+  const r = Math.SQRT1_2;
+  return { qx: cy * r, qy: sy * r, qz: -sy * r, qw: cy * r };
+}
+
+/**
  * Fence the taps out of a fixed pile of wood, then leave the player standing
  * still for a whole afternoon and report how much water survived.
  *
@@ -66,7 +83,7 @@ function idleAfternoon(budget: number, radius = 2.0): number {
   const perCourse = Math.max(4, Math.ceil((2 * Math.PI * radius) / 0.9));
   let spent = 0;
   build:
-  for (let course = 0; course < 12; course++) {
+  for (let course = 0; course < 16; course++) {
     for (const tap of WATER_SOURCES) {
       for (let i = 0; i < perCourse; i++) {
         if (spent >= budget) break build;
@@ -76,7 +93,7 @@ function idleAfternoon(budget: number, radius = 2.0): number {
           x: tap.x + Math.sin(a) * radius,
           y: 0.125 + course * 0.25,
           z: tap.z + Math.cos(a) * radius,
-          qx: 0, qy: Math.sin(-a / 2), qz: 0, qw: Math.cos(-a / 2),
+          ...upright(a),
         });
         if (placed) spent++;
       }
@@ -244,6 +261,18 @@ describe('WaterWarMode', () => {
       const tight = idleAfternoon(STARTING_LUMBER, 2.0);
       const loose = idleAfternoon(STARTING_LUMBER * 4, 4.2);
       expect(tight).toBeGreaterThan(loose);
+    });
+
+    it('the opening pile is enough to close the ring, and more is not better', () => {
+      // Where 120 comes from. A wall a kid can scramble over is worth nothing —
+      // MANTLE_MAX_HEIGHT is 1.6m — and the pile is sized to clear that round
+      // all three taps and no further. Spending three times as much adds height
+      // nobody uses, which is what makes the number a decision rather than an
+      // allowance the player should simply max out.
+      const budgeted = idleAfternoon(STARTING_LUMBER);
+      const lavish = idleAfternoon(STARTING_LUMBER * 3);
+      expect(budgeted).toBeGreaterThan(0.3);
+      expect(lavish).toBeCloseTo(budgeted, 2);
     });
 
     it('a passive player loses partway in, not on the first raid', () => {

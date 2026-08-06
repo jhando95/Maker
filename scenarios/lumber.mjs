@@ -33,6 +33,35 @@ const frames = (page, count) =>
     count,
   );
 
+/**
+ * Wait until the player has stopped moving.
+ *
+ * A teleport drops you above the ground and the solver pushes you out of
+ * whatever you landed in, so for the first few frames the eye is still moving.
+ * Everything here aims a ray from that eye and then aims the same ray again to
+ * remove what it placed, which only works if the eye did not shift in between —
+ * and how far it shifts depends on how many frames elapsed, which is exactly
+ * the thing that differs between this machine and a CI runner.
+ */
+const settle = async (page) => {
+  await page.waitForFunction(
+    () => {
+      const at = () => {
+        const p = window.__maker.stats().player;
+        return `${p.onGround}:${p.x.toFixed(2)}:${p.y.toFixed(2)}:${p.z.toFixed(2)}`;
+      };
+      return new Promise((resolve) => {
+        const first = at();
+        requestAnimationFrame(() => requestAnimationFrame(() => {
+          const p = window.__maker.stats().player;
+          resolve(p.onGround && at() === first);
+        }));
+      });
+    },
+    null, { timeout: 15_000 },
+  ).catch(() => { throw new Error('lumber scenario: the player never stopped moving'); });
+};
+
 const banner = (page) =>
   page.evaluate(() => {
     // Through the panel's own visibility, not just the DOM: leaving a round
@@ -63,6 +92,7 @@ export default async function (page) {
     window.__maker.teleport(6, 0.6, 10);
     window.__maker.lookAt(Math.PI, -0.5);
   });
+  await settle(page);
   await frames(page, 3);
 
   const opening = await page.evaluate(() => window.__maker.lumber());
@@ -102,7 +132,10 @@ export default async function (page) {
   );
 
   const reclaimed = await page.evaluate(() => {
-    const ok = window.__maker.removeAt(Math.PI, -0.5);
+    // Aim at where the part actually landed rather than at the angle that put
+    // it there: placement snaps to a surface, so the two rays differ.
+    const at = window.__maker.lastPlacedAt();
+    const ok = at !== null && window.__maker.removeAtPoint(at.x, at.y, at.z);
     return { ok, after: window.__maker.lumber().available };
   });
   assert(reclaimed.ok, 'the part just placed should be removable');
@@ -132,13 +165,21 @@ export default async function (page) {
 
   // The ghost is the other half of that: red means this will not go in, and
   // running out is exactly that.
+  //
+  // Both readings are taken over the same legal placement, so the only thing
+  // that differs between them is the stack. Comparing a red ghost over a wall
+  // with a green one over open lawn would prove nothing.
   const tint = await page.evaluate(() => {
     const hex = (n) => `#${n.toString(16).padStart(6, '0')}`;
-    const before = hex(window.__maker.ghostTint());
+    const broke = hex(window.__maker.ghostTint());
     window.__maker.setLumber(500);
-    window.__maker.placeAt(Math.PI, -0.5) && window.__maker.removeAt(Math.PI, -0.5);
-    return { broke: before, rich: hex(window.__maker.ghostTint()) };
+    const placed = window.__maker.placeAt(Math.PI, -0.5);
+    const rich = hex(window.__maker.ghostTint());
+    const at = window.__maker.lastPlacedAt();
+    if (placed && at !== null) window.__maker.removeAtPoint(at.x, at.y, at.z);
+    return { broke, rich, placed };
   });
+  assert(tint.placed, 'the ghost comparison needs the same placement to be legal both times');
   assert(
     tint.broke !== tint.rich,
     `the ghost must change colour when you cannot afford the part; both were ${tint.broke}`,
@@ -151,6 +192,7 @@ export default async function (page) {
     window.__maker.teleport(6, 0.6, 10);
     window.__maker.lookAt(Math.PI, -0.5);
   });
+  await settle(page);
   await frames(page, 3);
 
   const sandbox = await page.evaluate(() => window.__maker.lumber());

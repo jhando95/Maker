@@ -91,19 +91,22 @@ choose *what* to build, never make you afraid to change your mind.
 It is not a difficulty knob. Building was free, and free building has exactly
 one best play — build the maximum everywhere — which quietly deletes the
 decision from the part of the game named after it. What the pile buys, measured
-on the real map with the player standing still all afternoon:
+on the real map with the player standing still all afternoon, walling each tap
+with a ring of planks stood on edge:
 
 | what was built | planks | water kept |
 |---|---|---|
 | nothing | 0 | 0% |
-| a tight fence round all three taps | 80 | 61% |
-| the same fence, one plank short of closing | 60 | 8% |
-| one tap walled properly, head height | 78 | 20% |
-| a loose fence round all three | 510 | 22% |
+| rings 1.0m high — a kid vaults them | 60 | 0% |
+| rings 1.75m high, two metres out | 120 | 51% |
+| the same rings taken to 4m | 313 | 51% |
+| rings built 4.2m out instead of 2m | 682 | 20% |
 
-Building is worth doing, and more wood is not better wood — the five-hundred
-plank version does worse than the eighty-plank one. Free lumber made neither of
-those a choice.
+Building is worth doing. Height stops mattering once a kid can no longer
+scramble up, so 120 buys exactly that and no more. And more wood is not better
+wood — the six-hundred-plank version does worse than the hundred-and-twenty
+plank one, because what stops a kid is a closed ring near the tap and not a
+bigger wall further from it. Free lumber made none of that a choice.
 
 Free Build has no budget. It is where you go to just make things.
 
@@ -342,7 +345,7 @@ scenarios/     scripted checks driven through the harness
 ```
 
 ```bash
-npm test         # 546 unit tests
+npm test         # 547 unit tests
 npm run typecheck
 npm run bench    # what a tick costs, as a share of the 16.67ms budget
 node tools/shoot.mjs --out shots/x.png   # boot headless, screenshot, fail on any console error
