@@ -83,7 +83,7 @@ holding a soaker and a player who tries them learns the wrong lesson.
 
 ## Playing with other people
 
-Two browsers, one lawn. Start the relay, host in one tab, join from another:
+Two browsers, one lawn. Start the server, then swap codes with somebody:
 
 ```bash
 npm run server                 # ws://localhost:8787
@@ -112,10 +112,9 @@ matches — being separated from the friend you queued with is worse than waitin
 longer, so the matchmaker overshoots the target rather than taking half a party
 to hit it exactly.
 
-The
-relay carries bytes between browsers and knows nothing about the game — it never
-parses a message, so the protocol can change without touching it. It is a
-development relay: no TLS, no auth, no rate limiting.
+The relay carries bytes between browsers and knows nothing about the game — it
+never parses a message, so the protocol can change without touching it. It is a
+development server: no TLS, no auth, and no rate limiting beyond a frame cap.
 
 **Host-authoritative.** One player's browser runs the simulation and everybody
 else follows it. That is a real trade — the host cannot be stopped from cheating,
