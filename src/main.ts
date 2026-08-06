@@ -42,6 +42,7 @@ import { PROTOCOL_VERSION, type PackedRound } from './net/protocol.ts';
 import { FortDefenseMode } from './game/fortDefense.ts';
 import { CaptureTheFlagMode } from './game/captureTheFlag.ts';
 import { WaterWarMode } from './game/waterWar.ts';
+import { TagMode, IT_SPAWN } from './game/tag.ts';
 import { LEFT_SPAWN, RIGHT_SPAWN } from './world/neighborhood.ts';
 import { IDLE_INPUT, sameForEveryone } from './game/gameMode.ts';
 import type { ActorInput, GameEvent, GameMode, ModeContext, ModeInput } from './game/gameMode.ts';
@@ -57,6 +58,18 @@ import { PerformanceGovernor } from './app/performanceGovernor.ts';
 const PIN_EDGE_MARGIN = 54;
 /** Objectives are pinned above the thing rather than at its feet. */
 const PIN_HEIGHT = 1.4;
+/**
+ * Nearer than this and an objective is not pinned at all.
+ *
+ * A pin is a direction and a distance, and both are noise once you are standing
+ * on the thing: the chevron spins as you turn and the label reads "0m", which
+ * is the compass telling you where you already are. It never came up while
+ * every objective was a stash or a tap, because you are rarely inside one.
+ *
+ * Tag pins people, including the chaser — and in a solo round the chaser is
+ * you, so without this the first thing the mode draws is a pin on your own hat.
+ */
+const PIN_MIN_DISTANCE = 2.5;
 
 
 /**
@@ -66,13 +79,18 @@ const PIN_HEIGHT = 1.4;
  * the menu, the restart path and the debug API all need to name a mode and none
  * of them should be able to name one that does not exist.
  */
-export type ModeId = 'fortDefense' | 'captureTheFlag' | 'waterWar';
+export type ModeId = 'fortDefense' | 'captureTheFlag' | 'waterWar' | 'tag';
 
 export const MODES: ReadonlyArray<{ id: ModeId; name: string; blurb: string }> = [
   {
     id: 'captureTheFlag',
     name: 'Capture the Flag',
     blurb: 'Their flag is past the house. Build a way over, and a way to stop them.',
+  },
+  {
+    id: 'tag',
+    name: 'Tag',
+    blurb: 'Freeze tag, out the front gate and all over the street. No planks, just legs.',
   },
   {
     id: 'waterWar',
@@ -89,6 +107,7 @@ export const MODES: ReadonlyArray<{ id: ModeId; name: string; blurb: string }> =
 function createMode(id: ModeId): GameMode {
   if (id === 'captureTheFlag') return new CaptureTheFlagMode();
   if (id === 'waterWar') return new WaterWarMode();
+  if (id === 'tag') return new TagMode();
   return new FortDefenseMode();
 }
 
@@ -346,6 +365,9 @@ function projectPins(active: GameMode | null, eye: { x: number; y: number; z: nu
   for (const marker of markers) anyActive ||= marker.active === true;
 
   for (const marker of markers) {
+    const distance = Math.hypot(marker.x - eye.x, marker.z - eye.z);
+    if (distance < PIN_MIN_DISTANCE) continue;
+
     pinVec.set(marker.x, marker.y + PIN_HEIGHT, marker.z);
     pinVec.project(camera.camera);
 
@@ -380,7 +402,7 @@ function projectPins(active: GameMode | null, eye: { x: number; y: number; z: nu
       edge: outside,
       // The chevron points along the direction of travel; its art points up.
       angle: angle + Math.PI / 2,
-      distance: Math.hypot(marker.x - eye.x, marker.z - eye.z),
+      distance,
       color: `#${marker.color.toString(16).padStart(6, '0')}`,
       kind: marker.kind,
       quiet: anyActive && marker.active !== true,
@@ -735,11 +757,20 @@ function restartRound(): void {
 }
 
 function resetPlayerToSpawn(id: ModeId = lastModeId): void {
-  // Capture the Flag starts you in your own yard; everything else starts you
-  // where the starter structures are, which is what the sandbox wants.
+  // Capture the Flag starts you in your own yard, Tag starts you behind the
+  // kids you are about to chase, and everything else starts you where the
+  // starter structures are, which is what the sandbox wants.
+  //
+  // This runs after `mode.start`, so a mode that placed the player itself is
+  // overruled here — which is why Tag's spawn is imported rather than repeated.
+  // The mode owns where It stands; this owns which way they are looking, and a
+  // second copy of the position would be a mode that quietly moved.
   if (id === 'captureTheFlag') player.teleport(LEFT_SPAWN.x, LEFT_SPAWN.y, LEFT_SPAWN.z);
+  else if (id === 'tag') player.teleport(IT_SPAWN.x, IT_SPAWN.y, IT_SPAWN.z);
   else player.teleport(STARTER_ORIGIN.x, 0.5, STARTER_ORIGIN.z - 9);
-  camera.yaw = id === 'captureTheFlag' ? Math.PI * 0.5 : Math.PI;
+  // Tag looks down the garden at the runners, which is also the way they are
+  // about to go: past the house, out of the gate and onto the street.
+  camera.yaw = id === 'captureTheFlag' ? Math.PI * 0.5 : id === 'tag' ? 0 : Math.PI;
   camera.pitch = -0.05;
 }
 
@@ -1376,10 +1407,16 @@ function draw(alpha: number, frameDt: number): void {
 
   // ── What you are holding ───────────────────────────────────────────────────
   // Hidden in third person, where seeing your own body answers the question.
-  const holdingWeapon = mode !== null && !mode.buildingAllowed;
-  viewmodel.visible = !camera.showsPlayer;
-  viewPlank.visible = !holdingWeapon;
-  viewSoaker.visible = holdingWeapon;
+  // Three states, not two. "Building is off" used to mean "you are holding a
+  // soaker", which was true of every mode until one arrived with no weapon at
+  // all — and Tag put a water cannon in the hands of somebody playing a game
+  // about running away. What decides it is whether the mode meters ammo, which
+  // is the same thing that decides whether the HUD draws a tank.
+  const armed = mode !== null && mode.hud().ammo !== null;
+  const empty = mode !== null && !mode.buildingAllowed && !armed;
+  viewmodel.visible = !camera.showsPlayer && !empty;
+  viewPlank.visible = !armed;
+  viewSoaker.visible = armed;
   if (viewmodel.visible) {
     // Chases the camera rather than matching it. Exact tracking makes a held
     // object feel welded to your eyes; a little lag reads as weight.
@@ -1438,6 +1475,9 @@ function draw(alpha: number, frameDt: number): void {
     candidateCount,
     rotation: build.rotationDegrees,
     canRepeat: build.repeatDelta !== null,
+    // The same answer the simulation uses to decide whether the mouse places a
+    // part, read from the same place, so the HUD cannot disagree with it.
+    canBuild: mode === null || mode.buildingAllowed,
     partsPlaced: build.placedCount,
     cameraMode: camera.mode,
     climbing: state.climbing,
@@ -1672,6 +1712,8 @@ window.__maker = {
     guest: isGuest(),
     wood: mode?.hud().lumber ?? null,
     markers: mode?.markers().length ?? 0,
+    /** The same count from the other end: how many actually got drawn. */
+    markersDrawn: modeRenderer.markersDrawn,
     finished: mode?.finished ?? false,
   }),
   leaveSession: () => {
@@ -1757,6 +1799,20 @@ window.__maker = {
   },
   renderScale: () => ({ effective: governor.currentScale, throttled: governor.isThrottling }),
   inputDevice: () => input.lastDevice,
+  /**
+   * What the viewmodel is currently showing, or null for empty hands.
+   *
+   * For the tag scenario. Read off the objects rather than recomputed from the
+   * mode, because "which of these two meshes is visible" is the question, and a
+   * copy of the rule that decides it would agree with itself while both meshes
+   * were on screen.
+   */
+  heldItem: (): string | null => {
+    if (!viewmodel.visible) return null;
+    if (viewSoaker.visible) return 'soaker';
+    if (viewPlank.visible) return 'plank';
+    return null;
+  },
   getCameraYaw: () => camera.yaw,
   menu,
   startRound,

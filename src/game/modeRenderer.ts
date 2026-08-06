@@ -369,6 +369,22 @@ export class ModeRenderer {
   }
 
   /**
+   * How many objective markers are actually on screen.
+   *
+   * For scenarios, and it is a different question from how many the mode
+   * published: the pools here are fixed-size, so a mode with more objectives
+   * than there are stands loses the surplus silently. Tag is the first mode
+   * whose marker count is a function of how many people are playing, which is
+   * the first time that ceiling could be reached by accident.
+   */
+  get markersDrawn(): number {
+    let n = 0;
+    for (const stand of this.stands) if (stand.group.visible) n++;
+    for (const flag of this.flagPoles) if (flag.group.visible) n++;
+    return n;
+  }
+
+  /**
    * Draw everyone who is not holding the camera.
    *
    * Was `updateBots`, and the rename is the point: a bot and another person are

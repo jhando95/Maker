@@ -293,6 +293,17 @@ export interface HudState {
   climbing: boolean;
   /** True when a repeat step is available, so the hint can be offered. */
   canRepeat: boolean;
+  /**
+   * Whether a part can be placed at all right now.
+   *
+   * Its own field rather than inferred from the mode, and it was inferred until
+   * Tag arrived. The rule used to be "there is ammo, so you are throwing rather
+   * than building", which happened to be true of all three modes and is a
+   * coincidence — it says a mode with no ammo is a mode with a plank in your
+   * hands. Tag has neither, and got the snap readout, the part chip and a row of
+   * rotate-and-place key hints, every one of which is a key that does nothing.
+   */
+  canBuild: boolean;
   /** Null when no mode is running. */
   mode: ModeHud | null;
   /** Seconds, for expiring timed cues without a second clock to keep in step. */
@@ -371,6 +382,28 @@ const HELP_FIGHT_GAMEPAD = [
   `${key('L3')} sprint &nbsp; ${key('R3')} camera`,
 ];
 
+/**
+ * And what it says with nothing in your hands at all.
+ *
+ * Tag is the first mode where there is no plank and no soaker, and the corner
+ * had been a two-way switch on the assumption that there is always one or the
+ * other. Left as it was, a mode about running told the player to hold the left
+ * mouse button to soak somebody and to stand in water to fill up — neither of
+ * which is a thing that exists in it.
+ *
+ * These are the verbs that are left, and they are the ones this mode is made
+ * of: a jump against a ledge is a pull-up, and a sprint is most of the game.
+ */
+const HELP_RUN_KEYBOARD = [
+  `${key('Shift')} sprint &nbsp; ${key('Space')} jump &nbsp; hold ${key('Space')} at a ledge to climb it`,
+  `${key('V')} camera &nbsp; ${key('`')} debug`,
+];
+
+const HELP_RUN_GAMEPAD = [
+  `${key('L3')} sprint &nbsp; ${key('A')} jump &nbsp; hold ${key('A')} at a ledge to climb it`,
+  `${key('R3')} camera`,
+];
+
 export class Hud {
   readonly root: HTMLDivElement;
 
@@ -391,6 +424,13 @@ export class Hud {
   private hitUntil = 0;
   /** True while a mode has building switched off, so the hints follow the phase. */
   private fighting = false;
+  /**
+   * And whether there is anything in your hands while it is.
+   *
+   * The two used to be the same question, because every mode that took the
+   * planks away handed you a soaker in exchange. Tag hands you nothing.
+   */
+  private armed = false;
   private bannerKey = '';
   private readonly help: HTMLDivElement;
   private readonly chip: HTMLDivElement;
@@ -500,9 +540,11 @@ export class Hud {
 
   private paintHelp(): void {
     const pad = this.device === 'gamepad';
-    const lines = this.fighting
-      ? (pad ? HELP_FIGHT_GAMEPAD : HELP_FIGHT_KEYBOARD)
-      : (pad ? HELP_GAMEPAD : HELP_KEYBOARD);
+    const lines = !this.fighting
+      ? (pad ? HELP_GAMEPAD : HELP_KEYBOARD)
+      : this.armed
+        ? (pad ? HELP_FIGHT_GAMEPAD : HELP_FIGHT_KEYBOARD)
+        : (pad ? HELP_RUN_GAMEPAD : HELP_RUN_KEYBOARD);
     this.help.innerHTML = lines.join('<br>');
   }
 
@@ -531,7 +573,7 @@ export class Hud {
       this.hitUntil = 0;
       this.crosshair.classList.remove('hit');
     }
-    this.updateMode(state.mode, costOf(state.selectedKind));
+    this.updateMode(state.mode, costOf(state.selectedKind), state.canBuild);
 
     const swatch = COLORWAYS[state.colorway % COLORWAYS.length]!
       .toString(16)
@@ -667,20 +709,22 @@ export class Hud {
   }
 
   /** Render the running mode's banner, message and ammo, or hide them all. */
-  private updateMode(mode: ModeHud | null, heldCost: number): void {
+  private updateMode(mode: ModeHud | null, heldCost: number, canBuild: boolean): void {
     const active = mode !== null;
     this.modePanel.classList.toggle('maker-hidden', !active);
     this.messageEl.classList.toggle('maker-hidden', !active || mode!.message === null);
     this.ammoEl.classList.toggle('maker-hidden', !active || mode!.ammo === null);
-    // The part chip is meaningless while throwing, so it goes with the build
-    // controls rather than sitting there inert.
-    const fighting = active && mode!.ammo !== null;
+    // The part chip is meaningless when you cannot place one, so it goes with
+    // the build controls rather than sitting there inert. So do the snap
+    // readout and the rotate-and-place hints: keys that do nothing right now
+    // read as keys that are broken.
+    const fighting = active && !canBuild;
+    const armed = active && mode!.ammo !== null;
     this.chip.classList.toggle('maker-hidden', fighting);
-    // So do the snap readout and the rotate-and-place hints: keys that do
-    // nothing right now read as keys that are broken.
     this.status.classList.toggle('maker-hidden', fighting);
-    if (fighting !== this.fighting) {
+    if (fighting !== this.fighting || armed !== this.armed) {
       this.fighting = fighting;
+      this.armed = armed;
       this.paintHelp();
     }
     if (!active) return;

@@ -180,6 +180,10 @@ export function decodeLobby(raw: string): LobbyMessage | null {
  */
 export const MODE_TARGET: Readonly<Record<string, number>> = {
   captureTheFlag: 4,
+  // The most people of any mode, and the only one where more is strictly
+  // better: a chaser with four runners to choose between has a decision every
+  // few seconds, and a rescue needs somebody spare to make it.
+  tag: 6,
   fortDefense: 2,
   waterWar: 2,
 };

@@ -154,6 +154,15 @@ jobs:
       - name: Items scenario
         run: node tools/shoot.mjs --scenario scenarios/items.mjs --auto-quality --out /tmp/ci-items.png
 
+      # Tag, which is two claims a unit test cannot reach. The field is the one
+      # place no other mode goes — outside the fence, on the cul-de-sac — and
+      # "outside the fence" is not a setting but a routing grid and a set of
+      # bots willing to follow it out of the gate. And it is the first mode with
+      # no plank and no soaker, so it is the first to find out what a HUD
+      # written for modes that have both does with a mode that has neither.
+      - name: Tag scenario
+        run: node tools/shoot.mjs --scenario scenarios/tag.mjs --auto-quality --out /tmp/ci-tag.png
+
       # The whole of the lobby, end to end against a real server: two browser
       # contexts, two friend codes, a party, a queue, and a round running in the
       # room it was matched into. It is also the only thing that exercises the
@@ -219,6 +228,7 @@ jobs:
             /tmp/ci-lobby.png
             /tmp/ci-mantle.png
             /tmp/ci-items.png
+            /tmp/ci-tag.png
             /tmp/ci-lobby-friends.png
           if-no-files-found: ignore
 
