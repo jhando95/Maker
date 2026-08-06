@@ -1,13 +1,47 @@
 name: CI
 
+# Branches are covered by `pull_request`, not by `push`.
+#
+# Both were on, and the two triggers do not cancel each other, so every commit
+# on a branch ran this entire file **twice** on two runners — nine minutes of
+# scenarios, duplicated, and two identically named checks on the pull request.
+#
+# The concurrency group below was supposed to prevent exactly that and could
+# not, for a reason worth writing down: `github.ref` is not the same value for
+# the two events. A push says `refs/heads/<branch>`; a pull_request says
+# `refs/pull/<n>/merge`. Two different groups, so neither run ever cancelled the
+# other, and the comment claiming they did was true only within one event type.
+#
+# The duplication was not merely wasteful. Every run is an independent draw
+# against whatever GitHub Actions is doing that hour, and a red X appears on the
+# pull request if *either* comes up short — three checks were failed in one
+# afternoon by `Failed to resolve action download info`, in jobs that never got
+# as far as checking out the repository. Halving the number of runs halves that
+# exposure.
+#
+# `pull_request` is also the better of the two to keep: it builds the merge
+# commit, which is what merging would actually produce, while a push build tests
+# the branch in isolation from a base that may have moved underneath it.
+#
+# The trade, stated plainly: a branch with no pull request open now gets no run
+# at all. `synchronize` fires on every push to a branch that has one, and
+# `opened` fires the moment one is raised, so the gap is only ever the stretch
+# before a branch is proposed — and nothing merges out of that stretch. This
+# also does nothing to stop the outages themselves; there is no step-level
+# retry that could, because the failure happens in "Prepare all required
+# actions", before any step in this file runs.
 on:
   push:
-    branches: ['**']
+    branches: [main]
   pull_request:
 
 # A newer push to the same branch makes the older run irrelevant.
+#
+# Keyed on `head_ref` where there is one — that is the branch name on a
+# pull_request event — and on `ref` otherwise, so a push to main groups by
+# itself. Keyed on `ref` alone this never deduplicated across event types.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
   cancel-in-progress: true
 
 jobs:
