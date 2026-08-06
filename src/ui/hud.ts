@@ -9,6 +9,7 @@
  */
 
 import { PART_KINDS, COLORWAYS } from '../build/partKit.ts';
+import { costOf } from '../build/lumber.ts';
 import type { InputDevice } from '../core/input.ts';
 import { PartWheel, type WheelEntry } from './partWheel.ts';
 import { installTheme } from './theme.ts';
@@ -133,6 +134,9 @@ const STYLE = `
 .maker-mode .timer { font-size: 24px; font-weight: 900; line-height: 1; }
 .maker-mode .val { font-size: 17px; font-weight: 900; line-height: 1.1; }
 .maker-mode .val.tint { color: var(--sun); }
+.maker-mode .val.wood { color: var(--wood); }
+/* Not enough for what you are holding. Same red the ghost turns. */
+.maker-mode .val.wood.short { color: var(--alarm); }
 .maker-mode.urgent .timer { color: var(--alarm); animation: mk-tick 1s steps(1) infinite; }
 @keyframes mk-tick { 0%, 60% { opacity: 1; } 61%, 100% { opacity: 0.55; } }
 
@@ -527,7 +531,7 @@ export class Hud {
       this.hitUntil = 0;
       this.crosshair.classList.remove('hit');
     }
-    this.updateMode(state.mode);
+    this.updateMode(state.mode, costOf(state.selectedKind));
 
     const swatch = COLORWAYS[state.colorway % COLORWAYS.length]!
       .toString(16)
@@ -549,14 +553,21 @@ export class Hud {
         : state.climbing ? '<b>climbing</b>' : `built ${state.partsPlaced}`,
     ].join('<br>');
 
+    // The price goes on the chip rather than only in the banner, because the
+    // chip is what the player is reading while choosing what to hold — and the
+    // choice between a plank and a block is mostly a choice about cost.
+    const metered = state.mode?.lumber !== undefined && state.mode.lumber !== null;
+    const cost = costOf(state.selectedKind);
+
     // Only rewritten when it would actually differ; this runs every frame.
-    const chipKey = `${state.selectedKind}:${state.colorway}`;
+    const chipKey = `${state.selectedKind}:${state.colorway}:${metered ? cost : ''}`;
     if (chipKey !== this.chipKey) {
       this.chipKey = chipKey;
       this.chip.innerHTML =
         `<span class="maker-swatch" style="background:#${swatch}"></span>` +
         `<b>${PART_KINDS[state.selectedKind]!.name}</b>` +
         `<span class="dims">${dims(state.selectedKind)}</span>` +
+        (metered ? `<span class="cost">${cost} wood</span>` : '') +
         `<span class="hint">Tab</span>`;
     }
   }
@@ -656,7 +667,7 @@ export class Hud {
   }
 
   /** Render the running mode's banner, message and ammo, or hide them all. */
-  private updateMode(mode: ModeHud | null): void {
+  private updateMode(mode: ModeHud | null, heldCost: number): void {
     const active = mode !== null;
     this.modePanel.classList.toggle('maker-hidden', !active);
     this.messageEl.classList.toggle('maker-hidden', !active || mode!.message === null);
@@ -703,6 +714,16 @@ export class Hud {
       cells.push(
         `<div class="cell"><span class="cap">${m.secondary.label}</span>` +
         `<span class="val mk-tabular">${m.secondary.value}</span></div>`,
+      );
+    }
+    // Last, and only while it can be spent. A wood count during a raid is a
+    // number you cannot act on, sitting in the one place the player looks when
+    // something has changed.
+    if (m.lumber !== undefined && m.lumber !== null) {
+      const short = m.lumber < heldCost ? ' short' : '';
+      cells.push(
+        '<div class="cell"><span class="cap">wood</span>' +
+        `<span class="val wood${short} mk-tabular">${m.lumber}</span></div>`,
       );
     }
     // Rewritten only when it changed: this runs every frame, and re-parsing the

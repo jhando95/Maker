@@ -79,6 +79,13 @@ jobs:
       - name: HUD scenario
         run: node tools/shoot.mjs --scenario scenarios/hud.mjs --auto-quality --out /tmp/ci-hud.png
 
+      # The budget is the first rule that can make a legal placement fail. The
+      # arithmetic is unit-tested; whether the player is ever told — a counter
+      # on the banner, a price on the chip, a ghost that turns red — is a chain
+      # from the mode to a pixel that only exists in a browser.
+      - name: Lumber-budget scenario
+        run: node tools/shoot.mjs --scenario scenarios/lumber.mjs --auto-quality --out /tmp/ci-lumber.png
+
       # A CI runner has no GPU either, so it is a genuine instance of the case
       # adaptive quality exists for. The decision logic is unit-tested; this
       # checks the decision reaches the drawing buffer.
@@ -98,6 +105,7 @@ jobs:
             /tmp/ci-water.png
             /tmp/ci-actors.png
             /tmp/ci-hud.png
+            /tmp/ci-lumber.png
           if-no-files-found: ignore
 
   benchmark:

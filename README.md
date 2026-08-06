@@ -79,6 +79,34 @@ placing parts, so you are never fumbling between two things on one button. The
 on-screen hints follow, because half the build keys do nothing while you are
 holding a soaker and a player who tries them learns the wrong lesson.
 
+## Wood costs something
+
+In a mode you are handed a pile of lumber — a hundred and twenty planks — and
+another thirty-five before each later build phase, capped so hoarding cannot
+bank a fort. Parts are priced by size against a plank, so two ways of covering
+the same wall cost the same and the budget never argues for one part over
+another. Taking your own work down refunds it in full: scarcity should make you
+choose *what* to build, never make you afraid to change your mind.
+
+It is not a difficulty knob. Building was free, and free building has exactly
+one best play — build the maximum everywhere — which quietly deletes the
+decision from the part of the game named after it. What the pile buys, measured
+on the real map with the player standing still all afternoon:
+
+| what was built | planks | water kept |
+|---|---|---|
+| nothing | 0 | 0% |
+| a tight fence round all three taps | 80 | 61% |
+| the same fence, one plank short of closing | 60 | 8% |
+| one tap walled properly, head height | 78 | 20% |
+| a loose fence round all three | 510 | 22% |
+
+Building is worth doing, and more wood is not better wood — the five-hundred
+plank version does worse than the eighty-plank one. Free lumber made neither of
+those a choice.
+
+Free Build has no budget. It is where you go to just make things.
+
 ## Modes
 
 **Capture the Flag.** Your flag is in the left yard, theirs is in the right, and
@@ -300,7 +328,7 @@ src/
   core/        game loop, input, commands, replay, seeded RNG, math
   physics/     spatial hash, capsule-vs-OBB collision, part store, collision world
   player/      character controller, camera rig
-  build/       part kit, snapping, build system
+  build/       part kit, snapping, build system, the lumber budget
   render/      cel shading, procedural geometry, instanced meshes
   world/       neighborhood map, scene, starter structures
   game/        game modes, actors and teams, bots, flow-field navigation, projectiles
@@ -314,7 +342,7 @@ scenarios/     scripted checks driven through the harness
 ```
 
 ```bash
-npm test         # 525 unit tests
+npm test         # 546 unit tests
 npm run typecheck
 npm run bench    # what a tick costs, as a share of the 16.67ms budget
 node tools/shoot.mjs --out shots/x.png   # boot headless, screenshot, fail on any console error
@@ -328,7 +356,8 @@ controller, whether a resolution decision actually reaches the drawing buffer,
 whether emptying a water tank and refilling it from a paddling pool works once
 the mode, the shell and the HUD are wired together, whether a second person in
 the world reaches the renderer's instance buffers wearing the right shirt,
-whether the HUD can actually point at an objective that is behind you. Each only
+whether the HUD can actually point at an objective that is behind you,
+whether running out of wood is ever visible to the player rather than just true. Each only
 happens in a browser, and each has broken at least once with the unit suite
 green.
 

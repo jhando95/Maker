@@ -17,6 +17,7 @@ import { Snapper, type Candidate, type SnapResult, ROT_STEP_DEG } from './snappi
 import { PartRenderer } from '../render/partRenderer.ts';
 import { chamferedBox, wedge } from '../render/geometry.ts';
 import { damp } from '../core/mathUtils.ts';
+import { Lumber, costOf } from './lumber.ts';
 import type { PartId } from '../physics/types.ts';
 
 /** A committed placement. This is the wire format and the save format. */
@@ -103,6 +104,27 @@ export class BuildSystem {
 
   /** Undo stack of part ids, most recent last. */
   private readonly history: PartId[] = [];
+
+  /**
+   * The stack of wood this build system is spending from.
+   *
+   * Unlimited until a mode says otherwise, because that is what the sandbox is
+   * and what every existing test assumes. The mode owns the `Lumber` — how much
+   * there is and when more arrives is a rule — and lends it here for the
+   * duration of the round.
+   */
+  private stock = new Lumber(Infinity);
+
+  /**
+   * What was actually paid for each standing part.
+   *
+   * A ledger rather than re-deriving the price on removal, so a refund can only
+   * ever return what was charged. Without it, anything that reaches the world
+   * without being bought — the starter shed, a loaded save, a map seeded by a
+   * mode — could be demolished into lumber the player never spent, which is a
+   * bigger pile than the budget ever intended to hand out.
+   */
+  private readonly paid = new Map<PartId, number>();
 
   /** Placements this session, for the HUD. */
   placedCount = 0;
@@ -405,9 +427,14 @@ export class BuildSystem {
     this.ghostEdges.position.copy(this.ghostPos);
     this.ghostEdges.quaternion.copy(this.ghostQuat);
 
-    const tint = candidate.valid ? this.ghostValidColor : this.ghostInvalidColor;
+    // Out of wood reads as red, the same as a wall in the way. Both answer the
+    // one question the ghost is there to answer — will this go in — and a
+    // preview that stays green over an empty stack only teaches the player that
+    // green is a lie.
+    const placeable = candidate.valid && this.canAffordSelected;
+    const tint = placeable ? this.ghostValidColor : this.ghostInvalidColor;
     this.ghostMaterial.color.setHex(tint);
-    this.ghostMaterial.opacity = candidate.valid ? 0.34 : 0.24;
+    this.ghostMaterial.opacity = placeable ? 0.34 : 0.24;
     // The outline carries the colour now, so the fill can be fainter — enough
     // to say which side is solid without hiding what is behind it.
     this.ghostEdgeMaterial.color.setHex(tint);
@@ -498,12 +525,62 @@ export class BuildSystem {
     return true;
   }
 
-  /** Place what the preview currently shows, if it is legal. */
+  /**
+   * Lend this build system a mode's stack of wood.
+   *
+   * Passing nothing puts it back to unlimited — leaving a round has to restore
+   * the sandbox, or quitting a match would leave the player building against a
+   * budget that no longer belongs to anything.
+   */
+  setLumber(stock?: Lumber): void {
+    this.stock = stock ?? new Lumber(Infinity);
+  }
+
+  get lumber(): Lumber {
+    return this.stock;
+  }
+
+  /**
+   * What colour the preview is currently drawn in.
+   *
+   * Exposed because "the ghost turns red" is a claim about a pixel, and reading
+   * the material is the only way to check it that does not depend on where the
+   * ghost happens to be on screen.
+   */
+  get ghostTint(): number {
+    return this.ghostEdgeMaterial.color.getHex();
+  }
+
+  /** What the held part costs. */
+  get selectedCost(): number {
+    return costOf(this.selectedKind);
+  }
+
+  /** Whether there is enough wood for the held part. */
+  get canAffordSelected(): boolean {
+    return this.stock.canAfford(this.selectedCost);
+  }
+
+  /**
+   * Charge for a placement and remember the price.
+   *
+   * Between `place()` and `applyPlace()` rather than inside either: the intent
+   * stays a pure description of where a part would go, and the application stays
+   * the unconditional authority side a server would call.
+   */
+  private buy(record: PlacementRecord): boolean {
+    const cost = costOf(record.kind);
+    if (!this.stock.spend(cost)) return false;
+    const id = this.applyPlace(record);
+    if (!this.stock.unlimited) this.paid.set(id, cost);
+    return true;
+  }
+
+  /** Place what the preview currently shows, if it is legal and affordable. */
   tryPlace(): boolean {
     const record = this.place();
     if (record === null) return false;
-    this.applyPlace(record);
-    return true;
+    return this.buy(record);
   }
 
   /** Remove whatever the aim ray is pointing at. */
@@ -519,6 +596,7 @@ export class BuildSystem {
     if (this.world.isFixture(id)) return false;
     if (!this.world.removePart(id)) return false;
     this.renderer.remove(id);
+    this.reclaim(id);
     const i = this.history.lastIndexOf(id);
     if (i !== -1) this.history.splice(i, 1);
     this.snapper.reset();
@@ -532,11 +610,20 @@ export class BuildSystem {
       if (this.world.store.isAlive(id)) {
         this.world.removePart(id);
         this.renderer.remove(id);
+        this.reclaim(id);
         this.snapper.reset();
         return true;
       }
     }
     return false;
+  }
+
+  /** Give back what this part cost, if the player is the one who bought it. */
+  private reclaim(id: PartId): void {
+    const cost = this.paid.get(id);
+    if (cost === undefined) return;
+    this.paid.delete(id);
+    this.stock.refund(cost);
   }
 
   /**
@@ -608,7 +695,12 @@ export class BuildSystem {
     // applyPlace advances the chain head, so the counters are restored after.
     const origin = this.repeatOrigin;
     const count = this.repeatCount;
-    this.applyPlace(next);
+    // Running out of wood ends the chain the same way a wall does — otherwise a
+    // held repeat key keeps clicking against an empty stack.
+    if (!this.buy(next)) {
+      this.clearRepeat();
+      return null;
+    }
     this.repeatOrigin = origin;
     this.repeatCount = count + 1;
     return next;
@@ -715,6 +807,8 @@ export class BuildSystem {
     this.renderer.clear();
     this.history.length = 0;
     this.placedCount = 0;
+    // Nothing in the new world was bought with the current stack of wood.
+    this.paid.clear();
     for (const r of records) this.applyPlace(r);
     // Loaded parts are not a step the player just made.
     this.lastPlacement = null;

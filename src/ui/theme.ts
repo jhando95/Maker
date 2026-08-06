@@ -54,6 +54,8 @@ export const THEME = `
   --water: #6ec6ff;
   --alarm: #ff8358;
   --go: #8fd16a;
+  /* Fresh-cut pine, so the lumber count matches the boards it buys. */
+  --wood: #e0b070;
   /* The two sides, exactly as the renderer paints their shirts. */
   --team-left: #7a3fc8;
   --team-right: #e07a4f;

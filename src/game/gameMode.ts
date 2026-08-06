@@ -18,6 +18,7 @@ import type { ProjectileSystem } from './projectiles.ts';
 import type { Rng } from '../core/rng.ts';
 import type { Bot } from './bot.ts';
 import type { ActorRoster } from './actor.ts';
+import type { Lumber } from '../build/lumber.ts';
 
 /** Everything a mode is allowed to touch. */
 export interface ModeContext {
@@ -157,6 +158,8 @@ export interface ModeHud {
   ammo: { current: number; max: number; gauge?: boolean } | null;
   /** 0..1 progress on a refill channel, or null when not at a bucket. */
   refill: number | null;
+  /** Planks left, or null when the mode does not meter them. */
+  lumber?: number | null;
 }
 
 export interface ModeInput {
@@ -193,6 +196,14 @@ export interface GameMode {
   readonly bots: readonly Bot[];
   /** Whether the player may place parts right now. */
   readonly buildingAllowed: boolean;
+  /**
+   * The player's lumber, or undefined in a mode that does not meter it.
+   *
+   * Owned by the mode rather than by the build system, because how much wood
+   * there is and when more arrives is a rule — and Free Build's rule is that
+   * there is no limit at all.
+   */
+  readonly lumber?: Lumber;
   /** Multiplier on player speed, for being soaked. */
   readonly playerSpeedScale: number;
   /** Weapons to offer in the picker, or undefined when there is one option. */

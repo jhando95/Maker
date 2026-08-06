@@ -41,6 +41,7 @@ import { SPLASH_RADIUS, type BalloonTarget } from './projectiles.ts';
 import type { GameMode, Loadout, Marker, ModeContext, ModeHud, ModeInput, ModeSummary } from './gameMode.ts';
 import { CAP_HEIGHT, CAP_RADIUS } from '../physics/constants.ts';
 import { NavField } from './navField.ts';
+import { Lumber, STARTING_LUMBER, PHASE_DELIVERY, LUMBER_CAP } from '../build/lumber.ts';
 import { WATER_SOURCES, FORT_YARD } from '../world/neighborhood.ts';
 import {
   WEAPONS, WEAPON_ORDER, TANK_MAX, SOURCE_RADIUS, REFILL_RATE, REFILL_DRAW,
@@ -154,6 +155,8 @@ export class WaterWarMode implements GameMode {
    */
   private readonly nav: NavField[] = WATER_SOURCES.map(() => new NavField(26));
   private navTimer = 0;
+  /** The pile in the corner of the yard, topped up before each build phase. */
+  readonly lumber = new Lumber(STARTING_LUMBER);
   private readonly targets: BalloonTarget[] = [];
   private readonly markerList: Marker[] = [];
 
@@ -175,6 +178,7 @@ export class WaterWarMode implements GameMode {
     this.respawns.clear();
     this.botWet.clear();
     resetWetness(this.playerWet);
+    this.lumber.set(STARTING_LUMBER);
     this.setMessage('Three taps, one afternoon. Fortify what you can reach.', 7);
     ctx.emit({ type: 'phaseChange', phase: 'build' });
   }
@@ -262,6 +266,9 @@ export class WaterWarMode implements GameMode {
     }
     this.phase = 'lull';
     this.timer = LULL_TIME;
+    // A delivery for the repair phase: enough to patch what broke, not enough
+    // to rebuild somewhere else, or every phase would reset the decision.
+    this.lumber.deliver(PHASE_DELIVERY, LUMBER_CAP);
     this.setMessage(`${Math.round(this.totalWater)} litres left. Patch what they got through.`, 6);
     ctx.emit({ type: 'phaseChange', phase: 'lull' });
   }
@@ -682,6 +689,7 @@ export class WaterWarMode implements GameMode {
         ? null
         : { current: this.tank, max: TANK_MAX, gauge: true },
       refill: this.atSource !== -1 && this.tank < TANK_MAX ? this.tank / TANK_MAX : null,
+      lumber: this.buildingAllowed ? this.lumber.available : null,
     };
   }
 

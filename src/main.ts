@@ -368,6 +368,8 @@ function startRound(id: ModeId = lastModeId): void {
   roundSnapshot = build.serialize();
   mode = createMode(id);
   mode.start(modeContext);
+  // After start(), which is where a mode sets its opening pile.
+  build.setLumber(mode.lumber);
   audio.play('roundStart', { volume: 0.6 });
   resetPlayerToSpawn(id);
 }
@@ -375,6 +377,8 @@ function startRound(id: ModeId = lastModeId): void {
 function stopRound(): void {
   mode?.end(modeContext);
   mode = null;
+  // Free build has no budget; leaving a round has to hand the sandbox back.
+  build.setLumber();
   projectiles.clear();
   modeRenderer.clear();
   // A mode keeps the roster in step while it is ticking; when it stops ticking
@@ -1114,6 +1118,18 @@ window.__maker = {
   },
   selectPart: (i: number) => build.selectKind(i),
   getSelectedPart: () => build.selectedKind,
+  /** Wood left, and what the held part costs, for the budget scenario. */
+  lumber: () => ({
+    // A boolean rather than trusting Infinity to survive the bridge into a
+    // scenario, where it would arrive as null and read as "no wood at all".
+    unlimited: build.lumber.unlimited,
+    available: build.lumber.unlimited ? -1 : build.lumber.available,
+    cost: build.selectedCost,
+    affordable: build.canAffordSelected,
+  }),
+  setLumber: (amount: number) => build.lumber.set(amount),
+  /** The preview's current outline colour, for checking it says "no". */
+  ghostTint: () => build.ghostTint,
   actionDown: (a: string) => input.isDown(a as Action),
   /**
    * Movement intent this frame, stick and keys summed.
@@ -1163,6 +1179,17 @@ window.__maker = {
     const ray = camera.getAimRay(state.x, state.y + state.eyeHeight, state.z, MAX_REACH);
     build.update(DT, ray.ox, ray.oy, ray.oz, ray.dx, ray.dy, ray.dz, false, false);
     const ok = build.tryPlace();
+    if (ok) worldChanged();
+    return ok;
+  },
+  /** Aim and take down, the other half of what the build controls do. */
+  removeAt: (yaw: number, pitch: number): boolean => {
+    camera.yaw = yaw;
+    camera.pitch = pitch;
+    const state = player.sample(1);
+    const ray = camera.getAimRay(state.x, state.y + state.eyeHeight, state.z, MAX_REACH);
+    build.update(DT, ray.ox, ray.oy, ray.oz, ray.dx, ray.dy, ray.dz, false, false);
+    const ok = build.removeAimed();
     if (ok) worldChanged();
     return ok;
   },

@@ -32,6 +32,7 @@ import { type BalloonTarget } from './projectiles.ts';
 import type { GameMode, Marker, ModeContext, ModeHud, ModeInput, ModeSummary } from './gameMode.ts';
 import { CAP_HEIGHT, CAP_RADIUS } from '../physics/constants.ts';
 import { NavField } from './navField.ts';
+import { Lumber, STARTING_LUMBER, PHASE_DELIVERY, LUMBER_CAP } from '../build/lumber.ts';
 import { LEFT_FLAG, RIGHT_FLAG, LEFT_SPAWN, RIGHT_SPAWN } from '../world/neighborhood.ts';
 import { LOCAL_ACTOR_ID, opposing, type Actor, type Team } from './actor.ts';
 
@@ -165,6 +166,8 @@ export class CaptureTheFlagMode implements GameMode {
     right: { attack: new NavField(26), home: new NavField(26) },
   };
   private navTimer = 0;
+  /** The pile in the corner of the yard, topped up before each build phase. */
+  readonly lumber = new Lumber(STARTING_LUMBER);
 
   private readonly targets: BalloonTarget[] = [];
   private readonly markerList: Marker[] = [];
@@ -184,6 +187,7 @@ export class CaptureTheFlagMode implements GameMode {
     this.bots.length = 0;
     this.respawns.clear();
     this.guards.clear();
+    this.lumber.set(STARTING_LUMBER);
     this.resetFlag('left');
     this.resetFlag('right');
     this.setMessage('Fortify your yard. Their flag is past the house.', 7);
@@ -242,6 +246,7 @@ export class CaptureTheFlagMode implements GameMode {
     this.phase = 'setup';
     this.round++;
     this.timer = SETUP_TIME;
+    this.lumber.deliver(PHASE_DELIVERY, LUMBER_CAP);
     this.bots.length = 0;
     this.respawns.clear();
     this.guards.clear();
@@ -765,6 +770,7 @@ export class CaptureTheFlagMode implements GameMode {
       wetness: null,
       ammo: this.buildingAllowed ? null : { current: this.ammo, max: PLAYER_AMMO_MAX },
       refill: null,
+      lumber: this.buildingAllowed ? this.lumber.available : null,
     };
   }
 
