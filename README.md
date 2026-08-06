@@ -5,7 +5,8 @@ you nail together whatever you want — ladders, staircases, towers, forts,
 bridges. The long-term goal is party modes played *inside* the things you build:
 capture the flag, water balloon battles, tag.
 
-A house at the head of a cul-de-sac, the movement and building mechanics the
+A house at the head of a cul-de-sac, with neighbours, hedgerows and woods
+filling every horizon it can see, the movement and building mechanics the
 whole game rests on, three modes — **Capture the Flag** across the two yards,
 **Fort Defense** on the front lawn, and **Water War** over the paddling pool,
 the rain barrel and the garden tap — and two browsers can share a lawn and play
@@ -415,7 +416,7 @@ scenarios/     scripted checks driven through the harness
 ```
 
 ```bash
-npm test         # 639 unit tests
+npm test         # 647 unit tests
 npm run typecheck
 npm run bench    # what a tick costs, as a share of the 16.67ms budget
 node tools/shoot.mjs --out shots/x.png   # boot headless, screenshot, fail on any console error

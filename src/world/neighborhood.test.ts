@@ -9,21 +9,25 @@ import {
   LEFT_SPAWN, RIGHT_SPAWN, FORT_YARD, TREEHOUSE, type Slab,
 } from './neighborhood.ts';
 import { culDeSacSlabs } from './culDeSac.ts';
+import { surroundsSlabs } from './surrounds.ts';
 import { CAP_RADIUS, DT, JUMP_HEIGHT, STEP_HEIGHT } from '../physics/constants.ts';
 import { CharacterController, type MoveIntent } from '../player/controller.ts';
 
 const slabs = neighborhoodSlabs(new Rng('test-lot'));
 
 /**
- * The lot's own geometry, with the neighbourhood beyond the fence taken out.
+ * The lot's own geometry, with everything beyond the fence taken out.
  *
  * Subtracted by identity rather than by position, so a house that drifted into
  * the yard would still be measured as being in the yard. Filtering on "is it
  * outside the fence" would have made every check below unfalsifiable — anything
  * that broke the rule would have removed itself from the test.
  */
-const street = new Set(culDeSacSlabs().map((s) => JSON.stringify(s)));
-const lot = slabs.filter((s) => !street.has(JSON.stringify(s)));
+const outside = new Set(
+  [...culDeSacSlabs(), ...surroundsSlabs(new Rng('surrounds'))]
+    .map((s) => JSON.stringify(s)),
+);
+const lot = slabs.filter((s) => !outside.has(JSON.stringify(s)));
 
 /** World-axis bounds of a slab, for the overlap and clearance checks. */
 function bounds(s: Slab) {

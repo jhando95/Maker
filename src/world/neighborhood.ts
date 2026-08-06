@@ -22,6 +22,7 @@
 import * as THREE from 'three';
 import { Rng } from '../core/rng.ts';
 import { culDeSacSlabs } from './culDeSac.ts';
+import { surroundsSlabs } from './surrounds.ts';
 import type { CollisionWorld } from '../physics/collisionWorld.ts';
 
 /**
@@ -231,6 +232,21 @@ export function neighborhoodSlabs(rng: Rng): Slab[] {
   for (const s of culDeSacSlabs()) put(s);
   clutter(rng);
   waterworks();
+
+  // Its own Rng, unconnected to the yard's, rather than a fork of it.
+  //
+  // `rng.fork()` advances the parent, so taking one here shifted every random
+  // draw the yard makes afterwards: adding trees to a horizon moved the junk in
+  // the garden, and one crate landed on the left spawn. That was caught by the
+  // test which says nothing may sit on a spawn — a test with no connection to
+  // this change, which is exactly what it is for.
+  //
+  // Reordering the call would have fixed that one instance and left the hazard
+  // in place for the next person to add scenery. A separate stream cannot
+  // interact with the lot at all. The cost is that the horizon does not vary
+  // with the map seed, and the horizon is the last thing in this world that
+  // needs to.
+  for (const s of surroundsSlabs(new Rng('surrounds'))) put(s);
 
   return slabs.map((s) => ({ ...s }));
 }

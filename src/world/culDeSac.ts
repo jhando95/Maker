@@ -31,6 +31,7 @@
  */
 
 import type { Slab } from './neighborhood.ts';
+import { neighbourHouse, farRoof, shade, type NeighbourSpec } from './buildings.ts';
 
 /**
  * Where the tarmac stops being a road and becomes a turning head.
@@ -64,12 +65,7 @@ const PAVEMENT = 0xb8b4aa;
  *
  * `ry` is which way the front faces, in radians, with 0 meaning toward +z.
  */
-const NEIGHBOURS: ReadonlyArray<{
-  x: number; z: number; ry: number;
-  wall: number; roof: number; trim: number;
-  /** Where the drive meets the road, relative to the house. */
-  drive: number;
-}> = [
+const NEIGHBOURS: readonly NeighbourSpec[] = [
   // Three round the head, turned to face its centre. The angles matter more
   // than the positions: houses in a row read as a terrace on a through road
   // however round the tarmac in front of them is, and it is the fanning that
@@ -136,112 +132,6 @@ function flat(
     w, h: 0.07, d, x, y: 0.025, z,
     color, outline: TARMAC_LINE, chamfer: 0.015, ghost: true, ...opts,
   });
-}
-
-/**
- * One neighbouring house.
- *
- * Solid, and much simpler than the player's own: a body, a gable, a door, two
- * windows, a chimney, a drive and a mailbox. It is thirty to fifty metres away
- * and half in the fog, and detail spent there is detail not spent on the yard
- * the game is actually played in.
- *
- * They *are* collided with, unlike the tarmac. Not because anyone should get
- * there — the fence is in the way — but because a solid-looking house you can
- * walk through is the kind of thing that turns up in a screenshot at the worst
- * possible moment, and the cost of a handful of static fixtures is nothing.
- */
-function house(
-  out: Slab[],
-  n: (typeof NEIGHBOURS)[number],
-): void {
-  const { x, z, ry, wall, roof, trim } = n;
-  const w = 9.4;
-  const d = 7.6;
-  const eaves = 4.2;
-  const sin = Math.sin(ry);
-  const cos = Math.cos(ry);
-  /** House-local (right, forward) into world space. */
-  const at = (right: number, forward: number): [number, number] =>
-    [x + right * cos + forward * sin, z - right * sin + forward * cos];
-
-  out.push({
-    w, h: eaves, d, x, y: eaves / 2, z, ry,
-    color: wall, outline: 0x8a6a52, chamfer: 0.04,
-  });
-
-  // Two courses of cladding, so a nine-metre wall is not one flat colour at the
-  // one distance where a flat colour is most obvious — the middle distance,
-  // where it is large on screen and has no other detail to compete with.
-  for (const y of [1.1, 2.5]) {
-    out.push({
-      w: w + 0.1, h: 0.5, d: d + 0.1, x, y, z, ry,
-      color: shade(wall, 0.93), outline: 0x8a6a52, chamfer: 0.02, ghost: true,
-    });
-  }
-
-  // A gable rather than the player's hipped roof, and a deliberately different
-  // silhouette: their house should be the one you can pick out.
-  for (let i = 0; i < 4; i++) {
-    const t = i / 4;
-    const width = w * (1 - t * 0.72) + 0.9;
-    out.push({
-      w: width, h: 0.55, d: d + 1.0 - t * 0.4,
-      x, y: eaves + 0.28 + i * 0.5, z, ry,
-      color: i % 2 === 0 ? roof : shade(roof, 0.9),
-      outline: 0x3a2c2a, chamfer: 0.03,
-    });
-  }
-
-  const [cx, cz] = at(w * 0.28, -d * 0.2);
-  out.push({
-    w: 0.8, h: 2.2, d: 0.8, x: cx, y: eaves + 1.4, z: cz, ry,
-    color: 0xb06a52, outline: 0x6a4238, chamfer: 0.03,
-  });
-
-  // Front door and windows, on the face that looks at the road.
-  const [dx, dz] = at(0, d / 2 + 0.06);
-  out.push({
-    w: 1.1, h: 2.1, d: 0.12, x: dx, y: 1.05, z: dz, ry,
-    color: trim, outline: 0x3a2c2a, chamfer: 0.02, ghost: true,
-  });
-  for (const side of [-1, 1]) {
-    const [wx, wz] = at(side * 2.9, d / 2 + 0.06);
-    out.push({
-      w: 1.5, h: 1.2, d: 0.1, x: wx, y: 2.1, z: wz, ry,
-      color: trim, outline: 0x3a2c2a, chamfer: 0.02, ghost: true,
-    });
-    out.push({
-      w: 1.2, h: 0.95, d: 0.14, x: wx, y: 2.1, z: wz, ry,
-      color: 0x9fd8ee, outline: 0x3a2c2a, chamfer: 0.01, ghost: true,
-    });
-  }
-
-  // The drive, running from the door out toward the road. Shortened to a stub:
-  // it only has to read as "this house connects to that road", and a strip
-  // solved exactly to the kerb would be a strip that breaks whenever the kerb
-  // moves.
-  const [px, pz] = at(n.drive, d / 2 + 3.4);
-  flat(out, 3.0, 7.0, px, pz, PAVEMENT, { ry });
-
-  // Mailbox at the end of it, leaning, as every mailbox in this neighbourhood is.
-  const [mx, mz] = at(n.drive + 1.9, d / 2 + 6.4);
-  out.push({
-    w: 0.13, h: 1.0, d: 0.13, x: mx, y: 0.5, z: mz,
-    color: 0xd8b585, outline: 0x5a4432, chamfer: 0.01, rz: 0.1,
-  });
-  out.push({
-    w: 0.38, h: 0.3, d: 0.62, x: mx + 0.1, y: 1.15, z: mz,
-    color: 0x8c9196, outline: 0x4a4f54, chamfer: 0.05, rz: 0.1,
-  });
-}
-
-/** Darken a hex colour by a factor, channel by channel. */
-function shade(hex: number, k: number): number {
-  const r = Math.round(((hex >> 16) & 255) * k);
-  const g = Math.round(((hex >> 8) & 255) * k);
-  const b = Math.round((hex & 255) * k);
-  return (r << 16) | (g << 8) | b;
 }
 
 /**
@@ -314,7 +204,7 @@ export function culDeSacSlabs(): Slab[] {
   }
 
   // ── The neighbours ─────────────────────────────────────────────────────────
-  for (const n of NEIGHBOURS) house(out, n);
+  for (const n of NEIGHBOURS) neighbourHouse(out, n);
   for (const [x, z, ry, roof] of FAR_ROOFS) farRoof(out, x, z, ry, roof);
 
   // ── The clutter that makes it a street somebody lives on ───────────────────
@@ -378,23 +268,6 @@ export function culDeSacSlabs(): Slab[] {
   out.push({ w: 0.62, h: 0.16, d: 0.22, x: 13.4, y: 0.56, z: -29.5, color: 0xc8402c, outline: 0x6a2018, chamfer: 0.05, ghost: true });
 
   return out;
-}
-
-/** A roof and the top of a wall, sixty metres out. Two boxes, no interior. */
-function farRoof(out: Slab[], x: number, z: number, ry: number, roof: number): void {
-  out.push({
-    w: 11, h: 3.6, d: 8.5, x, y: 1.8, z, ry,
-    color: 0xe4dac6, outline: 0x8a6a52, chamfer: 0.05, ghost: true,
-  });
-  for (let i = 0; i < 3; i++) {
-    const t = i / 3;
-    out.push({
-      w: 11 * (1 - t * 0.7) + 1, h: 0.7, d: 9.4 - t * 0.4,
-      x, y: 3.9 + i * 0.62, z, ry,
-      color: i % 2 === 0 ? roof : shade(roof, 0.9),
-      outline: 0x3a2c2a, chamfer: 0.04, ghost: true,
-    });
-  }
 }
 
 /** A boxy old car, parked. */
