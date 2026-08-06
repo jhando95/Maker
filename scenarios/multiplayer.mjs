@@ -37,6 +37,18 @@ const send = (page, message) =>
   page.evaluate((m) => window.__maker.guestSend(m), message);
 
 /**
+ * One monotonic tick counter for the whole scenario.
+ *
+ * The host keeps only the newest command it has seen and discards anything with
+ * an older tick — which is right, because an old command is input for a tick
+ * that has already happened. Hand-numbering each burst separately means the
+ * second burst can be numbered *below* the first and be silently thrown away, so
+ * the guest stands still and nothing says why.
+ */
+let nextTick = 0;
+const walkCommand = (moveX, moveZ) => ({ t: 'cmd', c: [nextTick++, moveX, moveZ, 0, 0, 0, 0] });
+
+/**
  * Wait for a message of this kind, and return the *newest* one seen.
  *
  * Newest rather than first, because snapshots arrive twenty a second and the
@@ -104,21 +116,30 @@ export default async function (page) {
   }, welcome.id);
   assert(startedAt !== null, 'the guest should be in the roster');
 
-  // Walk them, then stop.
+  // Walk them until they have actually got somewhere, then stop.
   //
   // moveZ is world space and already rotated, which is exactly what a real
   // client sends. The host repeats the last command it has on every tick — which
-  // is what stops a player with a late packet from freezing — so the walk runs
-  // for as long as it is the newest command, not for as many ticks as are sent
-  // here. Hence the explicit stop: without it the guest keeps going, and a
-  // headless renderer at seven frames a second walks them sixty metres off the
-  // map before the next assertion runs.
-  for (let tick = 0; tick < 12; tick++) {
-    await send(page, { t: 'cmd', c: [tick, 0, -1, 0, 0, 0, 0] });
+  // is what stops a player with a late packet from freezing — so how far they
+  // travel depends on how many *simulation* ticks elapse between two sends, and
+  // that depends on the frame rate. Sending a fixed number of commands and then
+  // measuring the distance is therefore measuring the runner's frame rate: it
+  // walked seven metres here and 0.44m on CI, and the assertion was the same.
+  //
+  // So this waits for the distance rather than assuming a frame count produces
+  // it, and stops the moment it has enough. The cap is a timeout, not a target.
+  const WALK_TARGET = 2.0;
+  let travelled = 0;
+  for (let i = 0; i < 400 && travelled < WALK_TARGET; i++) {
+    travelled = await page.evaluate(({ id, from, t }) => {
+      window.__maker.guestSend({ t: 'cmd', c: [t, 0, -1, 0, 0, 0, 0] });
+      const a = window.__maker.actors.get(id);
+      return a === undefined ? 0 : Math.hypot(a.controller.x - from.x, a.controller.z - from.z);
+    }, { id: welcome.id, from: startedAt, t: nextTick++ });
     await frames(page, 1);
   }
-  await send(page, { t: 'cmd', c: [100, 0, 0, 0, 0, 0, 0] });
-  await frames(page, 4);
+  await send(page, walkCommand(0, 0));
+  await frames(page, 6);
 
   const movedTo = await page.evaluate((id) => {
     const a = window.__maker.actors.get(id);
@@ -126,7 +147,10 @@ export default async function (page) {
   }, welcome.id);
   assert(movedTo !== null, 'the guest should still be in the roster after walking');
   const walked = Math.hypot(movedTo.x - startedAt.x, movedTo.z - startedAt.z);
-  assert(walked > 1.5, `their commands should move them; they went ${walked.toFixed(2)}m`);
+  assert(
+    walked >= WALK_TARGET,
+    `their commands should move them; they went ${walked.toFixed(2)}m`,
+  );
 
   // ── Snapshots come back, and say where everybody is ────────────────────────
   await drain(page);
@@ -174,10 +198,10 @@ export default async function (page) {
   // Out of the corner they spawned in, so the shot is two people on open lawn
   // rather than one person and a bush.
   for (let tick = 0; tick < 10; tick++) {
-    await send(page, { t: 'cmd', c: [200 + tick, -1, -0.35, 0, 0, 0, 0] });
+    await send(page, walkCommand(-1, -0.35));
     await frames(page, 1);
   }
-  await send(page, { t: 'cmd', c: [300, 0, 0, 0, 0, 0, 0] });
+  await send(page, walkCommand(0, 0));
   await frames(page, 4);
 
   const framed = await page.evaluate(() => {
