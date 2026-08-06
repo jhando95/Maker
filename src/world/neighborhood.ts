@@ -442,10 +442,63 @@ function dividers(): void {
  * that the bridge is obviously the thing to build, far enough that it is a
  * project rather than a step.
  */
+/**
+ * Bark on the big trunk, and a flare where it meets the ground.
+ *
+ * The trunk is one 1.3m box seven and a half metres tall, and standing anywhere
+ * in the left yard it is the largest single-coloured surface on screen — the
+ * flatness survey measured it at 26.7% of one frame, higher than the lawn ever
+ * was before the lawn was fixed. A toon ramp gives a box two bands and no more,
+ * so nothing about the shading was going to break it up.
+ *
+ * All of it is ghost geometry sitting proud of the trunk, which is the same
+ * arrangement the house cladding uses and for the same reason: the ladder up
+ * this tree works by a climb probe finding a near-vertical climbable surface,
+ * and a decorative strip of bark that the probe hit instead of the backing
+ * board would quietly break the one route to the deck.
+ */
+function bark(x: number, z: number): void {
+  // Strips down two faces — the two you can see from the yard. Varying the
+  // width matters more than the count: four evenly spaced identical ribs read
+  // as a radiator, and it is the irregularity that reads as bark.
+  const strips: ReadonlyArray<[offset: number, width: number, tone: number]> = [
+    [-0.44, 0.22, 0x7a5438], [-0.14, 0.34, 0x9a7050], [0.2, 0.16, 0x74502f],
+    [0.44, 0.26, 0x936a48],
+  ];
+  for (const [offset, width, tone] of strips) {
+    timber(width, 7.2, 0.06, x + offset, 3.6, z - 0.68, tone, { ghost: true, chamfer: 0.02 });
+    // The side face gets the *same* box turned a quarter turn rather than one
+    // built the other way round. Scenery is instanced by exact dimensions, so
+    // (w, 7.2, 0.06) and (0.06, 7.2, w) are two geometries and two draw calls
+    // for one shape — and this file is full of places where that adds up.
+    timber(width, 7.2, 0.06, x + 0.68, 3.6, z + offset, tone, {
+      ghost: true, chamfer: 0.02, ry: Math.PI / 2,
+    });
+  }
+
+  // The flare. A trunk that meets the lawn at a right angle is the single thing
+  // that most says "box with a bark texture on it" — real ones spread.
+  for (let i = 0; i < 3; i++) {
+    const t = i / 3;
+    timber(
+      1.3 + 0.5 * (1 - t), 0.34, 1.3 + 0.5 * (1 - t),
+      x, 0.17 + i * 0.3, z,
+      i % 2 === 0 ? 0x7a5438 : LOT.trunk,
+      { ghost: true, chamfer: 0.06 },
+    );
+  }
+
+  // Two sawn-off branch stubs. What they contribute is a horizontal on a shape
+  // that is otherwise nothing but verticals.
+  timber(1.5, 0.3, 0.3, x + 0.9, 5.6, z + 0.2, 0x7a5438, { ghost: true, rz: 0.34, chamfer: 0.08 });
+  timber(0.3, 0.28, 1.2, x - 0.2, 6.4, z - 0.8, 0x7a5438, { ghost: true, rx: 0.3, chamfer: 0.08 });
+}
+
 function treehouse(): void {
   const { x, z, deck } = TREEHOUSE;
 
   timber(1.3, 7.4, 1.3, x, 3.7, z, LOT.trunk, { outline: 0x4a3122, chamfer: 0.03 });
+  bark(x, z);
 
   // Rungs nailed up the trunk. Not a ladder object — the character controller
   // recognises any near-vertical surface with rungs, so this is the same

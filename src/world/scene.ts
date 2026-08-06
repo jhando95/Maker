@@ -418,12 +418,36 @@ function addTrees(scene: THREE.Scene, props: PropBatch, cache: GeometryCache, rn
   // need a shared set of blob shapes reused across trees.
   for (const [x, z, scale] of spots) {
     const trunkHeight = 3.4 * scale;
+    const lean = rng.range(0, Math.PI);
+    // Three stacked sections rather than one box, narrowing as they go up and
+    // alternating tone. A trunk of constant width with parallel sides is the
+    // one shape that reads as a post, and a post in a garden is a fence post —
+    // which is what these looked like at any distance where the canopy was not
+    // obviously attached to them.
+    // Snapped to a quarter, so five trees share three sets of trunk sections
+    // instead of needing fifteen. Scenery is instanced by exact dimensions and
+    // a size used once is a draw call spent on one box; the trees are the same
+    // shape at three sizes, and nobody can tell a 1.35 trunk from a 1.25 one.
+    const step = Math.max(0.5, Math.round(scale * 4) / 4);
+    for (let i = 0; i < 3; i++) {
+      const t = i / 3;
+      const width = 0.42 * step * (1 - t * 0.38);
+      box(
+        props, cache,
+        width, trunkHeight / 3 + 0.02, width,
+        x, trunkHeight / 6 + (i * trunkHeight) / 3, z,
+        i === 1 ? 0x7a5438 : PALETTE.trunk,
+        { ry: lean + i * 0.22, chamfer: 0.02, outline: 0x4a3122 },
+      );
+    }
+    // A flare where it meets the lawn, so the tree grows out of the ground
+    // rather than being stuck into it.
     box(
       props, cache,
-      0.42 * scale, trunkHeight, 0.42 * scale,
-      x, trunkHeight / 2, z,
-      PALETTE.trunk,
-      { ry: rng.range(0, Math.PI), chamfer: 0.02, outline: 0x4a3122 },
+      0.62 * step, 0.22 * step, 0.62 * step,
+      x, 0.1 * step, z,
+      0x7a5438,
+      { ry: lean + 0.5, chamfer: 0.07, outline: 0x4a3122 },
     );
 
     const clusters = rng.int(2, 3);

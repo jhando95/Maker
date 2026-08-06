@@ -69,7 +69,7 @@ export interface Wear {
  * this number would have quietly doubled the cell size everywhere including
  * under the lot.
  */
-const CELLS = 165;
+const CELLS = 116;
 
 /**
  * The lattice the grass tone is sampled from.
