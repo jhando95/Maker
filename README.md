@@ -22,7 +22,7 @@ npm run dev      # http://localhost:5173
 | | |
 |---|---|
 | `WASD` | move |
-| `Space` | jump |
+| `Space` | jump — and, against a ledge you can reach, haul yourself over it |
 | `Shift` | sprint |
 | `Ctrl` / `C` | crouch (also fine-placement mode while building) |
 | `LMB` | place part — hold to keep placing; throw or soak once the fighting starts |

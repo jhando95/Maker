@@ -20,6 +20,10 @@ import {
   CLIMB_REACH,
   CLIMB_SPEED,
   COYOTE_TIME,
+  MANTLE_DURATION,
+  MANTLE_MAX_HEIGHT,
+  MANTLE_OVERSHOOT,
+  MANTLE_REACH,
   CROUCH_SPEED,
   EYE_HEIGHT,
   EYE_HEIGHT_CROUCH,
@@ -77,6 +81,18 @@ export interface ControllerState {
   coyoteTimer: number;
   jumpBuffer: number;
   halfSpine: number;
+  /**
+   * How much of a pull-up is left, and where it is going.
+   *
+   * Captured like every other timer, and for the sharper version of the same
+   * reason: a mantle is the one movement in the game that ignores gravity and
+   * input for several ticks, so a rewind that dropped it mid-pull would replay
+   * those ticks as an ordinary fall and put the guest somewhere the host never
+   * was — the largest possible disagreement, from the shortest possible gap.
+   */
+  mantleLeft: number;
+  mantleFromX: number; mantleFromY: number; mantleFromZ: number;
+  mantleToX: number; mantleToY: number; mantleToZ: number;
   prevX: number; prevY: number; prevZ: number;
   prevEyeHeight: number;
 }
@@ -106,6 +122,24 @@ export class CharacterController {
   onGround = false;
   crouching = false;
   climbing = false;
+
+  /**
+   * Seconds of pull-up left, and where it started and ends.
+   *
+   * A mantle is a rail rather than a force: for `MANTLE_DURATION` the body is
+   * interpolated from one point to another, ignoring gravity, input and
+   * collision. That is only safe because the destination is proved clear before
+   * the rail is entered — see `tryMantle` — and it is worth the bluntness,
+   * because a physical pull-up would need forces that push a capsule through a
+   * ledge it is meant to land on.
+   */
+  private mantleLeft = 0;
+  private mantleFromX = 0;
+  private mantleFromY = 0;
+  private mantleFromZ = 0;
+  private mantleToX = 0;
+  private mantleToY = 0;
+  private mantleToZ = 0;
 
   /** Interpolated for rendering, so crouching is a smooth dip not a snap. */
   eyeHeight = EYE_HEIGHT;
@@ -181,6 +215,13 @@ export class CharacterController {
       coyoteTimer: this.coyoteTimer,
       jumpBuffer: this.jumpBuffer,
       halfSpine: this.halfSpine,
+      mantleLeft: this.mantleLeft,
+      mantleFromX: this.mantleFromX,
+      mantleFromY: this.mantleFromY,
+      mantleFromZ: this.mantleFromZ,
+      mantleToX: this.mantleToX,
+      mantleToY: this.mantleToY,
+      mantleToZ: this.mantleToZ,
       prevX: this.prevX, prevY: this.prevY, prevZ: this.prevZ,
       prevEyeHeight: this.prevEyeHeight,
     };
@@ -196,6 +237,13 @@ export class CharacterController {
     this.coyoteTimer = state.coyoteTimer;
     this.jumpBuffer = state.jumpBuffer;
     this.halfSpine = state.halfSpine;
+    this.mantleLeft = state.mantleLeft;
+    this.mantleFromX = state.mantleFromX;
+    this.mantleFromY = state.mantleFromY;
+    this.mantleFromZ = state.mantleFromZ;
+    this.mantleToX = state.mantleToX;
+    this.mantleToY = state.mantleToY;
+    this.mantleToZ = state.mantleToZ;
     this.prevX = state.prevX; this.prevY = state.prevY; this.prevZ = state.prevZ;
     this.prevEyeHeight = state.prevEyeHeight;
     this.syncCapsule();
@@ -210,8 +258,22 @@ export class CharacterController {
     this.updateStance(intent);
     this.syncCapsule();
 
+    // Before everything, because a pull-up in progress owns the body: it is
+    // the one state where neither gravity nor the player has a say.
+    if (this.mantleLeft > 0) {
+      this.stepMantle(dt);
+      const targetEyeMantle = this.crouching ? EYE_HEIGHT_CROUCH : EYE_HEIGHT;
+      this.eyeHeight += (targetEyeMantle - this.eyeHeight) * Math.min(1, dt * 14);
+      return;
+    }
+
     if (this.climbing || this.tryEnterClimb(intent)) {
       this.stepClimbing(dt, intent);
+    } else if (this.tryMantle(intent)) {
+      // Offered before the ordinary step so a jump pressed against a ledge
+      // becomes a pull-up rather than a hop into the side of it. Tried after
+      // climbing, because a ladder is the better answer wherever there is one.
+      this.stepMantle(dt);
     } else {
       this.stepGrounded(dt, intent);
     }
@@ -445,6 +507,119 @@ export class CharacterController {
    * without being told. The tradeoff is that plain walls are climbable too,
    * which for a backyard fort game is a feature rather than a bug.
    */
+  /**
+   * Look for a ledge worth pulling up onto, and commit to it.
+   *
+   * Three questions, in the order that makes the cheapest one first: is there
+   * something in front of me, how high is its top, and could I stand there.
+   * The third is the one that keeps this safe — the pull-up ignores collision,
+   * so the destination has to be proved clear before the rail is entered rather
+   * than discovered afterwards.
+   *
+   * Deliberate rather than automatic. Walking into a wall and being teleported
+   * over it would make every low fence a suggestion; pressing jump makes it a
+   * thing the player did, which is what a skill is.
+   */
+  private tryMantle(intent: MoveIntent): boolean {
+    if (!intent.jump || this.climbing) return false;
+    // From the ground, or within the coyote window — not from mid-air.
+    //
+    // Airborne mantling is the tech that would raise the ceiling furthest, and
+    // it is left out deliberately rather than forgotten. `rise` is measured
+    // from the feet, so a player at the top of a 1.15m jump can reach a ledge
+    // 1.6m above *that* — which quietly moves the height a wall must beat from
+    // MANTLE_MAX_HEIGHT to nearly two and a half metres, and makes the table
+    // beside that constant a lie. Adding it later means re-pricing every fort
+    // in the game on purpose, with the measurements to back it, rather than as
+    // a side effect of where a ray happened to start.
+    if (!this.onGround && this.coyoteTimer <= 0) return false;
+    const dirLen = Math.hypot(intent.right, intent.forward);
+    if (dirLen < 0.3) return false;
+    const dx = intent.right / dirLen;
+    const dz = intent.forward / dirLen;
+
+    // Is anything there? Cast low — just above the feet — rather than at the
+    // waist. Waist height seems the natural place to look for a wall and is
+    // wrong twice over: it misses anything shorter than the waist, and a
+    // player who pressed jump is already climbing, so by the time they are
+    // close enough to reach a ledge the ray has risen above it. Casting near
+    // the feet finds the face whatever the height, and the rise check below is
+    // what decides whether it is worth climbing.
+    const shin = this.y + 0.25;
+    const hit = this.world.raycast(this.x, shin, this.z, dx, 0, dz, MANTLE_REACH);
+    if (hit === null) return false;
+
+    // How high is its top? Straight down from above the reach limit, at a point
+    // just past the face — far enough in that the ray lands on the top surface
+    // rather than skimming the wall it belongs to.
+    const overX = this.x + dx * (hit.distance + MANTLE_OVERSHOOT);
+    const overZ = this.z + dz * (hit.distance + MANTLE_OVERSHOOT);
+    const from = this.y + MANTLE_MAX_HEIGHT + 0.2;
+    const down = this.world.raycast(overX, from, overZ, 0, -1, 0, MANTLE_MAX_HEIGHT + 0.4);
+    if (down === null) return false;
+
+    const ledgeY = from - down.distance;
+    const rise = ledgeY - this.y;
+    // Below the step-up's reach is not a mantle, it is a step, and letting this
+    // claim those would replace a free walk-over with a half-second animation.
+    if (rise <= STEP_HEIGHT || rise > MANTLE_MAX_HEIGHT) return false;
+
+    // Could I stand there? Asked of a full-height capsule even while crouched,
+    // because the pull-up ends standing.
+    const landing: Capsule = {
+      ax: overX, ay: ledgeY + CAP_RADIUS + SKIN, az: overZ,
+      bx: overX, by: ledgeY + CAP_RADIUS + SKIN + CAP_HALF_SPINE * 2, bz: overZ,
+      radius: CAP_RADIUS,
+    };
+    if (!this.world.hasRoom(landing)) return false;
+
+    this.mantleLeft = MANTLE_DURATION;
+    this.mantleFromX = this.x; this.mantleFromY = this.y; this.mantleFromZ = this.z;
+    this.mantleToX = overX; this.mantleToY = ledgeY + SKIN; this.mantleToZ = overZ;
+    // Dropped, so the pull-up starts from rest and cannot fling the player off
+    // the far side with whatever speed they ran in at.
+    this.vx = 0; this.vy = 0; this.vz = 0;
+    this.climbing = false;
+    this.onGround = false;
+    return true;
+  }
+
+  /**
+   * Advance a pull-up along its rail.
+   *
+   * Up first, then across, rather than in a straight line. A diagonal reads as
+   * floating through the corner of the thing being climbed, and — because the
+   * whole move ignores collision — a straight line really would pass through
+   * it on the way.
+   */
+  private stepMantle(dt: number): void {
+    this.mantleLeft = Math.max(0, this.mantleLeft - dt);
+    const t = 1 - this.mantleLeft / MANTLE_DURATION;
+    // Height finishes at the two-thirds mark; the last third is the shuffle
+    // forward onto the ledge.
+    const up = Math.min(1, t / 0.66);
+    const along = Math.max(0, (t - 0.34) / 0.66);
+
+    this.y = this.mantleFromY + (this.mantleToY - this.mantleFromY) * smooth(up);
+    this.x = this.mantleFromX + (this.mantleToX - this.mantleFromX) * smooth(along);
+    this.z = this.mantleFromZ + (this.mantleToZ - this.mantleFromZ) * smooth(along);
+    this.syncCapsule();
+
+    if (this.mantleLeft > 0) return;
+    // Landed. Put the body exactly where the check said it could stand, and
+    // hand it back to gravity with no inherited speed.
+    this.x = this.mantleToX; this.y = this.mantleToY; this.z = this.mantleToZ;
+    this.vx = 0; this.vy = 0; this.vz = 0;
+    this.onGround = true;
+    this.coyoteTimer = COYOTE_TIME;
+    this.syncCapsule();
+  }
+
+  /** True while hauling over a ledge, for the animation and for the HUD. */
+  get mantling(): boolean {
+    return this.mantleLeft > 0;
+  }
+
   private tryEnterClimb(intent: MoveIntent): boolean {
     if (intent.climb <= 0 && !intent.jump) return false;
     if (Math.abs(intent.forward) < 0.1 && Math.abs(intent.right) < 0.1 && intent.climb <= 0) return false;
@@ -575,4 +750,10 @@ export class CharacterController {
   get speed(): number {
     return Math.hypot(this.vx, this.vz);
   }
+}
+
+/** Ease in and out, so a pull-up starts and finishes without a jolt. */
+function smooth(t: number): number {
+  const c = Math.min(1, Math.max(0, t));
+  return c * c * (3 - 2 * c);
 }

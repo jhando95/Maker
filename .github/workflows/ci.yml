@@ -138,6 +138,13 @@ jobs:
       - name: Multiplayer scenario
         run: node tools/shoot.mjs --scenario scenarios/multiplayer.mjs --auto-quality --out /tmp/ci-multiplayer.png
 
+      # Mantling against a wall a player actually built, on the real map,
+      # through the real movement code. The unit tests build a ledge out of two
+      # boxes in an empty world; this asks whether a fort yields to a pull-up,
+      # which is the question the mechanic exists to answer.
+      - name: Mantle scenario
+        run: node tools/shoot.mjs --scenario scenarios/mantle.mjs --auto-quality --out /tmp/ci-mantle.png
+
       # The whole of the lobby, end to end against a real server: two browser
       # contexts, two friend codes, a party, a queue, and a round running in the
       # room it was matched into. It is also the only thing that exercises the
@@ -201,6 +208,7 @@ jobs:
             /tmp/ci-party.png
             /tmp/ci-multiplayer.png
             /tmp/ci-lobby.png
+            /tmp/ci-mantle.png
             /tmp/ci-lobby-friends.png
           if-no-files-found: ignore
 

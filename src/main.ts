@@ -16,7 +16,7 @@ import { installFixtures } from './world/neighborhood.ts';
 import { PartRenderer } from './render/partRenderer.ts';
 import { chamferedBox } from './render/geometry.ts';
 import { BuildSystem, type PlacementRecord } from './build/buildSystem.ts';
-import { CharacterController } from './player/controller.ts';
+import { CharacterController, type MoveIntent } from './player/controller.ts';
 import { CameraRig } from './player/cameraRig.ts';
 import { Hud, type ScreenPin } from './ui/hud.ts';
 import { MAX_REACH } from './build/snapping.ts';
@@ -1783,6 +1783,25 @@ window.__maker = {
    * snapshot.
    */
   balloonsDrawn: () => projectiles.activeCount,
+  /**
+   * Drive the local player from a fixed intent for a while, and report.
+   *
+   * For the mantle scenario, which needs to hold a direction and a jump the
+   * way a player does. Goes through the controller rather than teleporting, so
+   * what is measured is the movement code and not a shortcut past it.
+   */
+  driveIntent: (seconds: number, partial: Partial<MoveIntent>) => {
+    let mantled = false;
+    const ticks = Math.round(seconds / DT);
+    for (let i = 0; i < ticks; i++) {
+      player.step(DT, {
+        forward: 0, right: 0, jump: false, sprint: false, crouch: false, climb: 0,
+        ...partial,
+      });
+      if (player.mantling) mantled = true;
+    }
+    return { x: player.x, y: player.y, z: player.z, mantled, onGround: player.onGround };
+  },
   /** Connect to a lobby, for the lobby scenario. */
   openLobby: (url: string) => { connectLobby(url); },
   /**
