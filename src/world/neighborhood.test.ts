@@ -8,10 +8,22 @@ import {
   neighborhoodSlabs, installFixtures, HOUSE, LEFT_FLAG, RIGHT_FLAG,
   LEFT_SPAWN, RIGHT_SPAWN, FORT_YARD, TREEHOUSE, type Slab,
 } from './neighborhood.ts';
+import { culDeSacSlabs } from './culDeSac.ts';
 import { CAP_RADIUS, DT, JUMP_HEIGHT, STEP_HEIGHT } from '../physics/constants.ts';
 import { CharacterController, type MoveIntent } from '../player/controller.ts';
 
 const slabs = neighborhoodSlabs(new Rng('test-lot'));
+
+/**
+ * The lot's own geometry, with the neighbourhood beyond the fence taken out.
+ *
+ * Subtracted by identity rather than by position, so a house that drifted into
+ * the yard would still be measured as being in the yard. Filtering on "is it
+ * outside the fence" would have made every check below unfalsifiable — anything
+ * that broke the rule would have removed itself from the test.
+ */
+const street = new Set(culDeSacSlabs().map((s) => JSON.stringify(s)));
+const lot = slabs.filter((s) => !street.has(JSON.stringify(s)));
 
 /** World-axis bounds of a slab, for the overlap and clearance checks. */
 function bounds(s: Slab) {
@@ -48,9 +60,17 @@ describe('the lot', () => {
   });
 
   it('keeps everything inside the fenced lot', () => {
-    // The fence is at ±24 and the nav field only covers ±26. Anything outside is
-    // scenery nobody can reach and bots cannot route around.
-    for (const s of slabs) {
+    // The fence is at ±24 and the nav field only covers ±26. Anything the lot
+    // itself puts outside that is scenery bots cannot route around.
+    //
+    // The cul-de-sac is exempt and is checked the other way round, by
+    // `culDeSac.test.ts`, which insists none of it reaches *in*. The two
+    // together still cover every slab: nothing may cross the line in either
+    // direction, and which side a piece belongs to is decided by which list it
+    // came from rather than by where it ended up.
+    expect(lot.length).toBeGreaterThan(300);
+    expect(lot.length).toBeLessThan(slabs.length);
+    for (const s of lot) {
       const b = bounds(s);
       expect(Math.max(Math.abs(b.minX), Math.abs(b.maxX))).toBeLessThan(24);
       expect(Math.max(Math.abs(b.minZ), Math.abs(b.maxZ))).toBeLessThan(24);

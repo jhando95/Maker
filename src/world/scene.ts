@@ -94,6 +94,26 @@ class GeometryCache {
 /** Yard half-extent in meters. */
 export const YARD_HALF = 24;
 
+/**
+ * Half the opening in the front fence.
+ *
+ * Wide enough for two people abreast. Narrower and it reads as a gap somebody
+ * forgot rather than a gate; wider and the fence stops being a boundary, which
+ * is the one thing the fence is for.
+ */
+const GATE_HALF = 1.4;
+
+/**
+ * Side length of the detailed lawn.
+ *
+ * Exported because it is a constraint on the neighbourhood, not a decoration:
+ * anything standing outside it is standing on the flat plane that fills the
+ * horizon, which has no tone in it and meets the lawn in a straight line that
+ * runs right under the building. `culDeSac.test.ts` checks the street against
+ * this number rather than against a copy of it.
+ */
+export const LAWN_EXTENT = 132;
+
 export function createScene(seed: string | number = 'backyard-01'): SceneBuild {
   const rng = new Rng(seed);
   const scene = new THREE.Scene();
@@ -273,7 +293,12 @@ function addGround(scene: THREE.Scene, rng: Rng, slabs: readonly Slab[]): void {
   // something to be, and subdividing four hundred metres to get it would be
   // most of a megabyte of vertices for ground nobody stands on.
   const lawn = {
-    extent: 58,
+    // Out past the cul-de-sac, so the neighbourhood stands on ground with tone
+    // in it rather than on the flat plane that fills the horizon. The cell size
+    // is held at about 0.8m by raising the subdivision to match — a coarser
+    // lattice starts showing as triangular banding on open ground, which is
+    // worse than the flat colour it replaced.
+    extent: LAWN_EXTENT,
     grass: PALETTE.grass,
     grassDark: PALETTE.grassDark,
     dirt: PALETTE.dirt,
@@ -281,11 +306,12 @@ function addGround(scene: THREE.Scene, rng: Rng, slabs: readonly Slab[]): void {
     paved: pavedFootprints(slabs),
   };
   scene.add(buildGround(rng, lawn));
-  // Three clumps per square metre. Sparser and the eye reads them as individual
-  // objects scattered on a plane rather than as the plane's surface, which is
-  // the whole point of them; denser stops paying for itself well before it
-  // stops costing triangles.
-  scene.add(buildTufts(rng, { ...lawn, count: 10000 }));
+  // Three clumps per square metre, over the lot and a little past it — not over
+  // the whole hundred metres of ground. Grass reads as grass because of how
+  // close together the clumps are, and spreading the same number over four
+  // times the area would thin the yard you actually stand in to make verges
+  // nobody can reach look slightly better. So the tufts keep their own extent.
+  scene.add(buildTufts(rng, { ...lawn, extent: 62, count: 11000 }));
 
   const geometry = new THREE.PlaneGeometry(400, 400, 1, 1);
   geometry.rotateX(-Math.PI / 2);
@@ -338,6 +364,12 @@ function addFence(props: PropBatch, cache: GeometryCache, rng: Rng): void {
     for (let i = 0; i < count; i++) {
       const t = (i + 0.5) / count;
       const p = run.from.clone().lerp(run.to, t);
+      // The front gate. A fence that goes right round with no way through says
+      // the lot has no relationship to the street it faces, which is a strange
+      // thing to say about a house with a front door and a path to it — and the
+      // gap is what makes the cul-de-sac read as somewhere you came *from*
+      // rather than a painted backdrop.
+      if (p.z < -YARD_HALF + 0.5 && Math.abs(p.x) < GATE_HALF) continue;
       box(
         props, cache,
         0.09, picketHeight, 0.02,

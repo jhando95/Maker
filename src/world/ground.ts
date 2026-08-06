@@ -58,12 +58,18 @@ export interface Wear {
 /**
  * How finely the lawn is divided.
  *
- * Against the lot's 56 metres this is a cell a little under a metre. Finer draws
- * a crisper path edge and costs vertices for a surface nobody looks at closely;
- * coarser starts to show the lattice as visible triangular banding on open
- * ground, which is worse than the flat colour it replaced.
+ * Set against the ground's extent to give a cell a little under a metre. Finer
+ * draws a crisper path edge and costs vertices for a surface nobody looks at
+ * closely; coarser starts to show the lattice as visible triangular banding on
+ * open ground, which is worse than the flat colour it replaced.
+ *
+ * It is a count rather than a cell size because `PlaneGeometry` takes segments,
+ * and it has to be raised whenever the extent is — which is a real hazard: the
+ * ground grew from 58 metres to 108 to fit the cul-de-sac on it, and left alone
+ * this number would have quietly doubled the cell size everywhere including
+ * under the lot.
  */
-const CELLS = 72;
+const CELLS = 165;
 
 /**
  * The lattice the grass tone is sampled from.
@@ -72,7 +78,7 @@ const CELLS = 72;
  * noise at this density reads as static, and what a lawn actually has is broad
  * patches of slightly different green a few metres across.
  */
-const NOISE_CELLS = 10;
+const NOISE_CELLS = 22;
 
 /** Where the average patch of lawn sits between the two grass tones. */
 const TONE_CENTRE = 0.82;

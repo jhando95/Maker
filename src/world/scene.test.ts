@@ -12,6 +12,7 @@
 import { describe, it, expect } from 'vitest';
 import * as THREE from 'three';
 import { createScene } from './scene.ts';
+import { BULB } from './culDeSac.ts';
 
 /** The tuft field, pulled back out of the assembled scene. */
 function tufts(scene: THREE.Scene): THREE.InstancedMesh {
@@ -32,28 +33,36 @@ function positions(mesh: THREE.InstancedMesh): THREE.Vector3[] {
 }
 
 describe('the assembled yard', () => {
-  it('grows no grass through the street', () => {
-    // The street is 46m by 5m centred on z = -20.5. It is the largest paved
-    // surface on the map and the one a player crosses on the way in, so it is
-    // also where grass coming up through tarmac is most obvious.
+  it('grows no grass through the turning head', () => {
+    // The largest paved surface on the map, and the one a player looks straight
+    // at over the front fence — so it is where grass coming up through tarmac
+    // would be most obvious.
     //
     // This is a test of the wiring rather than of the rule: `buildTufts` is
     // told where the paving is, and if `createScene` ever stops telling it —
     // which is one argument at one call site — every other test in the project
     // still passes.
+    //
+    // Measured against the bulb's own constants rather than a copy of them.
+    // The first version had the street's rectangle typed in, and when the road
+    // moved outside the fence the test went on happily checking a patch of
+    // front lawn where grass is supposed to grow.
     const scene = createScene('paving-check').scene;
-    const onStreet = positions(tufts(scene))
-      .filter((p) => Math.abs(p.x) <= 23 && p.z >= -23 && p.z <= -18);
-    expect(onStreet).toHaveLength(0);
+    const onRoad = positions(tufts(scene)).filter(
+      (p) => Math.hypot(p.x - BULB.x, p.z - BULB.z) < BULB.radius * 0.8,
+    );
+    expect(onRoad).toHaveLength(0);
   });
 
-  it('still grows grass on the lawn either side of it', () => {
-    // Otherwise "no grass on the street" is satisfied by a lot with no grass on
+  it('still grows grass on the verge beside it', () => {
+    // Otherwise "no grass on the road" is satisfied by a lot with no grass on
     // it at all, which is the state this whole pass started from.
     const scene = createScene('paving-check').scene;
-    const near = positions(tufts(scene))
-      .filter((p) => Math.abs(p.x) <= 20 && p.z > -17.5 && p.z < -12);
-    expect(near.length).toBeGreaterThan(50);
+    const verge = positions(tufts(scene)).filter((p) => {
+      const r = Math.hypot(p.x - BULB.x, p.z - BULB.z);
+      return r > BULB.radius + 1 && r < BULB.radius + 5;
+    });
+    expect(verge.length).toBeGreaterThan(20);
   });
 
   it('builds the same yard twice from the same seed', () => {

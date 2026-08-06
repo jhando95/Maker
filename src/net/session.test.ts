@@ -13,6 +13,7 @@ import { loopbackPair } from './transport.ts';
 import { decode, encode, PROTOCOL_VERSION } from './protocol.ts';
 import {
   NetHost, NetClient, SNAPSHOT_HZ, INTERP_DELAY, RECONCILE_THRESHOLD, MAX_PEERS,
+  HELLO_GRACE_TICKS,
   type SessionContext,
 } from './session.ts';
 
@@ -153,11 +154,48 @@ describe('joining', () => {
     expect(host.status.peers).toBe(0);
   });
 
-  it('turns away a peer that never said hello', () => {
+  it('waits for a hello that has not arrived yet', () => {
+    // The failure this replaces was a race dressed as a rule. `greet` assumed
+    // the hello had already arrived by the time a transport reached the host —
+    // true of the relay, which hands one over on its first message, and an
+    // invariant held by exactly one caller. Everything else got "expected a
+    // hello" and a closed socket on the very next tick.
+    //
+    // It behaved exactly like a race, too: the browser scenario passed on a
+    // fast machine and failed on CI, because one extra round trip between
+    // opening the pipe and sending the hello was enough for a tick to land in
+    // the gap. A real network has that gap by definition.
+    const pipe = loopbackPair();
+    host.accept(pipe.host);
+    for (let i = 0; i < 20; i++) host.beforeTick();
+    expect(pipe.client.drain()).toHaveLength(0);
+    expect(pipe.client.open).toBe(true);
+
+    pipe.client.send({ t: 'hello', version: PROTOCOL_VERSION, name: 'late' });
+    host.beforeTick();
+    const replies = pipe.client.drain();
+    expect(replies[0]!.t).toBe('welcome');
+    expect(host.status.peers).toBe(1);
+  });
+
+  it('keeps what arrived before the hello did', () => {
+    // A command can beat a hello through a relay. One drain that threw the
+    // queue away would swallow the introduction and hang the connection until
+    // it timed out.
+    const pipe = loopbackPair();
+    host.accept(pipe.host);
+    pipe.client.send({ t: 'cmd', c: [0, 0, 0, 0, 0, 0, 0] });
+    host.beforeTick();
+    pipe.client.send({ t: 'hello', version: PROTOCOL_VERSION, name: 'out of order' });
+    host.beforeTick();
+    expect(host.status.peers).toBe(1);
+  });
+
+  it('gives up on a connection that never introduces itself', () => {
     const pipe = loopbackPair();
     pipe.client.send({ t: 'cmd', c: [0, 0, 0, 0, 0, 0, 0] });
     host.accept(pipe.host);
-    host.beforeTick();
+    for (let i = 0; i <= HELLO_GRACE_TICKS + 1; i++) host.beforeTick();
     expect(pipe.client.drain()[0]!.t).toBe('refused');
     expect(host.status.peers).toBe(0);
   });

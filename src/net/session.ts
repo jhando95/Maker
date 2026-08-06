@@ -88,6 +88,14 @@ export const RECONCILE_THRESHOLD = 0.06;
 /** Guests, so a stray peer cannot exhaust memory on the host. */
 export const MAX_PEERS = 7;
 
+/**
+ * How long a new connection has to introduce itself. Five seconds.
+ *
+ * Long enough that no real client misses it and short enough that something
+ * which opened a socket and then said nothing cannot sit in the queue forever.
+ */
+export const HELLO_GRACE_TICKS = 300;
+
 /** Unacknowledged commands a guest keeps for replay. Two seconds' worth. */
 const COMMAND_HISTORY = 120;
 
@@ -207,10 +215,28 @@ export class NetHost {
    * loopback pair in a test — is not this class's business.
    */
   accept(transport: Transport): void {
-    this.pending.push(transport);
+    this.pending.push({ transport, waited: 0, heard: [] });
   }
 
-  private readonly pending: Transport[] = [];
+  /**
+   * Connections that have not introduced themselves yet.
+   *
+   * They are waited on rather than required to have spoken already. The first
+   * version assumed the hello had arrived by the time a transport reached the
+   * host — true of the relay, which hands one over on its first message, and an
+   * invariant held by exactly one caller. Anything else got "expected a hello"
+   * and a closed socket on the very next tick.
+   *
+   * That is a race, not a rule, and it behaved like one: the scenario passed on
+   * a fast machine and failed on CI, because adding one round trip between
+   * opening the pipe and sending the hello was enough to let a tick land in the
+   * gap. A real network has that gap by definition.
+   */
+  private readonly pending: Array<{
+    transport: Transport;
+    waited: number;
+    heard: Array<ReturnType<typeof decode>>;
+  }> = [];
 
   get status(): NetStatus {
     return {
@@ -224,8 +250,26 @@ export class NetHost {
 
   /** Drain the wire and apply what arrived. Runs at the top of a tick. */
   beforeTick(): void {
-    for (const transport of this.pending.splice(0, this.pending.length)) {
-      this.greet(transport);
+    for (let i = this.pending.length - 1; i >= 0; i--) {
+      const waiting = this.pending[i]!;
+      if (!waiting.transport.open) {
+        this.pending.splice(i, 1);
+        continue;
+      }
+      // Whatever arrived, kept — a `cmd` can beat a `hello` through a relay,
+      // and one drain that threw the queue away would lose it.
+      waiting.heard.push(...waiting.transport.drain());
+      const hello = waiting.heard.find((m) => m !== null && m.t === 'hello');
+      if (hello !== undefined && hello !== null && hello.t === 'hello') {
+        this.pending.splice(i, 1);
+        this.greet(waiting.transport, hello);
+        continue;
+      }
+      if (++waiting.waited > HELLO_GRACE_TICKS) {
+        this.pending.splice(i, 1);
+        waiting.transport.send({ t: 'refused', reason: 'no hello' });
+        waiting.transport.close();
+      }
     }
 
     for (const peer of [...this.peers.values()]) {
@@ -239,16 +283,7 @@ export class NetHost {
     }
   }
 
-  private greet(transport: Transport): void {
-    // The hello has to have arrived already, which it will have: a transport is
-    // handed over on its first message. Anything else is turned away rather
-    // than left half-joined.
-    const first = transport.drain().find((m) => m.t === 'hello');
-    if (first === undefined || first.t !== 'hello') {
-      transport.send({ t: 'refused', reason: 'expected a hello' });
-      transport.close();
-      return;
-    }
+  private greet(transport: Transport, first: { version: number; name: string }): void {
     if (first.version !== PROTOCOL_VERSION) {
       transport.send({
         t: 'refused',

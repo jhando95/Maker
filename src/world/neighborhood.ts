@@ -21,6 +21,7 @@
 
 import * as THREE from 'three';
 import { Rng } from '../core/rng.ts';
+import { culDeSacSlabs } from './culDeSac.ts';
 import type { CollisionWorld } from '../physics/collisionWorld.ts';
 
 /**
@@ -159,10 +160,16 @@ export function wearPoints(): ReadonlyArray<{ x: number; z: number; radius: numb
     { x: TREEHOUSE.x, z: TREEHOUSE.z, radius: 3.6, strength: 0.95 },
     // The stash, and the fort that gets built round it.
     { x: FORT_YARD.x, z: FORT_YARD.z, radius: 3.2, strength: 0.7 },
-    // The route from the street gate to the front door, as overlapping steps —
-    // a path is a line and this lattice only knows about circles.
+    // The garden path down the back, from the deck to the far fence, as
+    // overlapping steps — a path is a line and this lattice only knows about
+    // circles.
     ...pathWear(0, 17.5, 0, 7.4, 1.5, 0.75),
-    // And round the back deck, where the door is.
+    // And the front path: gate to porch, which is the way everybody comes in.
+    // The two were labelled the wrong way round here for a while. The porch is
+    // at -Z and the deck at +Z, and since both ends of a lawn look much alike
+    // from above, the ground quietly recorded traffic on the wrong side of the
+    // house until the cul-de-sac put a gate at one end and not the other.
+    ...pathWear(0, -23, 0, -9.5, 1.6, 0.8),
     { x: 0, z: -8.2, radius: 3.0, strength: 0.6 },
   ];
 }
@@ -216,6 +223,12 @@ export function neighborhoodSlabs(rng: Rng): Slab[] {
   leftYard(rng);
   rightYard(rng);
   street();
+  // The neighbourhood beyond the fence. Its own module: it is a different job
+  // from the lot — nobody plays on it and nothing there is balanced — and
+  // mixing scenery you can only look at into the file that also describes the
+  // geometry three modes are tuned around is how one starts being edited for
+  // the other's reasons.
+  for (const s of culDeSacSlabs()) put(s);
   clutter(rng);
   waterworks();
 
@@ -623,12 +636,19 @@ function flagSurround(x: number, z: number, accent: number): void {
   timber(1.6, 0.22, 1.6, x, 0.11, z, accent, { outline: DARK, chamfer: 0.04 });
 }
 
-/** The street out front, and the cart everyone's scam starts with. */
+/**
+ * The front of the property: the drive inside the fence, and the cart.
+ *
+ * This used to be the street itself — a strip of tarmac running off both edges
+ * of the world, inside the lot's own fence, which is not where a road goes. The
+ * road is outside now, in `culDeSac.ts`, and what is left here is the drive it
+ * arrives at.
+ */
 function street(): void {
   put({
-    w: 46, h: 0.06, d: 5.0,
+    w: 12, h: 0.06, d: 5.0,
     x: 0, y: 0.02, z: -20.5,
-    color: 0x8f8f96, outline: 0x5a5a60, chamfer: 0.02, ghost: true,
+    color: 0xb8b4aa, outline: 0x7a776e, chamfer: 0.02, ghost: true,
   });
   timber(2.4, 0.25, 1.3, -4.5, 0.42, -18.5, LOT.cart, { outline: 0xa06a20 });
   for (const [ox, oz] of [[-0.9, -0.6], [-0.9, 0.6], [0.9, -0.6], [0.9, 0.6]] as const) {
