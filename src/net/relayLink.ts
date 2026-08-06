@@ -74,7 +74,7 @@ export class RelayHostLink {
     private readonly onPeer: (transport: Transport) => void,
     private readonly onStatus?: (message: string) => void,
   ) {
-    const socket = new WebSocket(relayUrl(url, room));
+    const socket = new WebSocket(relayUrl(url, room, true));
     this.socket = socket;
     socket.addEventListener('open', () => {
       this.ready = true;
@@ -147,6 +147,8 @@ export class RelayHostLink {
  * Shared with the guest side so the two cannot end up in different rooms while
  * both believing they typed the same thing.
  */
-export function relayUrl(url: string, room: string): string {
-  return `${url}${url.includes('?') ? '&' : '?'}room=${encodeURIComponent(room)}`;
+export function relayUrl(url: string, room: string, host?: boolean): string {
+  const sep = url.includes('?') ? '&' : '?';
+  const claim = host === undefined ? '' : `&host=${host ? '1' : '0'}`;
+  return `${url}${sep}room=${encodeURIComponent(room)}${claim}`;
 }

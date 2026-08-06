@@ -595,12 +595,47 @@ export class NetClient {
   private clock = 0;
   private corrections = 0;
 
+  /**
+   * How often to say hello again while waiting to be welcomed.
+   *
+   * A third of a second, which is frequent enough that a player does not
+   * notice and rare enough that a host cannot be flooded by one.
+   */
+  private static readonly HELLO_RETRY_TICKS = 20;
+
+  private helloIn = 0;
+  private readonly name: string;
+
   constructor(
     private readonly ctx: SessionContext,
     private readonly transport: Transport,
     name: string,
   ) {
+    this.name = name;
     transport.send({ t: 'hello', version: PROTOCOL_VERSION, name });
+  }
+
+  /**
+   * Say hello again, until somebody says welcome.
+   *
+   * Sent once from the constructor at first, and that is wrong in two ways that
+   * only appear on a real socket. A fresh `WebSocket` is still `CONNECTING`
+   * when the constructor runs, and `SocketTransport.send` drops anything sent
+   * before it opens — so on a real connection the only hello was thrown away
+   * every single time. And even sent after opening, a relay drops a guest's
+   * message when no host has joined the room yet, which is routine now that a
+   * lobby hands both machines the same room at the same instant.
+   *
+   * Neither showed up for a long time because every test and scenario used a
+   * loopback or an in-page transport, and both of those are open on the tick
+   * they are made. Retrying fixes both without either side needing to know
+   * which one happened.
+   */
+  private sayHello(): void {
+    if (this.connected || !this.transport.open) return;
+    if (this.helloIn > 0) { this.helloIn--; return; }
+    this.helloIn = NetClient.HELLO_RETRY_TICKS;
+    this.transport.send({ t: 'hello', version: PROTOCOL_VERSION, name: this.name });
   }
 
   get status(): NetStatus {
@@ -647,6 +682,7 @@ export class NetClient {
       this.connected = false;
       this.message = 'lost the connection';
     }
+    this.sayHello();
     for (const message of this.transport.drain()) this.handle(message);
   }
 

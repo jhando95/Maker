@@ -89,7 +89,30 @@ Two browsers, one lawn. Start the relay, host in one tab, join from another:
 npm run server                 # ws://localhost:8787
 ```
 
-Then **Host a Yard** in the first tab and **Join a Yard** in the second. The
+Then **Play With Friends**, which is the way it is meant to be used: the server
+hands you a short code, you swap codes with somebody, and a queue puts you both
+in a yard together. **Host a Yard** and **Join a Yard** stay underneath it for
+two people on one network who would rather not involve a matchmaker at all.
+
+The one process serves both: a `/lobby` that knows about players, and the relay
+on every other path that knows only about sockets. The lobby's only output is a
+room name — it gathers people, elects a host and steps back — so a lobby that
+fell over could not interrupt a match already running.
+
+**Identity is a friend code, not an account.** Your browser makes a uuid on
+first run and the server maps it to a short shareable code; there is no email,
+no password and no database beyond the lobby's own memory. It is worth being
+plain that this is *not* authentication — a uuid in localStorage is a bearer
+credential, and whoever holds it is you. That is affordable only because nothing
+of value hangs off it: a code buys a place in somebody's list and a way to be
+invited to a game of tag.
+
+A party is the unit the queue moves, and it is **never split** across two
+matches — being separated from the friend you queued with is worse than waiting
+longer, so the matchmaker overshoots the target rather than taking half a party
+to hit it exactly.
+
+The
 relay carries bytes between browsers and knows nothing about the game — it never
 parses a message, so the protocol can change without touching it. It is a
 development relay: no TLS, no auth, no rate limiting.

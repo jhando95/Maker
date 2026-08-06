@@ -34,6 +34,9 @@ import { NetHost, NetClient, type SessionContext } from './net/session.ts';
 import { SocketTransport, loopbackPair, type Transport } from './net/transport.ts';
 import { RelayHostLink, relayUrl } from './net/relayLink.ts';
 import { RemoteMode } from './net/remoteMode.ts';
+import { IdentityStore } from './app/identity.ts';
+import { LobbyClient, lobbyUrl, socketLink, type Matched } from './net/lobby.ts';
+import { QUEUE_MODES } from './net/lobbyProtocol.ts';
 import { PROTOCOL_VERSION, type PackedRound } from './net/protocol.ts';
 import { FortDefenseMode } from './game/fortDefense.ts';
 import { CaptureTheFlagMode } from './game/captureTheFlag.ts';
@@ -44,7 +47,7 @@ import type { ActorInput, GameEvent, GameMode, ModeContext, ModeInput } from './
 import { SettingsStore, ghostColors, loadBindings, saveBindings, clearBindings } from './app/settings.ts';
 import { BINDABLE, describeKey, type Action } from './core/input.ts';
 import { BuildStore } from './app/buildStore.ts';
-import { Menu } from './ui/menu.ts';
+import { Menu, type LobbyView } from './ui/menu.ts';
 import { CrashHandler } from './app/crashHandler.ts';
 import { GamepadManager } from './core/gamepadManager.ts';
 import { PerformanceGovernor } from './app/performanceGovernor.ts';
@@ -510,13 +513,104 @@ function startHosting(url: string, room: string): NetHost {
   return host;
 }
 
-function joinSession(url: string, room: string, name = 'kid'): NetClient {
+function joinSession(url: string, room: string, name = 'kid', claim?: boolean): NetClient {
   leaveSession();
-  const client = new NetClient(sessionContext, new SocketTransport(relayUrl(url, room)), name);
+  const client = new NetClient(
+    sessionContext, new SocketTransport(relayUrl(url, room, claim)), name,
+  );
   net = client;
   netMessage = `joining "${room}"`;
   applyPause();
   return client;
+}
+
+// ── The lobby ────────────────────────────────────────────────────────────────
+//
+// A second, longer-lived connection than the one a match runs on. It knows who
+// your friends are and puts you in a queue; its only output is a room name,
+// after which the game connects to the relay exactly as if somebody had typed
+// the room in by hand. That is why a lobby going quiet cannot interrupt a
+// round: once a match starts, the lobby is not in the path.
+
+const identity = new IdentityStore();
+
+/** Where the lobby lives, remembered so the title screen can reconnect. */
+let lobbyAddress = 'ws://localhost:8787';
+let lobbyClient: LobbyClient | null = null;
+
+/**
+ * Go and play the match the lobby just found.
+ *
+ * The host is whichever machine the lobby elected, and both sides connect to
+ * the same room. The mode is started only by the host, for the same reason a
+ * guest never starts one anywhere else: two machines running the rules is two
+ * games with one name.
+ */
+/** Kept for the lobby scenario, which has no other way to see a room name. */
+let lastMatch: Matched | null = null;
+
+function enterMatch(match: Matched): void {
+  lastMatch = match;
+  if (match.host) {
+    startHosting(lobbyAddress, match.room);
+    // A beat before starting, so every guest has opened its socket and been
+    // welcomed. Starting on the same tick would begin a round in front of
+    // people who are not in the world yet.
+    window.setTimeout(() => {
+      if (net instanceof NetHost) startRound(match.mode as ModeId);
+    }, 1200);
+  } else {
+    // Says out loud that it is not the host, so the relay does not hand this
+    // socket the authority's lane just for arriving first.
+    joinSession(lobbyAddress, match.room, identity.name, false);
+  }
+  menu.show('none');
+}
+
+function connectLobby(url = lobbyAddress): LobbyClient {
+  lobbyAddress = url;
+  lobbyClient?.disconnect();
+  const client = new LobbyClient(identity, () => menu.refresh(), (m) => enterMatch(m));
+  client.connect(socketLink(lobbyUrl(url)));
+  lobbyClient = client;
+  return client;
+}
+
+/**
+ * The lobby as the menu wants it, or null when there is no connection.
+ *
+ * Assembled here rather than passing the client straight through, so the menu
+ * depends on a shape instead of on the network — and so the two lists it draws
+ * are plain data a test can hand it.
+ */
+function lobbyView(): LobbyView | null {
+  const client = lobbyClient;
+  if (client === null) return null;
+  const state = client.current;
+  return {
+    connected: state.connected,
+    code: state.code,
+    name: state.name,
+    friends: state.friends,
+    party: state.party,
+    invitations: state.invitations,
+    queue: state.queue,
+    problem: state.problem,
+    modes: QUEUE_MODES.map((id) => ({
+      id,
+      name: MODES.find((m) => m.id === id)?.name ?? id,
+    })),
+    rename: (name) => client.rename(name),
+    addFriend: (code) => client.addFriend(code),
+    removeFriend: (code) => client.removeFriend(code),
+    invite: (code) => client.invite(code),
+    accept: (party) => client.accept(party),
+    decline: (party) => client.decline(party),
+    leaveParty: () => client.leaveParty(),
+    kick: (code) => client.kick(code),
+    joinQueue: (mode) => client.joinQueue(mode),
+    leaveQueue: () => client.leaveQueue(),
+  };
 }
 
 /** Attach a session over an already-made transport. For scenarios and tests. */
@@ -669,6 +763,8 @@ const menu = new Menu(app, settings, {
   onHost: (url: string, room: string) => startHosting(url, room),
   onJoin: (url: string, room: string) => joinSession(url, room),
   onLeaveSession: () => leaveSession(),
+  lobby: () => lobbyView(),
+  onOpenLobby: (url: string) => { connectLobby(url || lobbyAddress); },
   sessionStatus: () => sessionStatus(),
   modesBlocked: () => modesBlocked(),
   onPlaySandbox: () => {
@@ -1687,6 +1783,33 @@ window.__maker = {
    * snapshot.
    */
   balloonsDrawn: () => projectiles.activeCount,
+  /** Connect to a lobby, for the lobby scenario. */
+  openLobby: (url: string) => { connectLobby(url); },
+  /**
+   * The lobby as it stands, or null. Plain data rather than the client, so a
+   * scenario reads what the screen reads and cannot reach past it.
+   */
+  lobbyState: () => {
+    const state = lobbyClient?.current;
+    if (state === undefined) return null;
+    return {
+      connected: state.connected,
+      code: state.code,
+      name: state.name,
+      friends: state.friends.map((f) => ({ ...f })),
+      party: state.party === null ? null : {
+        leaderCode: state.party.leaderCode,
+        members: state.party.members.map((m) => ({ code: m.code, name: m.name })),
+      },
+      invitations: state.invitations.map((i) => ({ party: i.party, from: { ...i.from } })),
+      queue: state.queue === null ? null : { ...state.queue },
+      problem: state.problem,
+    };
+  },
+  /** The last match the lobby handed over, so a scenario can check the room. */
+  lastMatch: () => lastMatch,
+  /** What the session layer is doing, for diagnosing a match that never joins. */
+  netDebug: () => ({ address: lobbyAddress, message: netMessage, paused: loop.isPaused }),
   projectiles,
   world,
   build,

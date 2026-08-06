@@ -11,10 +11,12 @@
  */
 
 import { SettingsStore, type Settings } from '../app/settings.ts';
+import { formatCode, MAX_NAME } from '../app/identity.ts';
 import type { BuildSlot } from '../app/buildStore.ts';
 import { installTheme } from './theme.ts';
 
-export type Screen = 'none' | 'title' | 'settings' | 'builds' | 'pause' | 'result' | 'controls';
+export type Screen =
+  | 'none' | 'title' | 'settings' | 'builds' | 'pause' | 'result' | 'controls' | 'lobby';
 
 const STYLE = `
 .mk-menu {
@@ -138,6 +140,51 @@ const STYLE = `
   border: var(--edge); border-radius: var(--r-sm);
 }
 .mk-input-short { flex: 0 0 88px; }
+
+/* ── The lobby ──────────────────────────────────────────────────────────────
+   Its own block because it is the one screen that is mostly a list rather
+   than a stack of buttons, and a list needs a row that reads left to right:
+   who, what they are doing, and what you can do about it. */
+.mk-code {
+  display: flex; align-items: center; justify-content: center; gap: 10px;
+  margin: 2px 0 14px;
+}
+.mk-code b {
+  font-size: 22px; letter-spacing: 3px; font-family: ui-monospace, monospace;
+  color: var(--ink);
+}
+.mk-list { margin: 0 0 12px; display: flex; flex-direction: column; gap: 4px; }
+.mk-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 9px; border: var(--edge); border-radius: var(--r-sm);
+  background: #fff8ec; font-size: 13px; font-weight: 700;
+}
+.mk-row .who { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; text-align: left; }
+/* Presence as a word, not only a colour: a coloured dot alone is unreadable to
+   anybody who cannot tell the two greens apart, and this screen is a list of
+   people whose whole purpose is knowing which of them you can play with. */
+.mk-row .state { font-size: 11px; opacity: 0.65; text-transform: uppercase;
+  letter-spacing: 0.5px; }
+.mk-dot { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto; }
+.mk-dot.online { background: var(--go); }
+.mk-dot.queued { background: var(--warn); }
+.mk-dot.playing { background: var(--accent); }
+.mk-dot.offline { background: rgba(43,32,28,0.28); }
+.mk-mini {
+  font: inherit; font-size: 11px; font-weight: 800; cursor: pointer;
+  padding: 4px 8px; border: var(--edge); border-radius: var(--r-sm);
+  background: var(--paper); color: var(--ink);
+}
+.mk-mini:hover { background: #ffe9bd; }
+.mk-empty { font-size: 12px; opacity: 0.5; text-align: center; padding: 8px 0 12px; }
+.mk-invite {
+  border: var(--edge); border-radius: var(--r-sm); background: #fff3d6;
+  padding: 8px 10px; margin-bottom: 6px; font-size: 13px; font-weight: 700;
+}
+.mk-invite .mk-net { margin-top: 6px; }
+.mk-searching { text-align: center; font-size: 13px; font-weight: 800; margin: 4px 0 10px; }
+.mk-searching span { opacity: 0.6; font-weight: 700; }
 .mk-input::placeholder { color: rgba(43, 32, 28, 0.45); font-weight: 600; }
 
 .mk-blurb {
@@ -190,6 +237,16 @@ export interface MenuCallbacks {
   onHost(url: string, room: string): void;
   onJoin(url: string, room: string): void;
   onLeaveSession(): void;
+  /**
+   * The lobby, or null when there is no connection to one.
+   *
+   * A getter rather than state the menu keeps, because the lobby changes
+   * underneath the screen — a friend comes online, a queue ticks — and a copy
+   * would be a second thing to keep in step with the first.
+   */
+  lobby(): LobbyView | null;
+  /** Connect to the lobby at this address, so friends and the queue work. */
+  onOpenLobby(url: string): void;
   /** A line about the connection, or null when playing alone. */
   sessionStatus(): string | null;
   /**
@@ -207,6 +264,37 @@ export interface MenuCallbacks {
   onLoadBuild(id: string): boolean;
   onDeleteBuild(id: string): void;
   listBuilds(): BuildSlot[];
+}
+
+/**
+ * Everything the lobby screen draws and every button it offers.
+ *
+ * Named apart from `LobbyClient` so the menu depends on a shape rather than on
+ * the network: this screen is the one place a wrong abstraction would be most
+ * annoying to unpick, and a test can hand it a plain object.
+ */
+export interface LobbyView {
+  connected: boolean;
+  code: string | null;
+  name: string;
+  friends: ReadonlyArray<{ code: string; name: string; presence: string }>;
+  party: { leaderCode: string; members: ReadonlyArray<{ code: string; name: string }> } | null;
+  invitations: ReadonlyArray<{ party: string; from: { name: string } }>;
+  queue: { mode: string; waiting: number; needed: number; seconds: number } | null;
+  problem: string | null;
+  /** Which modes the queue will take, in the order to offer them. */
+  modes: ReadonlyArray<{ id: string; name: string }>;
+
+  rename(name: string): void;
+  addFriend(code: string): void;
+  removeFriend(code: string): void;
+  invite(code: string): void;
+  accept(party: string): void;
+  decline(party: string): void;
+  leaveParty(): void;
+  kick(code: string): void;
+  joinQueue(mode: string): void;
+  leaveQueue(): void;
 }
 
 export interface ResultInfo {
@@ -254,6 +342,19 @@ export class Menu {
     return this.screen !== 'none';
   }
 
+  /**
+   * Redraw the current screen, if it is one that changes underneath the player.
+   *
+   * The lobby does: a friend comes online, a queue ticks, an invitation
+   * arrives. Everything else here is static once drawn, so this deliberately
+   * repaints nothing unless the lobby is up — a menu that rebuilt itself on
+   * every network message would throw away the text field somebody is typing
+   * a friend code into.
+   */
+  refresh(): void {
+    if (this.screen === 'lobby') this.render();
+  }
+
   show(screen: Screen, result?: ResultInfo): void {
     this.screen = screen;
     if (result !== undefined) this.result = result;
@@ -292,6 +393,7 @@ export class Menu {
     switch (this.screen) {
       case 'title': this.renderTitle(); break;
       case 'settings': this.renderSettings(); break;
+      case 'lobby': this.renderLobby(); break;
       case 'builds': this.renderBuilds(); break;
       case 'pause': this.renderPause(); break;
       case 'result': this.renderResult(); break;
@@ -342,6 +444,14 @@ export class Menu {
     row.append(url, room);
     this.card.appendChild(row);
 
+    // The lobby first, because it is the way this is meant to be used: a code
+    // you gave somebody, a queue, and a yard chosen for you. Hosting by hand
+    // stays underneath it for two people on one network who would rather not
+    // involve a matchmaker at all.
+    this.button('Play With Friends', () => {
+      this.callbacks.onOpenLobby(url.value.trim());
+      this.show('lobby');
+    });
     this.button('Host a Yard', () => {
       this.callbacks.onHost(url.value.trim(), room.value.trim() || 'yard');
       this.show('title');
@@ -422,6 +532,244 @@ export class Menu {
     hint.className = 'mk-hint';
     hint.textContent = 'Click the game to capture the mouse. Escape to pause.';
     this.card.appendChild(hint);
+  }
+
+  /**
+   * The lobby: your code, your friends, your party, and a queue.
+   *
+   * Everything on this screen is a list rather than a stack of buttons, which
+   * is why it has a row style of its own. The order is deliberate and it is
+   * the order somebody uses it in: find out who you are, add somebody, get
+   * them into a party, then go and play.
+   */
+  private renderLobby(): void {
+    const lobby = this.callbacks.lobby();
+    this.heading('Play With Friends');
+    if (lobby === null) {
+      const line = document.createElement('div');
+      line.className = 'mk-blurb';
+      line.textContent = 'Not connected to a lobby.';
+      this.card.appendChild(line);
+      this.button('Back', () => this.show('title'), 'mk-secondary');
+      return;
+    }
+
+    this.renderOwnCode(lobby);
+    if (lobby.problem !== null) {
+      const why = document.createElement('div');
+      why.className = 'mk-blurb mk-why';
+      why.textContent = lobby.problem;
+      this.card.appendChild(why);
+    }
+    this.renderInvitations(lobby);
+    this.renderParty(lobby);
+    this.renderFriends(lobby);
+    this.renderQueue(lobby);
+    this.button('Back', () => this.show('title'), 'mk-secondary');
+  }
+
+  private renderOwnCode(lobby: LobbyView): void {
+    const row = document.createElement('div');
+    row.className = 'mk-code';
+    const label = document.createElement('span');
+    label.className = 'mk-blurb';
+    label.style.margin = '0';
+    label.textContent = lobby.connected ? 'your code' : 'your code (offline)';
+    const code = document.createElement('b');
+    // Grouped for reading aloud. Somebody is going to say this over a table.
+    code.textContent = lobby.code === null ? '……' : formatCode(lobby.code);
+    row.append(label, code);
+
+    if (lobby.code !== null) {
+      const copy = document.createElement('button');
+      copy.className = 'mk-mini';
+      copy.textContent = 'copy';
+      copy.addEventListener('click', (e) => {
+        e.stopPropagation();
+        void navigator.clipboard?.writeText(formatCode(lobby.code ?? ''));
+        copy.textContent = 'copied';
+      });
+      row.appendChild(copy);
+    }
+    this.card.appendChild(row);
+
+    const name = document.createElement('input');
+    name.type = 'text';
+    name.className = 'mk-input';
+    name.value = lobby.name;
+    name.maxLength = MAX_NAME;
+    name.setAttribute('aria-label', 'your name');
+    // Committed on blur and on Enter rather than on every keystroke, or the
+    // lobby gets a message per letter and every friend a redraw per letter.
+    const commit = (): void => {
+      if (name.value.trim() !== lobby.name) lobby.rename(name.value);
+    };
+    name.addEventListener('blur', commit);
+    name.addEventListener('keydown', (e: KeyboardEvent) => {
+      if (e.key === 'Enter') { e.preventDefault(); commit(); }
+    });
+    const nameRow = document.createElement('div');
+    nameRow.className = 'mk-net';
+    nameRow.appendChild(name);
+    this.card.appendChild(nameRow);
+  }
+
+  private renderInvitations(lobby: LobbyView): void {
+    for (const invitation of lobby.invitations) {
+      const card = document.createElement('div');
+      card.className = 'mk-invite';
+      card.textContent = `${invitation.from.name} wants you in their party`;
+
+      const row = document.createElement('div');
+      row.className = 'mk-net';
+      const yes = document.createElement('button');
+      yes.className = 'mk-mini';
+      yes.textContent = 'join them';
+      yes.addEventListener('click', (e) => {
+        e.stopPropagation();
+        lobby.accept(invitation.party);
+        this.render();
+      });
+      const no = document.createElement('button');
+      no.className = 'mk-mini';
+      no.textContent = 'no thanks';
+      no.addEventListener('click', (e) => {
+        e.stopPropagation();
+        lobby.decline(invitation.party);
+        this.render();
+      });
+      row.append(yes, no);
+      card.appendChild(row);
+      this.card.appendChild(card);
+    }
+  }
+
+  private renderParty(lobby: LobbyView): void {
+    const party = lobby.party;
+    if (party === null || party.members.length < 2) return;
+    this.heading('Your Party');
+
+    const list = document.createElement('div');
+    list.className = 'mk-list';
+    const youLead = party.leaderCode === lobby.code;
+    for (const member of party.members) {
+      const row = document.createElement('div');
+      row.className = 'mk-row';
+      const who = document.createElement('span');
+      who.className = 'who';
+      who.textContent = member.code === party.leaderCode ? `${member.name} (leader)` : member.name;
+      row.appendChild(who);
+      // Only the leader can remove somebody, and never themselves — a leader
+      // kicking themselves is just leaving, which has its own button.
+      if (youLead && member.code !== lobby.code) {
+        row.appendChild(this.mini('remove', () => { lobby.kick(member.code); this.render(); }));
+      }
+      list.appendChild(row);
+    }
+    this.card.appendChild(list);
+    this.button('Leave Party', () => { lobby.leaveParty(); this.render(); }, 'mk-secondary');
+  }
+
+  private renderFriends(lobby: LobbyView): void {
+    this.heading('Friends');
+
+    const row = document.createElement('div');
+    row.className = 'mk-net';
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'mk-input';
+    input.placeholder = 'friend code';
+    input.setAttribute('aria-label', 'friend code');
+    const add = (): void => {
+      const typed = input.value.trim();
+      if (typed.length === 0) return;
+      lobby.addFriend(typed);
+      input.value = '';
+      this.render();
+    };
+    input.addEventListener('keydown', (e: KeyboardEvent) => {
+      if (e.key === 'Enter') { e.preventDefault(); add(); }
+    });
+    row.append(input, this.mini('add', add));
+    this.card.appendChild(row);
+
+    if (lobby.friends.length === 0) {
+      const empty = document.createElement('div');
+      empty.className = 'mk-empty';
+      empty.textContent = 'Nobody yet. Swap codes with somebody.';
+      this.card.appendChild(empty);
+      return;
+    }
+
+    const list = document.createElement('div');
+    list.className = 'mk-list';
+    for (const friend of lobby.friends) {
+      const item = document.createElement('div');
+      item.className = 'mk-row';
+
+      const dot = document.createElement('span');
+      dot.className = `mk-dot ${friend.presence}`;
+      const who = document.createElement('span');
+      who.className = 'who';
+      who.textContent = friend.name;
+      // The word as well as the dot, because a colour alone is unreadable to
+      // anybody who cannot tell the two greens apart — and this list exists
+      // precisely to say who you can play with right now.
+      const state = document.createElement('span');
+      state.className = 'state';
+      state.textContent = friend.presence === 'playing' ? 'in a yard' : friend.presence;
+      item.append(dot, who, state);
+
+      if (friend.presence !== 'offline') {
+        item.appendChild(this.mini('invite', () => { lobby.invite(friend.code); this.render(); }));
+      }
+      item.appendChild(this.mini('remove', () => { lobby.removeFriend(friend.code); this.render(); }));
+      list.appendChild(item);
+    }
+    this.card.appendChild(list);
+  }
+
+  private renderQueue(lobby: LobbyView): void {
+    this.heading('Queue');
+    const queue = lobby.queue;
+    if (queue !== null) {
+      const line = document.createElement('div');
+      line.className = 'mk-searching';
+      const named = lobby.modes.find((m) => m.id === queue.mode)?.name ?? queue.mode;
+      line.textContent = `Searching — ${named}  `;
+      const detail = document.createElement('span');
+      detail.textContent = `${queue.waiting}/${queue.needed} · ${queue.seconds}s`;
+      line.appendChild(detail);
+      this.card.appendChild(line);
+      this.button('Cancel', () => { lobby.leaveQueue(); this.render(); }, 'mk-secondary');
+      return;
+    }
+
+    // Only the leader may queue a party, so everybody else is told why rather
+    // than shown buttons that refuse.
+    if (lobby.party !== null && lobby.party.members.length > 1
+      && lobby.party.leaderCode !== lobby.code) {
+      const why = document.createElement('div');
+      why.className = 'mk-blurb';
+      why.textContent = 'Whoever started the party picks the game.';
+      this.card.appendChild(why);
+      return;
+    }
+    for (const mode of lobby.modes) {
+      this.button(mode.name, () => { lobby.joinQueue(mode.id); this.render(); }, 'mk-secondary');
+    }
+  }
+
+  /** A small inline button, for the right-hand end of a list row. */
+  private mini(label: string, onClick: () => void): HTMLButtonElement {
+    const b = document.createElement('button');
+    b.className = 'mk-mini';
+    b.textContent = label;
+    b.addEventListener('click', (e) => {
+      e.stopPropagation();
+      onClick();
+    });
+    return b;
   }
 
   private renderPause(): void {

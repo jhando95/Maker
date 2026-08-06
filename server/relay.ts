@@ -12,10 +12,29 @@
  * that knows what a player is; the moment this file knew that, it would stop
  * being a pipe and start being something that can be wrong about a game.
  *
- * The first socket into a room is the host. Everybody after that is a guest, and
- * their traffic goes to the host and only to the host; the host's traffic goes
- * to the guest it names, or to everybody. That is the whole routing table, and it
- * matches the game's shape exactly: one authority, several followers.
+ * By default the first socket into a room is the host. Everybody after that is a
+ * guest, and their traffic goes to the host and only to the host; the host's
+ * traffic goes to the guest it names, or to everybody. That is the whole routing
+ * table, and it matches the game's shape exactly: one authority, several
+ * followers.
+ *
+ * ## Saying who hosts, when somebody already decided
+ *
+ * Arrival order is the right rule when two people type a room name at each
+ * other, and the wrong one the moment anything else picks the host — because
+ * two browsers told to join at the same instant arrive in whichever order the
+ * network felt like, and the one running the simulation may not be first.
+ *
+ * That was not a hypothetical. The lobby elects a host and hands both machines
+ * the same room; without a way to say so, roughly half of all matches wired a
+ * `NetClient` to the relay's host lane and a `NetHost` to a guest lane, and
+ * nobody connected to anybody. The symptom is a match that hands over cleanly
+ * and then simply never starts.
+ *
+ * So `?host=1` claims the lane and `?host=0` declines it, and leaving the
+ * parameter off keeps the arrival-order rule exactly as it was. This is still
+ * not the relay knowing anything about the game: which socket is the authority
+ * is a fact it already had to hold, and this only lets somebody else state it.
  *
  * ## The envelope
  *
@@ -68,14 +87,30 @@ export function joinRelay(request: IncomingMessage, socket: Duplex): void {
   const peers = rooms.get(room) ?? [];
   rooms.set(room, peers);
 
-  const peer: Peer = { socket, id: randomUUID().slice(0, 8), host: peers.length === 0 };
+  const claim = url.searchParams.get('host');
+  const taken = peers.some((p) => p.host);
+  // A claim is honoured unless somebody already holds the lane; with no claim,
+  // the old rule stands. Two claimants is not a case worth failing loudly on —
+  // the second is simply a guest, which is what it would have been anyway.
+  const host = claim === null ? peers.length === 0 : claim === '1' && !taken;
+
+  const peer: Peer = { socket, id: randomUUID().slice(0, 8), host };
   peers.push(peer);
   console.log(`[relay] ${peer.id} joined "${room}" as ${peer.host ? 'host' : 'guest'}`);
+
   // The host is told who arrived and who left, so it can open and close a lane
   // for each without waiting for them to speak first.
   if (!peer.host) {
-    const host = peers.find((p) => p.host);
-    host?.socket.write(frame(OPCODE.text, JSON.stringify({ f: peer.id, join: true })));
+    peers.find((p) => p.host)?.socket
+      .write(frame(OPCODE.text, JSON.stringify({ f: peer.id, join: true })));
+  } else {
+    // And a host that arrives *after* its guests is told about each of them, or
+    // they sit in the room unannounced forever. Impossible under arrival order
+    // — the host was always first — and routine once anybody else picks.
+    for (const waiting of peers) {
+      if (waiting === peer) continue;
+      socket.write(frame(OPCODE.text, JSON.stringify({ f: waiting.id, join: true })));
+    }
   }
 
   let pending = Buffer.alloc(0);

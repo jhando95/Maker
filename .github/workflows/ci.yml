@@ -138,6 +138,15 @@ jobs:
       - name: Multiplayer scenario
         run: node tools/shoot.mjs --scenario scenarios/multiplayer.mjs --auto-quality --out /tmp/ci-multiplayer.png
 
+      # The whole of the lobby, end to end against a real server: two browser
+      # contexts, two friend codes, a party, a queue, and a round running in the
+      # room it was matched into. It is also the only thing that exercises the
+      # real relay — every other multiplayer check uses an in-page transport,
+      # which is why a guest's hello being dropped before the socket opened went
+      # unnoticed for as long as it did.
+      - name: Lobby scenario
+        run: node tools/shoot.mjs --scenario scenarios/lobby.mjs --auto-quality --out /tmp/ci-lobby.png
+
       # The other half of a session, and a different claim: that a round nobody
       # on this machine is running arrives as pixels. The page joins and the
       # scenario plays host, which is the mirror of the one above.
@@ -191,6 +200,8 @@ jobs:
             /tmp/ci-lawn.png
             /tmp/ci-party.png
             /tmp/ci-multiplayer.png
+            /tmp/ci-lobby.png
+            /tmp/ci-lobby-friends.png
           if-no-files-found: ignore
 
   benchmark:

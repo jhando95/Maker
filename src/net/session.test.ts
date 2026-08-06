@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { CollisionWorld } from '../physics/collisionWorld.ts';
 import { ProjectileSystem } from '../game/projectiles.ts';
+import type { Transport } from './transport.ts';
 import { PartRenderer } from '../render/partRenderer.ts';
 import { BuildSystem } from '../build/buildSystem.ts';
 import { CharacterController } from '../player/controller.ts';
@@ -744,5 +745,65 @@ describe('fighting together', () => {
     hostCtx.projectiles.clear();
     run(host, hostCtx, client, clientCtx, 8);
     expect(clientCtx.projectiles.activeCount).toBe(0);
+  });
+});
+
+describe('saying hello', () => {
+  /**
+   * A transport that is not open yet, which is what a real WebSocket is.
+   *
+   * Every other test here uses a loopback pair, and a loopback is open on the
+   * tick it is made. That is why this went unnoticed: `SocketTransport.send`
+   * drops anything sent before the socket opens, `NetClient` sent its only
+   * hello from the constructor, and so on a real connection the hello was
+   * thrown away every single time.
+   */
+  function laterTransport(): { transport: Transport; open(): void; sent: string[] } {
+    const sent: string[] = [];
+    let isOpen = false;
+    const inbox: ReturnType<typeof decode>[] = [];
+    const transport: Transport = {
+      get open(): boolean { return isOpen; },
+      send: (m: { t: string }) => { if (isOpen) sent.push(m.t); },
+      drain: () => inbox.splice(0, inbox.length) as never,
+      close: () => { isOpen = false; },
+    };
+    return { transport, open: () => { isOpen = true; }, sent };
+  }
+
+  it('keeps saying hello until somebody answers', () => {
+    // Two failures, one fix. The socket is still connecting when the client is
+    // made, and a relay drops a guest's message when no host has joined the
+    // room yet — which is routine now that a lobby hands both machines the
+    // same room at the same instant.
+    const ctx = makeMachine();
+    const late = laterTransport();
+    const client = new NetClient(ctx, late.transport, 'kid');
+
+    // Nothing while it is still connecting, and no throw either.
+    for (let i = 0; i < 10; i++) client.beforeTick();
+    expect(late.sent, 'spoke into a socket that was not open').toHaveLength(0);
+
+    late.open();
+    for (let i = 0; i < 120; i++) client.beforeTick();
+    expect(late.sent.filter((t) => t === 'hello').length,
+      'the client gave up before anybody could welcome it').toBeGreaterThan(1);
+  });
+
+  it('stops once it has been welcomed', () => {
+    // A guest that kept introducing itself forever would be a small flood from
+    // every player in the game, for the whole game.
+    const hostCtx = makeMachine();
+    const clientCtx = makeMachine();
+    const pipe = loopbackPair();
+    const host = new NetHost(hostCtx);
+    const client = new NetClient(clientCtx, pipe.client, 'kid');
+    host.accept(pipe.host);
+    run(host, hostCtx, client, clientCtx, 4);
+    expect(client.status.connected).toBe(true);
+
+    const before = host.status.peers;
+    run(host, hostCtx, client, clientCtx, 200);
+    expect(host.status.peers, 'a welcomed guest introduced itself again').toBe(before);
   });
 });
