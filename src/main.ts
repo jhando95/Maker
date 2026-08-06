@@ -29,6 +29,7 @@ import { BUTTON, commandToIntent, makeCommand } from './core/command.ts';
 
 import { ProjectileSystem } from './game/projectiles.ts';
 import { ModeRenderer } from './game/modeRenderer.ts';
+import { CharacterBatch } from './render/character.ts';
 import { FortDefenseMode } from './game/fortDefense.ts';
 import { CaptureTheFlagMode } from './game/captureTheFlag.ts';
 import { WaterWarMode } from './game/waterWar.ts';
@@ -202,8 +203,26 @@ governor.onChange = () => {
 };
 
 // ── Mode plumbing ────────────────────────────────────────────────────────────
+/**
+ * How many people can be drawn at once.
+ *
+ * A mode's own cap is twelve bots; the rest is headroom for the local player and
+ * for however many other people are in the world. Sized once and never grown,
+ * because growing an instanced buffer mid-round allocates and recompiles at
+ * exactly the moment a wave arrives.
+ */
+const MAX_CHARACTERS = 32;
 const projectiles = new ProjectileSystem(world);
-const modeRenderer = new ModeRenderer();
+/**
+ * One rig for everybody in the world, the local player included.
+ *
+ * Owned here rather than by the mode renderer because whether to draw the
+ * person holding the camera is a question about the camera, and because a
+ * sandbox with no mode running still has somebody standing in it.
+ */
+const characters = new CharacterBatch(MAX_CHARACTERS);
+scene.add(characters.group);
+const modeRenderer = new ModeRenderer(characters);
 scene.add(modeRenderer.group);
 
 // Applied only after every system it touches exists — the subscription fires
@@ -218,6 +237,7 @@ settings.subscribe((s) => {
   parts.setOutlinesVisible(s.outlines);
   scenery.setOutlinesVisible(s.outlines);
   modeRenderer.setOutlinesVisible(s.outlines);
+  characters.setOutlinesVisible(s.outlines);
   renderer.shadowMap.enabled = s.shadows;
   renderer.shadowMap.needsUpdate = true;
   // Render scale trades resolution for fill rate without touching layout: the
@@ -254,6 +274,17 @@ const localActor: Actor = {
   kind: 'local',
   team: 'left',
   controller: player,
+  /**
+   * Where the player is looking, so the rig can face them that way.
+   *
+   * A getter rather than a field written each tick: a bot's heading is derived
+   * from where it is walking, and the player's is derived from the camera, so
+   * both are things you *ask*, and neither can go stale between the tick that
+   * set it and the frame that draws it.
+   */
+  get heading(): number {
+    return camera.yaw;
+  },
 };
 const actors = new ActorRoster(localActor);
 
@@ -381,6 +412,7 @@ function stopRound(): void {
   build.setLumber();
   projectiles.clear();
   modeRenderer.clear();
+  characters.hideAll();
   // A mode keeps the roster in step while it is ticking; when it stops ticking
   // there is nobody left to draw but the player.
   actors.refresh([]);
@@ -575,30 +607,16 @@ function spatialAt(x: number, y: number, z: number) {
 
 parts.setViewportHeight(window.innerHeight);
 scenery.setViewportHeight(window.innerHeight);
+characters.setViewportHeight(window.innerHeight);
 // The starter structures are already in; draw their shadows on the first frame
 // rather than a quarter second later.
 invalidateShadows();
 renderer.shadowMap.needsUpdate = true;
 
-// ── Player avatar, visible in third person ───────────────────────────────────
-const avatar = new THREE.Group();
-{
-  const body = new THREE.Mesh(
-    new THREE.CapsuleGeometry(0.32, 1.06, 4, 10),
-    new THREE.MeshToonMaterial({ color: 0x4f8fd8 }),
-  );
-  body.position.y = 0.85;
-  body.castShadow = true;
-  avatar.add(body);
-  const cap = new THREE.Mesh(
-    new THREE.SphereGeometry(0.2, 10, 8),
-    new THREE.MeshToonMaterial({ color: 0xe8d44f }),
-  );
-  cap.position.y = 1.62;
-  cap.castShadow = true;
-  avatar.add(cap);
-}
-scene.add(avatar);
+// The local player is drawn by the shared character rig along with everyone
+// else — see `drawCharacters`. There is no separate avatar: a player drawn by
+// different code from the people around them stops looking like one of them,
+// which is exactly what the old blue capsule with a yellow ball on top did.
 
 /**
  * What you are holding, in front of the camera.
@@ -804,6 +822,15 @@ function simulate(dt: number): void {
   // the intent: a soaked player is pushing the stick just as hard.
   player.step(dt, commandToIntent(localCommand, mode?.playerSpeedScale ?? 1));
   simTick++;
+
+  // Keep the roster honest even with no mode running.
+  //
+  // A mode refreshes it at the top of its own tick, because a mode owns its
+  // bots. Nothing did when there was no mode, so anybody who joined a Free Build
+  // session existed, collided and could be hit — and was never drawn, because
+  // drawing walks the roster. The bug only appears once there is a way to join a
+  // sandbox, which is exactly what a network is.
+  if (mode === null) actors.refresh([]);
   sounds.update(dt, player, camera);
 
   // ── Build actions ──────────────────────────────────────────────────────────
@@ -948,12 +975,8 @@ function draw(alpha: number, frameDt: number): void {
   const speedFraction = Math.min(1, player.speed / 7.4);
   camera.update(frameDt, state.x, state.y + state.eyeHeight, state.z, speedFraction);
 
-  avatar.visible = camera.showsPlayer;
-  avatar.position.set(state.x, state.y, state.z);
-  avatar.rotation.y = camera.yaw;
-
   // ── What you are holding ───────────────────────────────────────────────────
-  // Hidden in third person, where the avatar already answers the question.
+  // Hidden in third person, where seeing your own body answers the question.
   const holdingWeapon = mode !== null && !mode.buildingAllowed;
   viewmodel.visible = !camera.showsPlayer;
   viewPlank.visible = !holdingWeapon;
@@ -993,13 +1016,18 @@ function draw(alpha: number, frameDt: number): void {
     mode?.stream ?? null,
     state.x, state.y + state.eyeHeight * 0.82, state.z,
   );
-  // Everyone but the local player, who is drawn by the avatar below and would
-  // otherwise appear twice — once inside their own head.
+  // Everybody, drawn by one rig.
+  //
+  // The local player goes in the same list as everyone else, and drops out of it
+  // only in first person — where they would otherwise be drawn from inside their
+  // own head, which is a wall of shirt across the screen rather than a character.
   drawnActors.length = 0;
   for (const who of actors.all) {
-    if (who.id !== LOCAL_ACTOR_ID) drawnActors.push(who);
+    if (who.id !== LOCAL_ACTOR_ID || camera.showsPlayer) drawnActors.push(who);
   }
+  characters.begin();
   modeRenderer.update(frameDt, mode, projectiles, performance.now() / 1000, drawnActors);
+  characters.finish();
 
   renderer.render(scene, camera.camera);
 
@@ -1063,6 +1091,7 @@ window.addEventListener('resize', () => {
   camera.setAspect(window.innerWidth / window.innerHeight);
   parts.setViewportHeight(window.innerHeight);
   scenery.setViewportHeight(window.innerHeight);
+  characters.setViewportHeight(window.innerHeight);
 });
 
 // ── Debug API, also driven by the headless screenshot harness ────────────────
@@ -1167,6 +1196,26 @@ window.__maker = {
     who.controller.step(DT, commandToIntent(command));
     return { x: who.controller.x, y: who.controller.y, z: who.controller.z };
   },
+  /**
+   * The exact order the character rig drew people in this frame.
+   *
+   * Exposed because the instance index is what a scenario needs to read a
+   * colour off the buffer, and re-deriving it from the roster is re-implementing
+   * the renderer's own rule — which is how a test ends up checking a coincidence
+   * rather than a colour.
+   */
+  drawnActorIds: () => drawnActors.map((a) => a.id),
+  /**
+   * Toggle only the characters' ink, leaving the world's alone.
+   *
+   * Separate from the setting because "does this pass render" is answered by
+   * changing one thing and diffing the picture, and the setting changes every
+   * outline in the scene at once — which cannot tell a character's shell from a
+   * fence post's.
+   */
+  setCharacterOutlines: (visible: boolean) => characters.setOutlinesVisible(visible),
+  /** How many people the rig drew last frame. */
+  charactersPosed: () => characters.posed,
   bindingFor: (code: string) => input.getBindings()[code] ?? null,
   /** Move the mouse, for scenarios that cannot hold pointer lock. */
   look: (dx: number, dy: number) => input.injectLook(dx, dy),

@@ -8,16 +8,14 @@
 
 import * as THREE from 'three';
 import { createToonMaterial, createOutlineMaterial } from '../render/toonMaterial.ts';
-import { chamferedBox, blob } from '../render/geometry.ts';
-import { Rng } from '../core/rng.ts';
+import { chamferedBox } from '../render/geometry.ts';
 import { MAX_BALLOONS, BALLOON_RADIUS } from './projectiles.ts';
 import type { ProjectileSystem } from './projectiles.ts';
 import type { GameMode } from './gameMode.ts';
-import { CAP_HEIGHT, CAP_RADIUS } from '../physics/constants.ts';
-import { wetBlend } from './wetness.ts';
-import type { Actor, Team } from './actor.ts';
+import { CharacterBatch, type CharacterPose } from '../render/character.ts';
+import { shirtColor } from './shirts.ts';
+import type { Actor } from './actor.ts';
 
-const MAX_BOTS = 24;
 /** Simultaneous splash bursts. */
 const MAX_SPLASHES = 16;
 const SPLASH_LIFETIME = 0.5;
@@ -33,36 +31,6 @@ const MAX_FLAGS = 4;
  * draw either way.
  */
 const MAX_DROPS = 26;
-
-/**
- * Where a kid's joints are, as fractions of the collision capsule.
- *
- * Tied to CAP_HEIGHT rather than written as numbers so the drawing and the
- * thing that collides can never disagree about how tall somebody is — a
- * character whose feet float or sink is the first thing anyone notices.
- */
-const HIP_Y = CAP_HEIGHT * 0.40;
-const TORSO_TOP = CAP_HEIGHT * 0.80;
-const HEAD_Y = CAP_HEIGHT * 0.90;
-const LEG_LEN = HIP_Y;
-const ARM_LEN = CAP_HEIGHT * 0.34;
-const HIP_X = CAP_RADIUS * 0.42;
-/*
- * Wide enough to clear the torso, which is the whole job.
- *
- * At 0.92 the shoulders sat at 0.294 against a torso half-width of 0.275, so
- * the arms were buried inside the body and the first screenshot had a kid with
- * legs and no arms at all.
- */
-const SHOULDER_X = CAP_RADIUS * 1.22;
-const SHOULDER_Y = TORSO_TOP - 0.06;
-
-/** Metres of ground per complete stride. Shorter than an adult's, they are kids. */
-const STRIDE_LENGTH = 1.45;
-/** Radians a leg swings at full tilt. */
-const SWING_MAX = 0.62;
-/** Arms swing less than legs, or it reads as a march. */
-const ARM_SWING = 0.62;
 
 interface Splash {
   x: number; y: number; z: number;
@@ -90,18 +58,13 @@ interface FlagPole {
 export class ModeRenderer {
   readonly group = new THREE.Group();
 
-  private readonly botBody: THREE.InstancedMesh;
-  private readonly botHead: THREE.InstancedMesh;
-  /** Left arm, right arm, left leg, right leg. */
-  private readonly limbs: THREE.InstancedMesh[];
   /**
-   * How far through a stride each character is, by actor id.
+   * Everyone in the world, drawn by one shared rig.
    *
-   * Advanced by distance travelled rather than by wall-clock, so feet keep pace
-   * with the ground instead of sliding — the difference between a walk cycle and
-   * a character skating along with their legs waving.
+   * Passed in rather than owned, because the local player is drawn from it too
+   * and main.ts is what knows whether the camera is currently showing them.
    */
-  private readonly stride = new Map<number, number>();
+  private readonly characters: CharacterBatch;
   private readonly balloons: THREE.InstancedMesh;
   private readonly splashMesh: THREE.InstancedMesh;
   private readonly stands: Stand[] = [];
@@ -113,113 +76,22 @@ export class ModeRenderer {
   private readonly splashes: Splash[] = [];
   private readonly matrix = new THREE.Matrix4();
   private readonly pos = new THREE.Vector3();
-  private readonly quat = new THREE.Quaternion();
-  private readonly limbEuler = new THREE.Euler();
   private readonly scale = new THREE.Vector3(1, 1, 1);
-  private readonly color = new THREE.Color();
+  /** Reused scratch for a shirt colour, so drawing a wave allocates nothing. */
+  private readonly shirt = new THREE.Color();
+  private readonly scratchPose: CharacterPose = {
+    id: 0, x: 0, y: 0, z: 0, facing: 0, speed: 0, onGround: true, shirt: this.shirt,
+  };
   private readonly outlineMaterials: THREE.ShaderMaterial[] = [];
   private readonly outlineMeshes: THREE.Mesh[] = [];
 
   /** Kept off-screen rather than resized, so instance counts never churn. */
   private static readonly HIDDEN = new THREE.Matrix4().makeTranslation(0, -9999, 0);
   private static readonly NO_ROTATION = new THREE.Quaternion();
-  /** Hoisted: composing a character's matrix allocated one of these per bot per frame. */
-  private static readonly UP = new THREE.Vector3(0, 1, 0);
-  /**
-   * A dry shirt and the same shirt wringing wet, per side.
-   *
-   * Two palettes rather than one because the moment your own team existed, one
-   * palette meant every kid on the lawn looked identical and the flag game
-   * became guesswork — you cannot decide who to throw at if you cannot tell who
-   * is who. Violet against the neighbourhood's oranges and greens rather than a
-   * second warm colour, and deliberately not the pale blue a stunned kid washes
-   * out to, which would make "on your side" and "out of it" the same cue.
-   */
-  private static readonly SHIRTS: Record<Team, { dry: THREE.Color; soaked: THREE.Color }> = {
-    left: {
-      dry: new THREE.Color().setHex(0x7a3fc8, THREE.SRGBColorSpace),
-      soaked: new THREE.Color().setHex(0x321a5c, THREE.SRGBColorSpace),
-    },
-    right: {
-      dry: new THREE.Color().setHex(0xe07a4f, THREE.SRGBColorSpace),
-      soaked: new THREE.Color().setHex(0x6b3524, THREE.SRGBColorSpace),
-    },
-  };
 
-  /**
-   * What being stunned looks like: your own shirt, washed out.
-   *
-   * Not a colour of its own. A fixed pale blue for "out of it" competed with the
-   * blue-violet of a team — a screenshot with one kid from each side in it had
-   * them reading as the same thing, and under the toon ramp a mid violet
-   * desaturates almost exactly onto that blue. Washing the team colour toward
-   * this keeps who someone is while saying they are briefly not a threat, which
-   * are two different questions and should not share a channel.
-   */
-  private static readonly STUNNED_WASH = new THREE.Color().setHex(0xd6e2ea, THREE.SRGBColorSpace);
-
-  constructor() {
+  constructor(characters: CharacterBatch) {
     this.group.name = 'mode';
-    const rng = new Rng('mode-visuals');
-
-    // A kid, rather than a capsule with a ball on it.
-    //
-    // Six instanced draws instead of two, which is nothing next to what it buys.
-    // A capsule has no front, so a bot walking at you and a bot walking away
-    // looked identical, and nothing about a silhouette said whether it was
-    // moving, stopped, or carrying your flag. Limbs answer all three for free
-    // once they swing.
-    //
-    // Cartoon proportions on purpose: big head, short limbs, wide stance. These
-    // are eleven-year-olds in a garden, and realistic proportions at this scale
-    // read as small adults.
-    const torsoGeometry = chamferedBox(CAP_RADIUS * 1.72, TORSO_TOP - HIP_Y, CAP_RADIUS * 1.15, 0.05);
-    this.botBody = new THREE.InstancedMesh(
-      torsoGeometry,
-      createToonMaterial({ color: 0xffffff }),
-      MAX_BOTS,
-    );
-    this.botBody.castShadow = true;
-    this.botBody.frustumCulled = false;
-
-    /**
-     * Limbs are modelled with their pivot at the origin, not their centre.
-     *
-     * A box centred on itself rotates about its middle, which makes a leg
-     * scissor around its own knee. Shifting the geometry down by half its length
-     * puts the joint at the origin, so the instance matrix can place the hip and
-     * rotate about it — which is what a hip does.
-     */
-    const legGeometry = chamferedBox(0.16, LEG_LEN, 0.19, 0.03);
-    legGeometry.translate(0, -LEG_LEN / 2, 0);
-    const armGeometry = chamferedBox(0.13, ARM_LEN, 0.14, 0.03);
-    armGeometry.translate(0, -ARM_LEN / 2, 0);
-
-    this.limbs = [];
-    for (let i = 0; i < 4; i++) {
-      // Arms take the shirt colour, legs stay denim — one instanced colour per
-      // mesh would have made a kid one solid block of team colour.
-      const mesh = new THREE.InstancedMesh(
-        i < 2 ? armGeometry : legGeometry,
-        createToonMaterial({ color: i < 2 ? 0xffffff : 0x4a5a78 }),
-        MAX_BOTS,
-      );
-      mesh.castShadow = true;
-      mesh.frustumCulled = false;
-      this.limbs.push(mesh);
-      this.group.add(mesh);
-    }
-
-    const headGeometry = blob(0.22, 1, 0.1, () => rng.next());
-    this.botHead = new THREE.InstancedMesh(
-      headGeometry,
-      createToonMaterial({ color: 0xf0c8a0 }),
-      MAX_BOTS,
-    );
-    this.botHead.castShadow = true;
-    this.botHead.frustumCulled = false;
-
-    this.group.add(this.botBody, this.botHead);
+    this.characters = characters;
 
     // Balloons in flight.
     const balloonGeometry = new THREE.SphereGeometry(BALLOON_RADIUS, 8, 6);
@@ -348,14 +220,8 @@ export class ModeRenderer {
   }
 
   private hideAll(): void {
-    for (let i = 0; i < MAX_BOTS; i++) {
-      this.botBody.setMatrixAt(i, ModeRenderer.HIDDEN);
-      this.botHead.setMatrixAt(i, ModeRenderer.HIDDEN);
-    }
     for (let i = 0; i < MAX_BALLOONS; i++) this.balloons.setMatrixAt(i, ModeRenderer.HIDDEN);
     for (let i = 0; i < MAX_SPLASHES; i++) this.splashMesh.setMatrixAt(i, ModeRenderer.HIDDEN);
-    this.botBody.instanceMatrix.needsUpdate = true;
-    this.botHead.instanceMatrix.needsUpdate = true;
     this.balloons.instanceMatrix.needsUpdate = true;
     this.splashMesh.instanceMatrix.needsUpdate = true;
   }
@@ -508,111 +374,34 @@ export class ModeRenderer {
    * Was `updateBots`, and the rename is the point: a bot and another person are
    * the same silhouette moving through the same world, and the only thing this
    * code ever needed from either was a position, a facing, and how wet they are.
+   *
+   * The posing itself belongs to the character rig, so what is left here is only
+   * the translation from "what a mode knows about somebody" to "what it takes to
+   * draw a kid". Everything the two must agree about — proportions, the walk
+   * cycle, what a soaked shirt looks like — is now stated in exactly one place,
+   * which is what lets the local player be drawn by the same code.
    */
   private updateCharacters(dt: number, others: readonly Actor[], mode: GameMode | null): void {
-    let count = 0;
+    const pose = this.scratchPose;
     for (const who of others) {
-      if (who.alive === false || count >= MAX_BOTS) continue;
+      if (who.alive === false) continue;
 
       const body = who.controller;
-      const facing = who.heading ?? 0;
-      const cos = Math.cos(facing);
-      const sin = Math.sin(facing);
+      pose.id = who.id;
+      pose.x = body.x;
+      pose.y = body.y;
+      pose.z = body.z;
+      pose.facing = who.heading ?? 0;
+      pose.speed = Math.hypot(body.vx ?? 0, body.vz ?? 0);
+      pose.onGround = body.onGround !== false;
+      pose.stunned = who.stunned === true;
+      shirtColor(this.shirt, who.team, mode?.wetnessOf?.(who.id) ?? 0, pose.stunned);
 
-      // Advance the stride by ground covered. A stunned kid stands still, and
-      // anyone stopped eases back to a neutral stance rather than freezing
-      // mid-step with one leg in the air.
-      const speed = who.stunned === true ? 0 : Math.hypot(body.vx ?? 0, body.vz ?? 0);
-      let phase = this.stride.get(who.id) ?? 0;
-      if (speed > 0.2) {
-        phase = (phase + (speed / STRIDE_LENGTH) * Math.PI * 2 * dt) % (Math.PI * 2);
-      } else {
-        // Toward the nearest neutral, whichever way is shorter.
-        const target = phase < Math.PI ? 0 : Math.PI * 2;
-        phase += (target - phase) * Math.min(1, dt * 9);
-      }
-      this.stride.set(who.id, phase);
-
-      const swing = Math.sin(phase) * (speed > 0.2 ? SWING_MAX : 0);
-      // Twice a stride: both feet plant per cycle, so the bob is at double rate.
-      const bob = Math.cos(phase * 2) * 0.022 * (speed > 0.2 ? 1 : 0);
-
-      this.pos.set(body.x, body.y + (HIP_Y + TORSO_TOP) / 2 + bob, body.z);
-      this.quat.setFromAxisAngle(ModeRenderer.UP, facing);
-      this.matrix.compose(this.pos, this.quat, this.scale);
-      this.botBody.setMatrixAt(count, this.matrix);
-
-      // Arms counter-swing against the legs, which is what stops a walk reading
-      // as a march.
-      this.poseLimb(0, count, body.x, body.y + bob, body.z, cos, sin,
-        -SHOULDER_X, SHOULDER_Y, facing, -swing * ARM_SWING);
-      this.poseLimb(1, count, body.x, body.y + bob, body.z, cos, sin,
-        SHOULDER_X, SHOULDER_Y, facing, swing * ARM_SWING);
-      this.poseLimb(2, count, body.x, body.y, body.z, cos, sin,
-        -HIP_X, HIP_Y, facing, swing);
-      this.poseLimb(3, count, body.x, body.y, body.z, cos, sin,
-        HIP_X, HIP_Y, facing, -swing);
-
-      // Stunned characters wash out toward blue, so it is obvious at a glance
-      // who is still a threat. Otherwise the shirt darkens as it soaks, which is
-      // how the player reads who is nearly finished and picks a target.
-      const shirt = ModeRenderer.SHIRTS[who.team];
-      this.color.copy(shirt.dry);
-      this.color.lerp(shirt.soaked, wetBlend(mode?.wetnessOf?.(who.id) ?? 0));
-      // Washed out while stunned, so it stays obvious at a glance who is still a
-      // threat without costing the team colour that says whose side they are on.
-      if (who.stunned === true) this.color.lerp(ModeRenderer.STUNNED_WASH, 0.72);
-      this.botBody.setColorAt(count, this.color);
-      // Sleeves match the shirt; legs stay denim, so a kid is not one solid
-      // block of team colour from the ankles up.
-      this.limbs[0]!.setColorAt(count, this.color);
-      this.limbs[1]!.setColorAt(count, this.color);
-
-      this.pos.set(body.x, body.y + HEAD_Y + bob, body.z);
-      this.matrix.compose(this.pos, this.quat, this.scale);
-      this.botHead.setMatrixAt(count, this.matrix);
-
-      count++;
+      // A full batch is a real answer rather than an error: a mode may spawn
+      // more than the pool holds, and drawing as many as fit beats growing a
+      // buffer mid-round.
+      if (!this.characters.pose(dt, pose)) break;
     }
-
-    for (let i = count; i < MAX_BOTS; i++) {
-      this.botBody.setMatrixAt(i, ModeRenderer.HIDDEN);
-      this.botHead.setMatrixAt(i, ModeRenderer.HIDDEN);
-      for (const limb of this.limbs) limb.setMatrixAt(i, ModeRenderer.HIDDEN);
-    }
-    this.botBody.count = MAX_BOTS;
-    this.botHead.count = MAX_BOTS;
-    this.botBody.instanceMatrix.needsUpdate = true;
-    this.botHead.instanceMatrix.needsUpdate = true;
-    if (this.botBody.instanceColor !== null) this.botBody.instanceColor.needsUpdate = true;
-    for (const limb of this.limbs) {
-      limb.count = MAX_BOTS;
-      limb.instanceMatrix.needsUpdate = true;
-      if (limb.instanceColor !== null) limb.instanceColor.needsUpdate = true;
-    }
-  }
-
-  /**
-   * Hang one limb off a joint and swing it.
-   *
-   * The joint offset is in the character's own frame, so it has to be turned by
-   * their facing before it means anything in the world — otherwise every kid's
-   * arms stay pinned to world east and west however they turn.
-   */
-  private poseLimb(
-    which: number, index: number,
-    x: number, y: number, z: number,
-    cos: number, sin: number,
-    localX: number, localY: number,
-    facing: number, swing: number,
-  ): void {
-    this.pos.set(x + localX * cos, y + localY, z - localX * sin);
-    // YXZ so the swing happens about the character's own side-to-side axis
-    // after the yaw, rather than about a fixed world axis.
-    this.limbEuler.set(swing, facing, 0, 'YXZ');
-    this.quat.setFromEuler(this.limbEuler);
-    this.matrix.compose(this.pos, this.quat, this.scale);
-    this.limbs[which]!.setMatrixAt(index, this.matrix);
   }
 
   private updateBalloons(projectiles: ProjectileSystem): void {

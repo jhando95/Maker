@@ -122,14 +122,13 @@ export default async function (page) {
   // bot shifts everyone after it — computing it the same way the renderer does
   // is the difference between this checking a colour and checking a coincidence.
   const shirt = await page.evaluate((id) => {
-    const others = window.__maker.actors.all.filter((a) => a.id !== 0);
-    let drawIndex = 0;
-    for (const a of others) {
-      if (a.id === id) break;
-      if (a.alive !== false) drawIndex++;
-    }
-    const mesh = window.__maker.scene.getObjectByName('mode').children
-      .find((c) => c.isInstancedMesh && c.instanceColor);
+    // Straight from the order the rig actually drew in, rather than re-derived
+    // from the roster: re-deriving it is re-implementing the renderer's own rule,
+    // which is how a test ends up checking a coincidence instead of a colour.
+    const drawIndex = window.__maker.drawnActorIds().indexOf(id);
+    if (drawIndex < 0) return 'not-drawn';
+    const mesh = window.__maker.scene.getObjectByName('characters')
+      .getObjectByName('torso');
     const buf = mesh.instanceColor.array;
     const toSrgb = (v) =>
       Math.round(255 * (v <= 0.0031308 ? v * 12.92 : 1.055 * Math.pow(v, 1 / 2.4) - 0.055));

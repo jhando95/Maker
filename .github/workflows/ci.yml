@@ -79,6 +79,14 @@ jobs:
       - name: HUD scenario
         run: node tools/shoot.mjs --scenario scenarios/hud.mjs --auto-quality --out /tmp/ci-hud.png
 
+      # The character rig is almost entirely a claim about pixels, and two of the
+      # three things it is for went wrong in ways no unit test would have caught:
+      # eyes placed inside the skull, and hair that grew down over the face. The
+      # ink check works by diffing two screenshots, because a one-pixel line is
+      # invisible to the eye and unmistakable in a pixel count.
+      - name: Character scenario
+        run: node tools/shoot.mjs --scenario scenarios/kids.mjs --auto-quality --out /tmp/ci-kids.png
+
       # The budget is the first rule that can make a legal placement fail. The
       # arithmetic is unit-tested; whether the player is ever told — a counter
       # on the banner, a price on the chip, a ghost that turns red — is a chain
@@ -106,6 +114,7 @@ jobs:
             /tmp/ci-actors.png
             /tmp/ci-hud.png
             /tmp/ci-lumber.png
+            /tmp/ci-kids.png
           if-no-files-found: ignore
 
   benchmark:
