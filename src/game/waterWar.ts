@@ -115,6 +115,15 @@ export interface SourceState {
 
 const PLAYER_ID = 0;
 
+/**
+ * How close to a tap counts as being at it, whatever is in the way.
+ *
+ * Every source is a solid prop, so a sight line aimed at one ends on the prop.
+ * This is where the check stops looking — big enough to clear the pool rim and
+ * the barrel, small enough that a wall built round a tap is still outside it.
+ */
+const SOURCE_EDGE = 1.5;
+
 export class WaterWarMode implements GameMode {
   readonly id = 'waterWar';
   readonly name = 'Water War';
@@ -344,7 +353,8 @@ export class WaterWarMode implements GameMode {
       bot.targetY = 0;
       bot.targetZ = source.z;
 
-      const atSource = Math.hypot(bot.x - source.x, bot.z - source.z) <= SOURCE_RADIUS;
+      const atSource = Math.hypot(bot.x - source.x, bot.z - source.z) <= SOURCE_RADIUS
+        && this.canReach(ctx, bot, source);
       if (atSource && source.water > 0) {
         source.water = Math.max(0, source.water - DRAIN_RATE * dt);
         // Bucket full: they head for the next one worth taking.
@@ -396,6 +406,52 @@ export class WaterWarMode implements GameMode {
       this.bots.splice(at, 1);
       this.spawnKid(ctx, BOT_TIERS.normal!, source, at);
     }
+  }
+
+  /**
+   * Can this kid actually get their bucket into the water?
+   *
+   * Being within `SOURCE_RADIUS` used to be the whole test, and that one line is
+   * why the mode's entire fortification economy did not work. A tap is drained
+   * from 3.2m away, and a ring of planks a player would naturally build sits
+   * *inside* that — so kids stood against the outside of a finished wall and
+   * emptied the tap straight through it.
+   *
+   * The symptoms were strange enough to be worth recording, because they all
+   * come from here. Measured over a full afternoon with the player standing
+   * still, the water kept went 61% at a 1.6m ring, 51% at 2.0m, 74% at 2.6m,
+   * 8.8% at 3.6m and 20% at 4.2m — no curve a player could ever learn, because
+   * it was not really measuring the wall. And wall *height* did nothing at all
+   * above the first metre: 1.25m and 2.00m rings gave results identical to
+   * three significant figures at every radius, so the second hundred planks a
+   * player spent going higher bought exactly nothing.
+   *
+   * A line of sight is the cheapest honest fix. It makes a wall work because it
+   * is a wall — something solid between a kid and the tap — rather than because
+   * of where the nav grid happened to leave a gap. Raycasts cost 0.0036ms and
+   * this is one per kid per tick.
+   */
+  private canReach(ctx: ModeContext, bot: Bot, source: SourceState): boolean {
+    // From the bucket, roughly, to the water. Low on both ends on purpose: a
+    // knee-high wall is not a wall, and measuring eye-to-tap would let a kid
+    // "reach" over anything they could see across.
+    const fromY = bot.y + CAP_HEIGHT * 0.35;
+    const dx = source.x - bot.x;
+    const dy = 0.35 - fromY;
+    const dz = source.z - bot.z;
+    const distance = Math.hypot(dx, dy, dz);
+
+    // Stop short of the tap itself, and this is the whole trick rather than a
+    // tolerance. Every source *is* a solid prop — a paddling pool has a rim, a
+    // rain barrel is a barrel — so a ray aimed at the middle of one always ends
+    // by hitting it. The first version of this did exactly that and blocked
+    // every kid on the map from ever drinking: an empty lawn with no wall on it
+    // kept 66% of its water, which is a better result than any fort, and is the
+    // kind of number a control case exists to produce.
+    const reach = distance - SOURCE_EDGE;
+    if (reach <= 0) return true;
+    const hit = ctx.world.raycast(bot.x, fromY, bot.z, dx, dy, dz, reach);
+    return hit === null || hit.distance >= reach - CAP_RADIUS;
   }
 
   private canSeePlayer(ctx: ModeContext, bot: Bot): boolean {

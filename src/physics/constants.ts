@@ -117,7 +117,21 @@ export const CLIMB_REACH = 0.6;
 export const CLIMB_MAX_TILT_DEG = 30;
 
 // ── Mantle ───────────────────────────────────────────────────────────────────
-/** Ledges between STEP_HEIGHT and this are mantled over. */
+/**
+ * Ledges between STEP_HEIGHT and this *would* be mantled over, if mantling
+ * existed. It does not.
+ *
+ * Kept, and kept honest, rather than deleted, because this number did real
+ * damage while it sat here looking implemented. Nothing reads it — the only
+ * vertical traversal in the game is the step-up above and climbing a ladder —
+ * and yet the lumber budget was sized against it and the README published a
+ * table of measurements explaining the design in terms of it. A constant that
+ * describes a mechanic nobody wrote is worse than a missing one: it reads as a
+ * decision, so everything downstream trusts it.
+ *
+ * If mantling is ever built, this is the height it should stop at. Until then
+ * the number a wall has to beat is STEP_HEIGHT.
+ */
 export const MANTLE_MAX_HEIGHT = 1.6;
 export const MANTLE_DURATION = 0.42;
 /** Clearance required above a ledge before a mantle is allowed. */

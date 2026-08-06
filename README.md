@@ -164,16 +164,44 @@ with a ring of planks stood on edge:
 | what was built | planks | water kept |
 |---|---|---|
 | nothing | 0 | 0% |
-| rings 1.0m high — a kid vaults them | 60 | 0% |
-| rings 1.75m high, two metres out | 120 | 51% |
-| the same rings taken to 4m | 313 | 51% |
-| rings built 4.2m out instead of 2m | 682 | 20% |
+| rings 0.50m high — a kid steps over them | 27 | 0% |
+| rings 0.75m high, two metres out | 46 | 9% |
+| rings 1.25m high, two metres out | 86 | 51% |
+| the same rings taken to 2m | 149 | 51% |
+| rings 1.25m high built 4.2m out instead | 204 | 20% |
 
-Building is worth doing. Height stops mattering once a kid can no longer
-scramble up, so 120 buys exactly that and no more. And more wood is not better
-wood — the six-hundred-plank version does worse than the hundred-and-twenty
-plank one, because what stops a kid is a closed ring near the tap and not a
-bigger wall further from it. Free lumber made none of that a choice.
+Three things fall out of that. **Building is worth doing** — nothing to
+fifty-one per cent is the difference between losing and winning. **A wall pays
+from the first course a kid cannot step over**, which is 0.55m, and stops paying
+the moment they cannot see the tap over it; the sixty planks between 1.25m and
+2m buy nothing at all. And **more wood is not better wood**: rings built further
+out cost twice as much and do worse, because what stops a kid is something solid
+between them and the water, not a bigger wall further from it.
+
+### The measurement that found a broken rule
+
+That table used to say something different, and the difference was not a tuning
+pass. Draining a tap needed nothing but standing within 3.2m of it — and a ring
+a player would naturally build sits *inside* that, so kids stood against the
+outside of a finished wall and emptied the tap straight through it.
+
+The payoff was therefore a cliff rather than a curve. Swept by height, every
+wall up to a metre kept **exactly 0%** and a 1.25m one kept 51%: sixty-five
+planks bought literally nothing and the next twenty bought the round, with
+nothing on screen to say why. Swept by radius it was worse than arbitrary —
+61%, 51%, 74%, 8.8%, 20% at 1.6m, 2.0m, 2.6m, 3.6m and 4.2m — a shape no player
+could learn, because it was not really measuring the wall at all.
+
+Kids have to be able to *reach* the water now. It costs one raycast per kid per
+tick and it makes a wall work because it is a wall.
+
+The old table also explained the budget in terms of `MANTLE_MAX_HEIGHT`, on the
+grounds that a wall is worth building once a kid can no longer scramble over it.
+**Nothing in this game implements mantling.** The constant is read by no code at
+all; the only vertical traversal is the 0.55m step-up and climbing a ladder. It
+had sat there long enough to size a budget and write a design note, which is the
+particular danger of a constant that describes a mechanic nobody wrote: it reads
+as a decision, so everything downstream trusts it.
 
 Free Build has no budget. It is where you go to just make things.
 
@@ -416,7 +444,7 @@ scenarios/     scripted checks driven through the harness
 ```
 
 ```bash
-npm test         # 647 unit tests
+npm test         # 649 unit tests
 npm run typecheck
 npm run bench    # what a tick costs, as a share of the 16.67ms budget
 node tools/shoot.mjs --out shots/x.png   # boot headless, screenshot, fail on any console error

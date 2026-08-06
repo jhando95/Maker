@@ -107,6 +107,41 @@ function idleAfternoon(budget: number, radius = 2.0): number {
   return fresh.waterFraction;
 }
 
+/**
+ * Build a ring `courses` high round every tap, then idle a whole afternoon.
+ *
+ * The height twin of `idleAfternoon`, which sweeps the budget. Height is the
+ * variable a player actually reasons about — "is this wall tall enough" — and
+ * it was the one nothing measured, which is how a payoff cliff sat in the
+ * middle of the economy without anybody noticing.
+ */
+function ringOfHeight(courses: number, radius = 2.0): number {
+  const made = makeContext();
+  installFixtures(made.world, neighborhoodSlabs(new Rng('map')));
+
+  const perCourse = Math.max(4, Math.ceil((2 * Math.PI * radius) / 0.9));
+  for (let course = 0; course < courses; course++) {
+    for (const tap of WATER_SOURCES) {
+      for (let i = 0; i < perCourse; i++) {
+        const a = (i / perCourse) * Math.PI * 2;
+        made.ctx.build.applyPlaceIfClear({
+          kind: 0, colorway: 0,
+          x: tap.x + Math.sin(a) * radius,
+          y: 0.125 + course * 0.25,
+          z: tap.z + Math.cos(a) * radius,
+          ...upright(a),
+        });
+      }
+    }
+  }
+
+  const fresh = new WaterWarMode();
+  fresh.start(made.ctx);
+  made.ctx.player.teleport(-22, 0.5, -22);
+  run2(fresh, made.ctx, 420);
+  return fresh.waterFraction;
+}
+
 /** Park the player somewhere with nothing near it. */
 function stand(ctx: ModeContext, x: number, z: number): void {
   ctx.player.teleport(x, 0.5, z);
@@ -243,6 +278,41 @@ describe('WaterWarMode', () => {
       expect(walled).toBeGreaterThan(0.1);
     });
 
+    it('rewards a half-built wall with half a result', () => {
+      // The property the whole budget rests on, and the one it did not have.
+      //
+      // Draining a tap used to need nothing but standing within 3.2m of it, and
+      // a ring a player would naturally build sits *inside* that — so kids
+      // emptied taps straight through finished walls, and the payoff was a
+      // cliff rather than a curve. Measured across ring heights, everything up
+      // to a metre kept exactly 0% and 1.25m kept 51%: sixty-five planks bought
+      // literally nothing and the next twenty bought the round.
+      //
+      // A kid has to be able to reach the water now, so a wall pays from the
+      // first course that is taller than a kid can step over.
+      const nothing = ringOfHeight(0);
+      const knee = ringOfHeight(2);
+      const waist = ringOfHeight(3);
+      const chest = ringOfHeight(5);
+
+      expect(nothing).toBeLessThan(0.02);
+      // Knee-high is still steppable, so it is still worth nothing.
+      expect(knee).toBeLessThan(0.02);
+      // Above the step, wood starts paying.
+      expect(waist).toBeGreaterThan(0.05);
+      expect(chest).toBeGreaterThan(waist * 2);
+    });
+
+    it('stops paying for height once a kid cannot see the tap over it', () => {
+      // The other end of the same curve, and the reason the pile is finite. A
+      // wall works by putting something solid between a kid and the water; once
+      // it does that, another metre of it does nothing at all. Measured, 1.25m
+      // and 2.00m rings come out identical to three significant figures.
+      const chest = ringOfHeight(5);
+      const towering = ringOfHeight(8);
+      expect(towering).toBeCloseTo(chest, 2);
+    });
+
     it('a ring with a gap in it is worth almost nothing', () => {
       // Why the budget is a decision rather than an allowance. The step that
       // matters is closing the ring, so wood spent on a fence you do not finish
@@ -264,11 +334,17 @@ describe('WaterWarMode', () => {
     });
 
     it('the opening pile is enough to close the ring, and more is not better', () => {
-      // Where 120 comes from. A wall a kid can scramble over is worth nothing —
-      // MANTLE_MAX_HEIGHT is 1.6m — and the pile is sized to clear that round
-      // all three taps and no further. Spending three times as much adds height
-      // nobody uses, which is what makes the number a decision rather than an
-      // allowance the player should simply max out.
+      // Where 120 comes from: the pile closes a ring round all three taps and
+      // does not stretch to much more.
+      //
+      // The reason used to be given as MANTLE_MAX_HEIGHT — a wall a kid can
+      // scramble over is worth nothing, so build past 1.6m. That was wrong
+      // twice over. Nothing in the game implements mantling, so the constant
+      // describes a mechanic that does not exist; and what actually stops a kid
+      // draining a tap is not being able to *reach* it, which a wall does the
+      // moment it is taller than a kid can step over — 0.55m, not 1.6m.
+      // Measured, a 0.75m ring already keeps water and a 2m one keeps no more
+      // than a 1.25m one.
       const budgeted = idleAfternoon(STARTING_LUMBER);
       const lavish = idleAfternoon(STARTING_LUMBER * 3);
       expect(budgeted).toBeGreaterThan(0.3);
