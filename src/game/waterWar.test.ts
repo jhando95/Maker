@@ -69,6 +69,44 @@ function upright(a: number): { qx: number; qy: number; qz: number; qw: number } 
 }
 
 /**
+ * Afternoons already simulated, by their arguments.
+ *
+ * Each of these runs seven minutes of game at a fixed timestep with fifteen
+ * kids in it, and the same handful of configurations are asked for by several
+ * tests each. Without this the file re-simulates `STARTING_LUMBER` four
+ * separate times to get four identical numbers — which is what pushed it past
+ * vitest's five-second default on CI once the drain check started casting a ray
+ * per kid per tick.
+ *
+ * Safe to share because both harnesses are pure: a fresh world, a fresh mode
+ * and fixed seeds every time.
+ */
+const afternoons = new Map<string, number>();
+
+/**
+ * How long a test that simulates a whole afternoon is allowed to take.
+ *
+ * Well above what any of them costs — the slowest is under three seconds — and
+ * stated rather than left to vitest's five-second default, because these are
+ * not unit tests that got slow by accident. Each one runs seven minutes of game
+ * at a fixed timestep with fifteen kids pathing through it, and that is the
+ * point: the questions they answer are about balance, and balance is not
+ * observable in a tick.
+ *
+ * The default caught one of them out on a CI runner the moment the drain check
+ * started casting a ray per kid per tick. Memoising the repeated configurations
+ * bought most of it back; this is the margin.
+ */
+const AFTERNOON = 30_000;
+function remember(key: string, run: () => number): number {
+  const seen = afternoons.get(key);
+  if (seen !== undefined) return seen;
+  const value = run();
+  afternoons.set(key, value);
+  return value;
+}
+
+/**
  * Fence the taps out of a fixed pile of wood, then leave the player standing
  * still for a whole afternoon and report how much water survived.
  *
@@ -77,6 +115,10 @@ function upright(a: number): { qx: number; qy: number; qz: number; qw: number } 
  * zero builds nothing, which is the control.
  */
 function idleAfternoon(budget: number, radius = 2.0): number {
+  return remember(`budget:${budget}:${radius}`, () => idleAfternoonUncached(budget, radius));
+}
+
+function idleAfternoonUncached(budget: number, radius: number): number {
   const made = makeContext();
   installFixtures(made.world, neighborhoodSlabs(new Rng('map')));
 
@@ -116,6 +158,10 @@ function idleAfternoon(budget: number, radius = 2.0): number {
  * middle of the economy without anybody noticing.
  */
 function ringOfHeight(courses: number, radius = 2.0): number {
+  return remember(`height:${courses}:${radius}`, () => ringOfHeightUncached(courses, radius));
+}
+
+function ringOfHeightUncached(courses: number, radius: number): number {
   const made = makeContext();
   installFixtures(made.world, neighborhoodSlabs(new Rng('map')));
 
@@ -257,7 +303,7 @@ describe('WaterWarMode', () => {
       const ratio = drained / (SOURCE_MAX * fresh.sources.length);
       expect(ratio).toBeGreaterThan(1.6);
       expect(ratio).toBeLessThan(3);
-    });
+    }, AFTERNOON);
 
     it('walls alone turn a lost afternoon into a held one', () => {
       // The claim the whole game rests on: that what you build is worth
@@ -276,7 +322,7 @@ describe('WaterWarMode', () => {
       // Fortified and still unattended, enough survives that the round is not
       // lost. Walls do not merely slow the bleeding, they change the outcome.
       expect(walled).toBeGreaterThan(0.1);
-    });
+    }, AFTERNOON);
 
     it('rewards a half-built wall with half a result', () => {
       // The property the whole budget rests on, and the one it did not have.
@@ -292,16 +338,20 @@ describe('WaterWarMode', () => {
       // first course that is taller than a kid can step over.
       const nothing = ringOfHeight(0);
       const knee = ringOfHeight(2);
-      const waist = ringOfHeight(3);
-      const chest = ringOfHeight(5);
-
       expect(nothing).toBeLessThan(0.02);
       // Knee-high is still steppable, so it is still worth nothing.
       expect(knee).toBeLessThan(0.02);
-      // Above the step, wood starts paying.
+    }, AFTERNOON);
+
+    it('pays from the first course a kid cannot step over', () => {
+      // The other half, split out because each of these is seven minutes of
+      // simulated game and four of them in one `it` is four times vitest's
+      // default timeout budget for one name.
+      const waist = ringOfHeight(3);
+      const chest = ringOfHeight(5);
       expect(waist).toBeGreaterThan(0.05);
       expect(chest).toBeGreaterThan(waist * 2);
-    });
+    }, AFTERNOON);
 
     it('stops paying for height once a kid cannot see the tap over it', () => {
       // The other end of the same curve, and the reason the pile is finite. A
@@ -311,7 +361,7 @@ describe('WaterWarMode', () => {
       const chest = ringOfHeight(5);
       const towering = ringOfHeight(8);
       expect(towering).toBeCloseTo(chest, 2);
-    });
+    }, AFTERNOON);
 
     it('a ring with a gap in it is worth almost nothing', () => {
       // Why the budget is a decision rather than an allowance. The step that
@@ -321,7 +371,7 @@ describe('WaterWarMode', () => {
       const short = idleAfternoon(Math.round(STARTING_LUMBER / 2));
       const closed = idleAfternoon(STARTING_LUMBER);
       expect(short).toBeLessThan(closed / 2);
-    });
+    }, AFTERNOON);
 
     it('more wood spent worse is worse than less wood spent well', () => {
       // The other half of the same point, and the reason the budget does not
@@ -331,7 +381,7 @@ describe('WaterWarMode', () => {
       const tight = idleAfternoon(STARTING_LUMBER, 2.0);
       const loose = idleAfternoon(STARTING_LUMBER * 4, 4.2);
       expect(tight).toBeGreaterThan(loose);
-    });
+    }, AFTERNOON);
 
     it('the opening pile is enough to close the ring, and more is not better', () => {
       // Where 120 comes from: the pile closes a ring round all three taps and
@@ -349,7 +399,7 @@ describe('WaterWarMode', () => {
       const lavish = idleAfternoon(STARTING_LUMBER * 3);
       expect(budgeted).toBeGreaterThan(0.3);
       expect(lavish).toBeCloseTo(budgeted, 2);
-    });
+    }, AFTERNOON);
 
     it('a passive player loses partway in, not on the first raid', () => {
       // Losing before the second raid means never seeing the mode; surviving to
