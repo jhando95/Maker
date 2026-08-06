@@ -30,10 +30,18 @@ name: CI
 # also does nothing to stop the outages themselves; there is no step-level
 # retry that could, because the failure happens in "Prepare all required
 # actions", before any step in this file runs.
+#
+# `workflow_dispatch` is here for a third reason, discovered the hard way. Six
+# consecutive pushes to an open pull request produced **no runs at all** — not
+# queued, not cancelled, not created — over four hours. Nothing in this file
+# causes that and nothing in it fixes it, but without a manual trigger there is
+# no way to ask again, and a branch with no run on it is indistinguishable from
+# a branch whose run failed.
 on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 # A newer push to the same branch makes the older run irrelevant.
 #
