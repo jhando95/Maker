@@ -101,6 +101,14 @@ jobs:
       - name: Lumber-budget scenario
         run: node tools/shoot.mjs --scenario scenarios/lumber.mjs --auto-quality --out /tmp/ci-lumber.png
 
+      # The ground is the largest surface in every frame the game draws, and
+      # both halves of it are claims about pixels that the unit suite cannot
+      # follow: a vertex colour attribute that has to survive the toon shader,
+      # and ten thousand instanced clumps that have to survive InstancedMesh
+      # tinting. The second one already rendered every blade black once.
+      - name: Lawn scenario
+        run: node tools/shoot.mjs --scenario scenarios/lawn.mjs --auto-quality --out /tmp/ci-lawn.png
+
       # A CI runner has no GPU either, so it is a genuine instance of the case
       # adaptive quality exists for. The decision logic is unit-tested; this
       # checks the decision reaches the drawing buffer.
@@ -122,6 +130,7 @@ jobs:
             /tmp/ci-hud.png
             /tmp/ci-lumber.png
             /tmp/ci-kids.png
+            /tmp/ci-lawn.png
             /tmp/ci-multiplayer.png
           if-no-files-found: ignore
 

@@ -8,7 +8,14 @@
 import { readFileSync } from 'node:fs';
 import { inflateSync } from 'node:zlib';
 
-function decode(path) {
+/**
+ * A PNG, as `{ w, h, ch, px }` with `px` a flat RGB(A) byte buffer.
+ *
+ * Exported because more than one scenario now needs to ask a question about
+ * pixels, and every one that rolls its own decoder is a second place for the
+ * Paeth filter to be wrong.
+ */
+export function decode(path) {
   const data = readFileSync(path);
   let pos = 8, w = 0, h = 0, ct = 0;
   const idat = [];

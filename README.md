@@ -392,7 +392,7 @@ scenarios/     scripted checks driven through the harness
 ```
 
 ```bash
-npm test         # 586 unit tests
+npm test         # 609 unit tests
 npm run typecheck
 npm run bench    # what a tick costs, as a share of the 16.67ms budget
 node tools/shoot.mjs --out shots/x.png   # boot headless, screenshot, fail on any console error
@@ -408,9 +408,19 @@ the mode, the shell and the HUD are wired together, whether a second person in
 the world reaches the renderer's instance buffers wearing the right shirt,
 whether the HUD can actually point at an objective that is behind you,
 whether running out of wood is ever visible to the player rather than just true,
-whether somebody who joined over the network is ever actually drawn. Each only
-happens in a browser, and each has broken at least once with the unit suite
-green.
+whether somebody who joined over the network is ever actually drawn, whether the
+ground's vertex colours survive the toon shader. Each only happens in a browser,
+and each has broken at least once with the unit suite green.
+
+The reverse is worth stating too, because two claims from the lawn pass were
+written as scenarios first and then moved out. Grass growing up through the
+street is invisible from directly overhead — the blades are edge-on and cover
+half a per cent of the frame — and "the lawn is many colours" passes on a
+perfectly flat lawn, because ten thousand individually tinted grass clumps put
+hundreds of colours on screen by themselves. Both now live in the unit suite,
+checked against positions and tone spreads rather than pixels. A browser
+assertion that cannot fail is worse than no assertion, and the way to find out
+is to take the fix back out and watch.
 
 ## Design notes
 

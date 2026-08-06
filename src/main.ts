@@ -484,7 +484,26 @@ let roundSnapshot: ReturnType<typeof build.serialize> | null = null;
 /** Which mode a restart should rebuild. */
 let lastModeId: ModeId = 'fortDefense';
 
+/**
+ * Why a mode cannot start, or null.
+ *
+ * Modes run on the authority only. A guest that started one would spawn its own
+ * bots into its own roster, run its own timers and score, hand itself a lumber
+ * budget the host has never heard of, and teleport itself to a spawn the host
+ * immediately corrects it away from — a world silently forked from everybody
+ * else's, reachable from the title screen in two clicks and failing without a
+ * word. The multiplayer work documented this as a limitation; documenting a
+ * limitation does not stop anyone walking into it.
+ */
+function modesBlocked(): string | null {
+  if (!isGuest()) return null;
+  return 'The person hosting starts the game. You can build with them meanwhile.';
+}
+
 function startRound(id: ModeId = lastModeId): void {
+  // Refused here as well as hidden in the menu, because the menu is one caller
+  // and this is the door.
+  if (modesBlocked() !== null) return;
   lastModeId = id;
   roundSnapshot = build.serialize();
   mode = createMode(id);
@@ -551,6 +570,7 @@ const menu = new Menu(app, settings, {
   onJoin: (url: string, room: string) => joinSession(url, room),
   onLeaveSession: () => leaveSession(),
   sessionStatus: () => sessionStatus(),
+  modesBlocked: () => modesBlocked(),
   onPlaySandbox: () => {
     stopRound();
     resetPlayerToSpawn();

@@ -132,6 +132,55 @@ export const WATER_SOURCES: ReadonlyArray<{ key: string; name: string; x: number
 /** The treehouse deck, which is the left side's high ground. */
 export const TREEHOUSE = { x: -13.5, z: 5.5, deck: 4.5 } as const;
 
+/**
+ * Where the grass gets walked off.
+ *
+ * Derived from the map's own landmarks rather than scattered for texture: every
+ * patch is somewhere a mode sends people. That makes the ground a record of the
+ * traffic the game creates, and it means a player who has never seen this lot
+ * can read where the routes go before anything moves — the taps everybody runs
+ * to, the flag bases, the tree everybody climbs, the doors everybody comes
+ * through.
+ *
+ * A consequence worth stating: change where a mode puts an objective and the
+ * wear follows it, because both read the same constant. A hand-placed patch
+ * would quietly start lying the first time a number here moved.
+ */
+export function wearPoints(): ReadonlyArray<{ x: number; z: number; radius: number; strength?: number }> {
+  return [
+    // The three taps. Water War's whole traffic pattern.
+    ...WATER_SOURCES.map((s) => ({ x: s.x, z: s.z, radius: 4.2, strength: 0.85 })),
+    // Both flag bases, and the spawns people run out of.
+    { x: LEFT_FLAG.x, z: LEFT_FLAG.z, radius: 3.4, strength: 0.8 },
+    { x: RIGHT_FLAG.x, z: RIGHT_FLAG.z, radius: 3.4, strength: 0.8 },
+    { x: LEFT_SPAWN.x, z: LEFT_SPAWN.z, radius: 2.8, strength: 0.55 },
+    { x: RIGHT_SPAWN.x, z: RIGHT_SPAWN.z, radius: 2.8, strength: 0.55 },
+    // Under the tree, which is bare in every real garden that has one.
+    { x: TREEHOUSE.x, z: TREEHOUSE.z, radius: 3.6, strength: 0.95 },
+    // The stash, and the fort that gets built round it.
+    { x: FORT_YARD.x, z: FORT_YARD.z, radius: 3.2, strength: 0.7 },
+    // The route from the street gate to the front door, as overlapping steps —
+    // a path is a line and this lattice only knows about circles.
+    ...pathWear(0, 17.5, 0, 7.4, 1.5, 0.75),
+    // And round the back deck, where the door is.
+    { x: 0, z: -8.2, radius: 3.0, strength: 0.6 },
+  ];
+}
+
+/** A worn line, as overlapping circles a metre apart. */
+function pathWear(
+  x0: number, z0: number, x1: number, z1: number, radius: number, strength: number,
+): Array<{ x: number; z: number; radius: number; strength: number }> {
+  const span = Math.hypot(x1 - x0, z1 - z0);
+  const steps = Math.max(1, Math.round(span));
+  const out: Array<{ x: number; z: number; radius: number; strength: number }> = [];
+  for (let i = 0; i <= steps; i++) {
+    const t = i / steps;
+    out.push({ x: x0 + (x1 - x0) * t, z: z0 + (z1 - z0) * t, radius, strength });
+  }
+  return out;
+}
+
 const slabs: Slab[] = [];
 
 function put(s: Slab): void {

@@ -12,7 +12,8 @@ import { Rng } from '../core/rng.ts';
 import { createToonMaterial } from '../render/toonMaterial.ts';
 import { chamferedBox, blob, addOutlineNormals } from '../render/geometry.ts';
 import { PropBatch } from '../render/propBatch.ts';
-import { neighborhoodSlabs, TREEHOUSE, type Slab } from './neighborhood.ts';
+import { neighborhoodSlabs, wearPoints, TREEHOUSE, type Slab } from './neighborhood.ts';
+import { buildGround, buildTufts, averageLawnColor, type Paved } from './ground.ts';
 
 /**
  * Palette.
@@ -102,8 +103,6 @@ export function createScene(seed: string | number = 'backyard-01'): SceneBuild {
   addLights(scene);
   const sun = scene.getObjectByName('sun') as THREE.DirectionalLight;
 
-  addGround(scene);
-
   // All repeated scenery goes into one batch. Built as individual meshes the
   // fence alone was several hundred draw calls before any player-built part.
   const cache = new GeometryCache();
@@ -114,6 +113,12 @@ export function createScene(seed: string | number = 'backyard-01'): SceneBuild {
   // collision fixtures, which is the only way the house you see and the house
   // you walk into stay the same house.
   const slabs = neighborhoodSlabs(rng.fork());
+
+  // Built before the scenery is queued but after the map is described, because
+  // the grass has to know where the paving is. Its own Rng, so the order here
+  // does not change what anything else draws.
+  addGround(scene, new Rng(`${seed}-ground`), slabs);
+
   for (const s of slabs) {
     box(props, cache, s.w, s.h, s.d, s.x, s.y, s.z, s.color, {
       rx: s.rx, ry: s.ry, rz: s.rz,
@@ -240,25 +245,67 @@ function addLights(scene: THREE.Scene): void {
   scene.add(new THREE.HemisphereLight(0xbfe6ff, 0x7fa84a, 0.5));
 }
 
-function addGround(scene: THREE.Scene): void {
+/**
+ * The footprints of everything the map lays on the ground.
+ *
+ * Derived from the same slab list that gets drawn and turned into collision,
+ * rather than listed by hand, so paving and grass cannot drift apart. A slab
+ * counts if it straddles ground level at all — the driveway, the deck, the
+ * pool, the sandpit, the house's own floor.
+ */
+function pavedFootprints(slabs: readonly Slab[]): Paved[] {
+  const out: Paved[] = [];
+  for (const s of slabs) {
+    const bottom = s.y - s.h / 2;
+    const top = s.y + s.h / 2;
+    if (bottom > 0.25 || top < 0.01) continue;
+    // Tilted slabs are ramps and roofs; their footprint is not their extent and
+    // grass at the foot of one is correct anyway.
+    if ((s.rx ?? 0) !== 0 || (s.rz ?? 0) !== 0) continue;
+    out.push({ x: s.x, z: s.z, halfW: s.w / 2, halfD: s.d / 2, ry: s.ry });
+  }
+  return out;
+}
+
+function addGround(scene: THREE.Scene, rng: Rng, slabs: readonly Slab[]): void {
+  // The lot's own lawn, with tone variation and the paths worn into it. Laid
+  // over the far plane rather than replacing it: the horizon still needs
+  // something to be, and subdividing four hundred metres to get it would be
+  // most of a megabyte of vertices for ground nobody stands on.
+  const lawn = {
+    extent: 58,
+    grass: PALETTE.grass,
+    grassDark: PALETTE.grassDark,
+    dirt: PALETTE.dirt,
+    wear: wearPoints(),
+    paved: pavedFootprints(slabs),
+  };
+  scene.add(buildGround(rng, lawn));
+  // Three clumps per square metre. Sparser and the eye reads them as individual
+  // objects scattered on a plane rather than as the plane's surface, which is
+  // the whole point of them; denser stops paying for itself well before it
+  // stops costing triangles.
+  scene.add(buildTufts(rng, { ...lawn, count: 10000 }));
+
   const geometry = new THREE.PlaneGeometry(400, 400, 1, 1);
   geometry.rotateX(-Math.PI / 2);
-  const material = createToonMaterial({ color: PALETTE.grass });
+  // The lawn's average rather than the base green, which is its light end. Get
+  // this wrong and the lot is a visibly different shade from the world around
+  // it — a rug thrown over the ground, with a straight edge where it stops.
+  const material = createToonMaterial({ color: 0xffffff });
+  material.color.copy(averageLawnColor(PALETTE.grass, PALETTE.grassDark));
   const ground = new THREE.Mesh(geometry, material);
   ground.name = 'ground';
   ground.receiveShadow = true;
-  // Sits a hair below y=0 so it never z-fights with a part placed flat on it.
-  ground.position.y = -0.005;
+  // Below the lot's own lawn, which sits above it — this one only fills the
+  // horizon, and two coplanar planes would z-fight across the whole view.
+  ground.position.y = -0.02;
   scene.add(ground);
 
-  // A worn dirt patch, to break up the flat green.
-  const patch = new THREE.Mesh(
-    new THREE.CircleGeometry(3.2, 20).rotateX(-Math.PI / 2),
-    createToonMaterial({ color: PALETTE.dirt }),
-  );
-  patch.position.set(-6, 0.002, 4);
-  patch.receiveShadow = true;
-  scene.add(patch);
+  // There was a flat dirt disc here, hand-placed to break up the green. The
+  // wear field does that job now and does it from the map's own landmarks, so
+  // the disc was both redundant and wrong — a hard-edged circle of one colour
+  // sitting on top of a lawn that has stopped being one colour.
 }
 
 /** Shared helper: a chamfered box mesh with an outline shell. */

@@ -122,8 +122,12 @@ const STYLE = `
 
 .mk-hint { text-align: center; font-size: 11.5px; opacity: 0.55; margin-top: 14px; }
 .mk-btn.mk-mode { margin-bottom: 3px; }
-/* Sits directly under its button and is deliberately quiet: the name is the
-   choice, this is the reason. */
+.mk-disabled { opacity: 0.45; cursor: not-allowed; }
+/* Louder than the blurbs it sits among, because it is the one line that
+   explains why the buttons above it do nothing. Quiet here is how somebody
+   concludes the game is broken. */
+.mk-why { color: var(--alarm); font-weight: 700; }
+
 .mk-net { display: flex; gap: 6px; margin: 6px 0 2px; }
 .mk-input {
   flex: 1; min-width: 0;
@@ -188,6 +192,14 @@ export interface MenuCallbacks {
   onLeaveSession(): void;
   /** A line about the connection, or null when playing alone. */
   sessionStatus(): string | null;
+  /**
+   * Why a mode cannot be started right now, or null when it can.
+   *
+   * A reason rather than a boolean, because the answer the player needs is not
+   * "no" — it is "the person hosting runs the game". A greyed-out button that
+   * says nothing is how somebody concludes the game is broken.
+   */
+  modesBlocked(): string | null;
   onResume(): void;
   onRestart(): void;
   onQuitToTitle(): void;
@@ -373,13 +385,26 @@ export class Menu {
     // One button per mode, each with a line saying what it is. A menu that
     // lists two names and no explanation makes the player pick blind and find
     // out ninety seconds later.
+    const blocked = this.callbacks.modesBlocked();
     for (const m of this.callbacks.listModes()) {
-      const button = this.button(m.name, () => this.callbacks.onPlayMode(m.id));
+      const button = this.button(
+        m.name, () => { if (blocked === null) this.callbacks.onPlayMode(m.id); },
+      );
       const blurb = document.createElement('div');
       blurb.className = 'mk-blurb';
       blurb.textContent = m.blurb;
       this.card.appendChild(blurb);
       button.classList.add('mk-mode');
+      if (blocked !== null) {
+        button.classList.add('mk-disabled');
+        button.setAttribute('aria-disabled', 'true');
+      }
+    }
+    if (blocked !== null) {
+      const why = document.createElement('div');
+      why.className = 'mk-blurb mk-why';
+      why.textContent = blocked;
+      this.card.appendChild(why);
     }
 
     this.button('Free Build', () => this.callbacks.onPlaySandbox(), 'mk-secondary');
