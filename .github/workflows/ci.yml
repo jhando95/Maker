@@ -44,24 +44,27 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
   cancel-in-progress: true
 
-# The timeouts below have to cover the wait for a runner, not just the work.
+# A note about jobs cancelled at fifteen minutes, and what these numbers are not.
 #
-# That is not what `timeout-minutes` sounds like it does, and finding out cost
-# an afternoon. Two runs died at exactly 15m 1s having never been assigned a
-# machine — `runner_id: 0`, no runner name, no steps at all — which is to say
-# the clock had been running while they sat in a queue, and the job was killed
-# before it started. During a GitHub capacity shortage, a budget sized to the
-# work is a budget that guarantees the work never happens.
+# During a GitHub capacity shortage this repository saw run after run cancelled
+# at exactly 15m 1s having never been assigned a machine — `runner_id: 0`, no
+# runner name, no steps at all. The obvious suspect was `timeout-minutes`, on
+# the theory that its clock covers queue time as well as run time.
 #
-# So each number is now *runtime plus room to queue*, and it is still a bound
-# rather than an absence of one, because a genuinely hung job should die: the
-# checks take about nine minutes when they are healthy and the benchmark under
-# one, so both have several times their own runtime in hand and neither would
-# sit for half an hour on a runner that was actually working.
+# **That theory is wrong, and it was tested.** The value was raised from 15 to
+# 30 and the very next run was cancelled at 15m 1s again, still unassigned. So
+# the fifteen minutes is a limit on how long a job may wait for a runner, it
+# belongs to the platform, and nothing in this file changes it. Recorded here
+# because it cost an afternoon to find out and the wrong answer is convincing.
+#
+# The numbers below are therefore sized for the work alone, with headroom for a
+# slow machine rather than for a queue: the checks take about nine minutes when
+# they are healthy and the benchmark well under one. They are still a bound, so
+# a genuinely hung job dies rather than running to the six-hour default.
 jobs:
   check:
     runs-on: ubuntu-latest
-    # ~9 minutes of work. The rest is room to wait for a machine.
+    # ~9 minutes of work, with room for a slow runner.
     timeout-minutes: 30
 
     steps:
