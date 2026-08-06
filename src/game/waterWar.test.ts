@@ -43,6 +43,13 @@ function run(mode: WaterWarMode, ctx: ModeContext, seconds: number, input = noIn
   for (let i = 0; i < Math.round(seconds / DT); i++) mode.fixedUpdate(DT, ctx, input);
 }
 
+/** Same, but stops early once the round is decided. */
+function run2(mode: WaterWarMode, ctx: ModeContext, seconds: number): void {
+  for (let i = 0; i < Math.round(seconds / DT) && !mode.finished; i++) {
+    mode.fixedUpdate(DT, ctx, noInput);
+  }
+}
+
 /** Park the player somewhere with nothing near it. */
 function stand(ctx: ModeContext, x: number, z: number): void {
   ctx.player.teleport(x, 0.5, z);
@@ -158,6 +165,48 @@ describe('WaterWarMode', () => {
       const ratio = drained / (SOURCE_MAX * fresh.sources.length);
       expect(ratio).toBeGreaterThan(1.6);
       expect(ratio).toBeLessThan(3);
+    });
+
+    it('walls alone turn a lost afternoon into a held one', () => {
+      // The claim the whole game rests on: that what you build is worth
+      // building. Measured rather than asserted, and measured with the player
+      // doing nothing at all, so the difference is the walls and not skill.
+      //
+      // Same seed, same raids, same idle player — the only variable is whether
+      // there is a fence round each tap.
+      const run = (walled: boolean): number => {
+        const made = makeContext();
+        installFixtures(made.world, neighborhoodSlabs(new Rng('map')));
+        if (walled) {
+          for (const tap of WATER_SOURCES) {
+            for (let course = 0; course < 7; course++) {
+              for (let i = 0; i < 46; i++) {
+                const a = (i / 46) * Math.PI * 2;
+                made.ctx.build.applyPlaceIfClear({
+                  kind: 0, colorway: 0,
+                  x: tap.x + Math.sin(a) * 4.2,
+                  y: 0.125 + course * 0.25,
+                  z: tap.z + Math.cos(a) * 4.2,
+                  qx: 0, qy: Math.sin(-a / 2), qz: 0, qw: Math.cos(-a / 2),
+                });
+              }
+            }
+          }
+        }
+        const fresh = new WaterWarMode();
+        fresh.start(made.ctx);
+        made.ctx.player.teleport(-22, 0.5, -22);
+        run2(fresh, made.ctx, 420);
+        return fresh.waterFraction;
+      };
+
+      const open = run(false);
+      const walled = run(true);
+      // Unfortified and unattended, the street drains everything.
+      expect(open).toBeLessThan(0.02);
+      // Fortified and still unattended, enough survives that the round is not
+      // lost. Walls do not merely slow the bleeding, they change the outcome.
+      expect(walled).toBeGreaterThan(0.1);
     });
 
     it('a passive player loses partway in, not on the first raid', () => {

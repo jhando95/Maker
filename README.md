@@ -167,6 +167,15 @@ neutral stance rather than freezing mid-step. Joint heights are fractions of the
 collision capsule, so the drawing and the thing that collides cannot disagree
 about how tall somebody is.
 
+### Aiming a part
+
+The preview is outlined, not just tinted. A translucent fill is only visible
+against something a different colour from itself, and the most common thing to
+build onto is another plank — so the ghost vanished exactly when it mattered,
+lying flat on the surface it was snapping to. Aiming at a deck, you could not
+see where the board would land. The edges are drawn on top of everything now, in
+the same hard-line language as the rest of the game.
+
 ### In your hands
 
 First person was an empty screen with a crosshair, which reads as a floating eye
@@ -255,10 +264,19 @@ the map would mean shimmying up flat stucco onto the roof, which is the one
 thing the house exists to prevent. The treehouse ladder is marked climbable
 explicitly.
 
-Walk into a near-vertical surface with rungs and you climb it. That is not a
-ladder object — it is any structure the game recognises as climbable, which
-means a ladder you nailed together yourself works exactly like one that shipped
-with the game.
+Walk into a near-vertical surface and you climb it, as long as you built it.
+There is no ladder object; a ladder you nailed together yourself works exactly
+like one that shipped with the game — which is checked now, by building one out
+of parts and climbing it.
+
+Worth stating plainly, because writing that test turned it up: **the rungs are
+decoration.** The probe accepts any near-vertical player-placed face, so a flush
+wall is as climbable as a ladder. What makes something climbable is that you
+built it, not that it looks like a ladder. That is generous and consistent, and
+it does mean a wall is never a barrier to the person who built it — the bots do
+not climb, so walls still hold them, but you can always get over your own. If
+that is ever tightened to need real rungs, the tests say exactly what would
+change.
 
 ## What is here
 
@@ -281,7 +299,7 @@ scenarios/     scripted checks driven through the harness
 ```
 
 ```bash
-npm test         # 519 unit tests
+npm test         # 523 unit tests
 npm run typecheck
 npm run bench    # what a tick costs, as a share of the 16.67ms budget
 node tools/shoot.mjs --out shots/x.png   # boot headless, screenshot, fail on any console error

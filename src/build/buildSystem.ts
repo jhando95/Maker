@@ -78,6 +78,9 @@ export class BuildSystem {
   private ghostMesh: THREE.Mesh;
   private readonly ghostMaterial: THREE.MeshBasicMaterial;
   private readonly ghostGeometries: THREE.BufferGeometry[] = [];
+  private readonly ghostEdges: THREE.LineSegments;
+  private readonly ghostEdgeMaterial: THREE.LineBasicMaterial;
+  private readonly ghostEdgeGeometries: THREE.BufferGeometry[] = [];
 
   /** Preview of where holding repeat would lay the next few parts. */
   private readonly chainMeshes: THREE.Mesh[] = [];
@@ -148,6 +151,37 @@ export class BuildSystem {
     this.ghostGroup.add(this.ghostMesh);
     this.ghostGroup.name = 'ghost';
 
+    /*
+     * The edges of the ghost, drawn on top of everything.
+     *
+     * A translucent fill is only visible against something a different colour
+     * from itself, and the most common thing to build onto is another plank —
+     * so the preview vanished exactly when it mattered, lying on the surface it
+     * was snapping to. Aiming at a deck, you could not see where the board would
+     * land.
+     *
+     * Hard lines rather than a brighter fill, because the world is drawn with
+     * hard outlines and this has to read as one more outlined object. depthTest
+     * off so the near edges never disappear behind the very surface the part is
+     * about to rest on — a proposal you cannot see through is a proposal you
+     * cannot judge.
+     */
+    for (const geometry of this.ghostGeometries) {
+      this.ghostEdgeGeometries.push(new THREE.EdgesGeometry(geometry, 18));
+    }
+    this.ghostEdgeMaterial = new THREE.LineBasicMaterial({
+      color: GHOST_VALID,
+      transparent: true,
+      opacity: 0.95,
+      depthTest: false,
+      depthWrite: false,
+    });
+    this.ghostEdges = new THREE.LineSegments(this.ghostEdgeGeometries[0], this.ghostEdgeMaterial);
+    this.ghostEdges.frustumCulled = false;
+    // Last, so it draws over its own fill.
+    this.ghostEdges.renderOrder = 3;
+    this.ghostGroup.add(this.ghostEdges);
+
     // One material per link, because each carries its own opacity — the fade
     // along the chain is what tells you it keeps going.
     for (let i = 0; i < REPEAT_PREVIEW_LINKS; i++) {
@@ -172,6 +206,7 @@ export class BuildSystem {
     this.selectedKind = index;
     this.clearRepeat();
     this.ghostMesh.geometry = this.ghostGeometries[index]!;
+    this.ghostEdges.geometry = this.ghostEdgeGeometries[index]!;
     // A different part has different snap frames, so the sticky choice from the
     // old one is meaningless.
     this.snapper.reset();
@@ -341,9 +376,11 @@ export class BuildSystem {
     // pointing, and aiming at the sky is no reason for it to disappear.
     if (candidate === null) {
       this.ghostMesh.visible = false;
+      this.ghostEdges.visible = false;
       return;
     }
     this.ghostMesh.visible = true;
+    this.ghostEdges.visible = true;
 
     if (!this.ghostInitialized) {
       this.ghostPos.copy(candidate.position);
@@ -365,8 +402,15 @@ export class BuildSystem {
 
     this.ghostMesh.position.copy(this.ghostPos);
     this.ghostMesh.quaternion.copy(this.ghostQuat);
-    this.ghostMaterial.color.setHex(candidate.valid ? this.ghostValidColor : this.ghostInvalidColor);
-    this.ghostMaterial.opacity = candidate.valid ? 0.45 : 0.3;
+    this.ghostEdges.position.copy(this.ghostPos);
+    this.ghostEdges.quaternion.copy(this.ghostQuat);
+
+    const tint = candidate.valid ? this.ghostValidColor : this.ghostInvalidColor;
+    this.ghostMaterial.color.setHex(tint);
+    this.ghostMaterial.opacity = candidate.valid ? 0.34 : 0.24;
+    // The outline carries the colour now, so the fill can be fainter — enough
+    // to say which side is solid without hiding what is behind it.
+    this.ghostEdgeMaterial.color.setHex(tint);
   }
 
   /**
