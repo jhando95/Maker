@@ -44,10 +44,25 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
   cancel-in-progress: true
 
+# The timeouts below have to cover the wait for a runner, not just the work.
+#
+# That is not what `timeout-minutes` sounds like it does, and finding out cost
+# an afternoon. Two runs died at exactly 15m 1s having never been assigned a
+# machine — `runner_id: 0`, no runner name, no steps at all — which is to say
+# the clock had been running while they sat in a queue, and the job was killed
+# before it started. During a GitHub capacity shortage, a budget sized to the
+# work is a budget that guarantees the work never happens.
+#
+# So each number is now *runtime plus room to queue*, and it is still a bound
+# rather than an absence of one, because a genuinely hung job should die: the
+# checks take about nine minutes when they are healthy and the benchmark under
+# one, so both have several times their own runtime in hand and neither would
+# sit for half an hour on a runner that was actually working.
 jobs:
   check:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # ~9 minutes of work. The rest is room to wait for a machine.
+    timeout-minutes: 30
 
     steps:
       - uses: actions/checkout@v4
@@ -177,7 +192,8 @@ jobs:
 
   benchmark:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # Well under a minute of work; the budget is almost entirely queue.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
