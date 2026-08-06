@@ -10,6 +10,7 @@ import {
   KID_RESPAWN, RESPAWN_TANK,
 } from './waterWar.ts';
 import { TANK_MAX, SOURCE_RADIUS, WEAPONS } from './waterKit.ts';
+import { sameForEveryone } from './gameMode.ts';
 import type { GameEvent, ModeContext, ModeInput } from './gameMode.ts';
 import { Rng } from '../core/rng.ts';
 import { ActorRoster, LOCAL_ACTOR_ID } from './actor.ts';
@@ -17,8 +18,25 @@ import { DT } from '../physics/constants.ts';
 import { WATER_SOURCES, neighborhoodSlabs, installFixtures } from '../world/neighborhood.ts';
 import { STARTING_LUMBER } from '../build/lumber.ts';
 
-const noInput: ModeInput = { fire: false, firePressed: false, fireReleased: false };
-const firing: ModeInput = { fire: true, firePressed: true, fireReleased: false };
+const noInput = sameForEveryone();
+const firing = sameForEveryone({ fire: true, firePressed: true });
+
+/**
+ * Firing while looking somewhere in particular.
+ *
+ * Aim used to be read off `ctx.camera` inside the mode, so a test set the yaw
+ * and the mode followed. It comes in with the input now — a host firing on a
+ * guest's behalf has no camera to consult — so a test that wants a direction
+ * has to say so. Same convention as the camera's own look vector, which
+ * `aimOf` holds the two together on.
+ */
+function firingAt(yaw: number, pitch = 0): ModeInput {
+  const cp = Math.cos(pitch);
+  return sameForEveryone({
+    fire: true, firePressed: true,
+    aimX: -Math.sin(yaw) * cp, aimY: Math.sin(pitch), aimZ: -Math.cos(yaw) * cp,
+  });
+}
 
 function makeContext(): { ctx: ModeContext; events: GameEvent[]; world: CollisionWorld } {
   const world = new CollisionWorld();
@@ -638,11 +656,10 @@ describe('WaterWarMode', () => {
       expect(hitting).toBeLessThanOrEqual(5);
 
       // Turn to face nothing: the splashes should stop.
-      ctx.camera.yaw = Math.PI;
       events.length = 0;
       for (let i = 0; i < 30; i++) {
         bot.controller.teleport(0, 0.5, -3);
-        mode.fixedUpdate(DT, ctx, firing);
+        mode.fixedUpdate(DT, ctx, firingAt(Math.PI));
       }
       expect(events.filter((e) => e.type === 'splash').length).toBe(0);
     });
@@ -742,5 +759,146 @@ describe('WaterWarMode', () => {
       expect(mode.tankLevel).toBe(TANK_MAX);
       for (const s of mode.sources) expect(s.water).toBe(SOURCE_MAX);
     });
+  });
+});
+
+describe('WaterWarMode with two people in the yard', () => {
+  /**
+   * The mode with a second person in the roster, the way a host runs one.
+   *
+   * A `remote` actor rather than a second `local`, because that is the kind the
+   * host actually holds for a guest — and because `isFighter` is written about
+   * the kind, so a test that used the wrong one would be testing nothing.
+   */
+  function withGuest(): {
+    mode: WaterWarMode;
+    ctx: ModeContext;
+    events: GameEvent[];
+    guest: CharacterController;
+  } {
+    const made = makeContext();
+    const guest = new CharacterController(made.world, 4, 0.5, 0);
+    made.ctx.actors.addRemote({ id: 1, kind: 'remote', team: 'left', controller: guest });
+    const mode = new WaterWarMode();
+    mode.start(made.ctx);
+    return { mode, ctx: made.ctx, events: made.events, guest };
+  }
+
+  /** Fire for one person and nobody else, which is what a real tick looks like. */
+  function only(actorId: number, aim = { x: 0, y: 0, z: -1 }): ModeInput {
+    return {
+      of: (id) => ({
+        fire: id === actorId,
+        firePressed: id === actorId,
+        fireReleased: false,
+        aimX: aim.x, aimY: aim.y, aimZ: aim.z,
+      }),
+    };
+  }
+
+  it('gives the guest a tank of their own', () => {
+    // The failure this replaces is not an exception. With one `tank` field on
+    // the mode, the host holding the trigger drains the guest's gauge too —
+    // which reads on the guest's screen as their water going somewhere.
+    const { mode, ctx } = withGuest();
+    run(mode, ctx, BUILD_TIME + 1);
+    ctx.player.teleport(FAR_AWAY.x, 0.5, FAR_AWAY.z);
+
+    const before = mode.selfHud(1).ammo!.current;
+    run(mode, ctx, 1.5, only(LOCAL_ACTOR_ID));
+    expect(mode.selfHud(LOCAL_ACTOR_ID).ammo!.current).toBeLessThan(before);
+    expect(mode.selfHud(1).ammo!.current).toBe(before);
+  });
+
+  it("lets the guest fire, and spends the guest's water doing it", () => {
+    const { mode, ctx } = withGuest();
+    run(mode, ctx, BUILD_TIME + 1);
+    const before = mode.selfHud(1).ammo!.current;
+
+    run(mode, ctx, 1.5, only(1));
+    expect(mode.selfHud(1).ammo!.current).toBeLessThan(before);
+    // And the host, who was not touching anything, still has a full tank.
+    expect(mode.selfHud(LOCAL_ACTOR_ID).ammo!.current).toBe(before);
+  });
+
+  it('draws the guest their own stream, from where the guest is standing', () => {
+    // The host computes it, so without an entry of their own a guest holds the
+    // trigger and sees nothing leave the nozzle.
+    const { mode, ctx, guest } = withGuest();
+    run(mode, ctx, BUILD_TIME + 1);
+    guest.teleport(8, 0.5, 8);
+
+    mode.fixedUpdate(DT, ctx, only(1));
+    const theirs = mode.streamFor(1);
+    expect(theirs, 'the guest is firing and has no stream').not.toBeNull();
+    // Along -Z from the guest, not from the host at the origin.
+    expect(theirs!.x).toBeCloseTo(8, 1);
+    expect(theirs!.z).toBeLessThan(8);
+    expect(mode.streamFor(LOCAL_ACTOR_ID), 'the host is not firing').toBeNull();
+  });
+
+  it('soaks the guest, and stops them, without touching the host', () => {
+    const { mode, ctx, guest } = withGuest();
+    run(mode, ctx, BUILD_TIME + 1);
+    guest.teleport(4, 0.5, 0);
+
+    // Straight at them, close enough that the splash cannot miss.
+    for (let i = 0; i < 30 && mode.speedScaleFor(1) > 0; i++) {
+      ctx.projectiles.spawn(4, 1.2, 1.2, 0, -0.3, -1, 12, 900);
+      run(mode, ctx, 0.3);
+    }
+
+    expect(mode.speedScaleFor(1), 'the guest was never knocked out').toBe(0);
+    expect(mode.speedScaleFor(LOCAL_ACTOR_ID), 'the host went down too').toBe(1);
+    expect(mode.playerIsOut, 'the host reported themselves out').toBe(false);
+  });
+
+  it('says nothing to the host about a guest being soaked', () => {
+    // The event drives this machine's screen flash and the arrow pointing at
+    // whoever got you. Firing it for a soaking in somebody else's garden would
+    // flash the host's screen for something that did not happen to them.
+    const { mode, ctx, events, guest } = withGuest();
+    run(mode, ctx, BUILD_TIME + 1);
+    guest.teleport(4, 0.5, 0);
+    events.length = 0;
+
+    for (let i = 0; i < 30 && mode.speedScaleFor(1) > 0; i++) {
+      ctx.projectiles.spawn(4, 1.2, 1.2, 0, -0.3, -1, 12, 900);
+      run(mode, ctx, 0.3);
+    }
+
+    expect(mode.speedScaleFor(1), 'the guest was never soaked, so this proves nothing').toBe(0);
+    expect(events.filter((e) => e.type === 'playerSoaked')).toHaveLength(0);
+  });
+
+  it('sends kids after whoever is nearest, not always the host', () => {
+    // A kid that could only ever throw at the player was correct while the
+    // player was the only person on the lawn. With a guest in the yard it means
+    // one of the two humans is a spectator with legs.
+    const { mode, ctx, guest } = withGuest();
+    run(mode, ctx, BUILD_TIME + 1);
+    expect(mode.bots.length).toBeGreaterThan(0);
+
+    const kid = mode.bots[0]!;
+    ctx.player.teleport(FAR_AWAY.x, 0.5, FAR_AWAY.z);
+    guest.teleport(kid.x + 1.5, 0.5, kid.z);
+    run(mode, ctx, DT);
+
+    expect(kid.hasAim, 'the kid could not see anybody at all').toBe(true);
+    expect(Math.hypot(kid.aimX - guest.x, kid.aimZ - guest.z))
+      .toBeLessThan(Math.hypot(kid.aimX - ctx.player.x, kid.aimZ - ctx.player.z));
+  });
+
+  it('keeps kid ids clear of the range people are numbered in', () => {
+    // Both allocators used to start at 1, so with one guest connected the guest
+    // and the first kid of the first raid were the same actor. Nothing throws;
+    // the roster answers with whichever was added first and a player gets
+    // dragged toward a bot.
+    const { mode, ctx } = withGuest();
+    run(mode, ctx, BUILD_TIME + 1);
+    expect(mode.bots.length).toBeGreaterThan(0);
+    for (const bot of mode.bots) {
+      expect(bot.id, 'a kid was numbered in the range people use').toBeGreaterThanOrEqual(100);
+    }
   });
 });

@@ -76,6 +76,34 @@ export interface Actor {
 export const LOCAL_ACTOR_ID = 0;
 
 /**
+ * The first id handed to somebody who joined.
+ *
+ * People count up from 1, and there are never many — `MAX_PEERS` is 7.
+ */
+export const FIRST_REMOTE_ID = 1;
+
+/**
+ * The first id given to a bot, and the reason there is a gap.
+ *
+ * Two allocators hand out actor ids and they never speak: the host numbers
+ * arrivals as they connect, and a mode numbers the kids it spawns. Both used to
+ * start at 1, which is fine for as long as only one of them is ever running —
+ * and every mode ran alone until this week.
+ *
+ * With one guest in the yard it stops being fine, silently. The guest is actor
+ * 1 and so is the first kid of the first raid, so `actors.get(1)` answers with
+ * whichever was added first, the snapshot carries the id twice, and the guest's
+ * interpolation buffer for itself gets fed a bot's positions. Nothing throws.
+ * The symptom is a player being dragged toward a kid, which reads as a physics
+ * bug a long way from the two lines that caused it.
+ *
+ * A gap is the cheap fix, and worth stating as a rule rather than a constant
+ * either side could drift from: **ids below this are people, ids at or above it
+ * are the simulation's own.** Ninety-nine is far more people than a lawn holds.
+ */
+export const FIRST_BOT_ID = 100;
+
+/**
  * Everyone currently in the world, in one place.
  *
  * Assembled from three owners rather than replacing them: main.ts owns the local

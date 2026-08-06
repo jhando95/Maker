@@ -120,24 +120,18 @@ export interface ModeSummary {
   lines: ReadonlyArray<{ label: string; value: string }>;
 }
 
-/** What the HUD needs from whatever mode is running. */
-export interface ModeHud {
-  /** Short label for the current phase, e.g. "BUILD" or "WAVE 3". */
-  phase: string;
-  /** Seconds left in the phase, or null when it is not timed. */
-  timer: number | null;
-  /** Primary counter, e.g. supplies remaining. */
-  primary: { label: string; value: string } | null;
-  secondary: { label: string; value: string } | null;
-  /**
-   * The two sides' captures, when a mode is a contest between them.
-   *
-   * Its own field rather than squeezed into `primary`, because the HUD paints it
-   * in the teams' own shirt colours and cannot do that to an arbitrary string.
-   */
-  score?: { left: number; right: number } | null;
-  /** A line of guidance, shown large when it changes. */
-  message: string | null;
+/**
+ * The half of the HUD that is true of one person rather than of the round.
+ *
+ * Split out because the four fields below are the four a guest could not have.
+ * Phase, timer and score are the same on every screen and a host can simply send
+ * them; how wet *you* are and what is in *your* tank are answers to a question
+ * with a subject, and the mode has to be asked about a particular person for
+ * them to mean anything. Keeping them in one named group is what lets the host
+ * answer that question once — for itself, and for each guest — instead of
+ * `hud()` quietly meaning "the host's".
+ */
+export interface ModeSelfHud {
   /** 0..1 charge on the throw, or null when not aiming. */
   charge: number | null;
   /**
@@ -158,15 +152,94 @@ export interface ModeHud {
   ammo: { current: number; max: number; gauge?: boolean } | null;
   /** 0..1 progress on a refill channel, or null when not at a bucket. */
   refill: number | null;
+}
+
+/** Nothing in the tank and nothing to say — what a mode reports about a stranger. */
+export const NO_SELF_HUD: ModeSelfHud = {
+  charge: null, wetness: null, ammo: null, refill: null,
+};
+
+/** What the HUD needs from whatever mode is running. */
+export interface ModeHud extends ModeSelfHud {
+  /** Short label for the current phase, e.g. "BUILD" or "WAVE 3". */
+  phase: string;
+  /** Seconds left in the phase, or null when it is not timed. */
+  timer: number | null;
+  /** Primary counter, e.g. supplies remaining. */
+  primary: { label: string; value: string } | null;
+  secondary: { label: string; value: string } | null;
+  /**
+   * The two sides' captures, when a mode is a contest between them.
+   *
+   * Its own field rather than squeezed into `primary`, because the HUD paints it
+   * in the teams' own shirt colours and cannot do that to an arbitrary string.
+   */
+  score?: { left: number; right: number } | null;
+  /** A line of guidance, shown large when it changes. */
+  message: string | null;
   /** Planks left, or null when the mode does not meter them. */
   lumber?: number | null;
 }
 
-export interface ModeInput {
+/**
+ * One tick of one person's will to fight, as the mode sees it.
+ *
+ * Aim is carried rather than read off the camera, and that is the change that
+ * lets a second human exist. There is one camera on a machine and it belongs to
+ * whoever is sitting at it, so `ctx.camera.getLookDirection()` inside a throw
+ * silently means "the local player's throw" — which is correct right up until
+ * the host has to fire a balloon on behalf of somebody in another house. A
+ * guest's aim arrives in their command; a bot has never used this at all.
+ */
+export interface ActorInput {
   /** Held this tick. */
   fire: boolean;
   firePressed: boolean;
   fireReleased: boolean;
+  /** Unit vector this actor is looking along. */
+  aimX: number;
+  aimY: number;
+  aimZ: number;
+  /**
+   * Which entry of the mode's loadout is held, or undefined where there is no
+   * choice to make.
+   *
+   * An index rather than a name, because it goes on a wire and a mode's loadout
+   * is an ordered list on both machines. The local player's picker writes
+   * straight to the mode and never needs this; it exists so that somebody
+   * else's choice of weapon can reach the machine that fires it.
+   */
+  slot?: number;
+}
+
+/**
+ * This tick's input, for anyone the mode cares to ask about.
+ *
+ * A lookup rather than one struct, and with no "the" input on it, deliberately.
+ * A convenience field for the local player would be read by accident in exactly
+ * the places that matter — a mode that throws `input.fire`'s balloon out of a
+ * guest's hands is a bug you find by having two people in a room.
+ */
+export interface ModeInput {
+  /** Bots are never asked; they decide for themselves. */
+  of(actorId: number): ActorInput;
+}
+
+/** Nobody is doing anything, looking north. The starting point for a made-up input. */
+export const IDLE_INPUT: ActorInput = {
+  fire: false, firePressed: false, fireReleased: false,
+  aimX: 0, aimY: 0, aimZ: -1,
+};
+
+/**
+ * One input for everybody.
+ *
+ * What a headless test or the debug fast-forward hands a mode, where there is
+ * only ever one person and the point is to drive them. Never used by the game.
+ */
+export function sameForEveryone(input: Partial<ActorInput> = {}): ModeInput {
+  const one: ActorInput = { ...IDLE_INPUT, ...input };
+  return { of: () => one };
 }
 
 export interface GameMode {
@@ -180,7 +253,17 @@ export interface GameMode {
   start(ctx: ModeContext): void;
   fixedUpdate(dt: number, ctx: ModeContext, input: ModeInput): void;
   end(ctx: ModeContext): void;
+  /** The HUD for whoever is at this keyboard. */
   hud(): ModeHud;
+  /**
+   * The same four personal fields, about somebody else.
+   *
+   * Optional, because a mode with no tank and no meter has nothing to say about
+   * anyone. Where it exists it is what a host sends each guest so their own HUD
+   * describes their own fight — without it a guest gets four nulls, which is
+   * honest but is also a player with no idea how wet they are.
+   */
+  selfHud?(actorId: number): ModeSelfHud;
   /** Objectives to draw. Called every frame; must not allocate per call. */
   markers(): readonly Marker[];
   /**
@@ -204,8 +287,17 @@ export interface GameMode {
    * there is no limit at all.
    */
   readonly lumber?: Lumber;
-  /** Multiplier on player speed, for being soaked. */
+  /** Multiplier on the local player's speed, for being soaked. */
   readonly playerSpeedScale: number;
+  /**
+   * The same multiplier, for anybody.
+   *
+   * Optional, defaulting to no penalty, because a mode with nothing that slows
+   * you has nothing to say. The host reads it when stepping a guest's body —
+   * without it, being knocked out of the fight is something that only ever
+   * happens to whoever is running the game.
+   */
+  speedScaleFor?(actorId: number): number;
   /** Weapons to offer in the picker, or undefined when there is one option. */
   readonly loadout?: Loadout;
   /**
@@ -215,6 +307,11 @@ export interface GameMode {
    * only needs to know where to draw water to.
    */
   readonly stream?: { x: number; y: number; z: number } | null;
+  /**
+   * The same, for anybody — so the host can tell a guest where their own water
+   * is landing. A guest runs no stream of their own; the authority does.
+   */
+  streamFor?(actorId: number): { x: number; y: number; z: number } | null;
   /**
    * How wet a given bot is, 0..1, for the renderer to tint by.
    *

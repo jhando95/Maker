@@ -39,7 +39,8 @@ import { FortDefenseMode } from './game/fortDefense.ts';
 import { CaptureTheFlagMode } from './game/captureTheFlag.ts';
 import { WaterWarMode } from './game/waterWar.ts';
 import { LEFT_SPAWN, RIGHT_SPAWN } from './world/neighborhood.ts';
-import type { GameEvent, GameMode, ModeContext, ModeInput } from './game/gameMode.ts';
+import { IDLE_INPUT, sameForEveryone } from './game/gameMode.ts';
+import type { ActorInput, GameEvent, GameMode, ModeContext, ModeInput } from './game/gameMode.ts';
 import { SettingsStore, ghostColors, loadBindings, saveBindings, clearBindings } from './app/settings.ts';
 import { BINDABLE, describeKey, type Action } from './core/input.ts';
 import { BuildStore } from './app/buildStore.ts';
@@ -394,13 +395,43 @@ const modeContext: ModeContext = {
 /** null means free build with no rules. */
 let mode: GameMode | null = null;
 
+/**
+ * The local player's will to fight this tick.
+ *
+ * Rebuilt in place rather than allocated, because it is read once a tick for
+ * sixty ticks a second and the shape never changes.
+ */
+const localInput: ActorInput = { ...IDLE_INPUT };
+
+/**
+ * What everybody is trying to do, as the running mode asks about them.
+ *
+ * The local player's comes off this keyboard and this camera. Everybody else's
+ * comes out of the last command they sent, which the host already had and used
+ * to walk their body and nothing else — reading the rest of it is the whole of
+ * how a guest gets to throw anything.
+ */
+const modeInput: ModeInput = {
+  of: (id) => {
+    if (id === actors.local.id) return localInput;
+    return net instanceof NetHost ? net.inputOf(id) : IDLE_INPUT;
+  },
+};
+
+/** Which entry of the mode's weapon wheel is held, for the wire. */
+function heldSlot(): number {
+  const loadout = mode?.loadout;
+  if (loadout === undefined) return 0;
+  return Math.max(0, loadout.entries.findIndex((e) => e.id === loadout.selected));
+}
+
 // ── Multiplayer ──────────────────────────────────────────────────────────────
 //
 // One object either way. The rest of the loop asks it two questions — "did
 // anything arrive" and "here is what just happened" — and never has to know
 // which side of the connection it is on.
 const sessionContext: SessionContext = {
-  world, build, actors, local: player,
+  world, build, actors, local: player, projectiles,
   worldChanged: () => worldChanged(),
   spawnFor: (team) => (team === 'left' ? LEFT_SPAWN : RIGHT_SPAWN),
   mode: () => (isGuest() ? null : mode),
@@ -431,7 +462,10 @@ function adoptRound(round: PackedRound | null): void {
     return;
   }
   if (remoteMode === null) {
-    remoteMode = new RemoteMode((id) => (net instanceof NetClient ? net.wetnessOf(id) : 0));
+    remoteMode = new RemoteMode(
+      (id) => (net instanceof NetClient ? net.wetnessOf(id) : 0),
+      () => (net instanceof NetClient ? net.mine : null),
+    );
     mode = remoteMode;
     modeOverTimer = 0;
   }
@@ -1042,7 +1076,25 @@ function simulate(dt: number): void {
   localCommand.buttons =
     (input.isDown('jump') ? BUTTON.jump : 0) |
     (sprintLatched ? BUTTON.sprint : 0) |
-    (crouchLatched ? BUTTON.crouch : 0);
+    (crouchLatched ? BUTTON.crouch : 0) |
+    // The trigger, which a guest's host reads to fire on their behalf. It went
+    // unset for as long as the only person who could throw anything was
+    // whoever the mode was running on.
+    (input.isDown('placePart') ? BUTTON.fire : 0);
+  localCommand.slot = heldSlot();
+
+  // The same three facts the host will derive from that command, for the person
+  // sitting here — built from the camera rather than from the yaw and pitch so
+  // the local player aims with the exact vector the crosshair is drawn on.
+  {
+    const look = camera.getLookDirection();
+    localInput.fire = input.isDown('placePart');
+    localInput.firePressed = input.wasPressed('placePart');
+    localInput.fireReleased = input.wasReleased('placePart');
+    localInput.aimX = look.x;
+    localInput.aimY = look.y;
+    localInput.aimZ = look.z;
+  }
 
   // Being soaked slows the player. Applied here rather than baked into the
   // command because it is a rule the mode applies to your intent, not part of
@@ -1130,11 +1182,6 @@ function simulate(dt: number): void {
 
   // ── Mode tick ──────────────────────────────────────────────────────────────
   if (mode !== null) {
-    const modeInput: ModeInput = {
-      fire: input.isDown('placePart'),
-      firePressed: input.wasPressed('placePart'),
-      fireReleased: input.wasReleased('placePart'),
-    };
     mode.fixedUpdate(dt, modeContext, modeInput);
     if (mode.finished && modeOverTimer <= 0) modeOverTimer = 4;
   }
@@ -1619,15 +1666,27 @@ window.__maker = {
     const ticks = Math.round(seconds / DT);
     for (let i = 0; i < ticks; i++) {
       // firePressed only on the first tick, so a held trigger reads as one press
-      // and a cooldown-gated weapon is not treated as spam.
-      mode.fixedUpdate(DT, modeContext, {
+      // and a cooldown-gated weapon is not treated as spam. Aimed straight
+      // ahead from wherever the camera is, since there is nobody to turn it.
+      const look = camera.getLookDirection();
+      mode.fixedUpdate(DT, modeContext, sameForEveryone({
         fire, firePressed: fire && i === 0, fireReleased: false,
-      });
+        aimX: look.x, aimY: look.y, aimZ: look.z,
+      }));
       if (until !== undefined && mode.hud().phase === until) break;
     }
     drainEvents();
     return { phase: mode.hud().phase, bots: mode.bots.length };
   },
+  /**
+   * How many balloons this machine would draw right now.
+   *
+   * For the party scenario, which has to tell "the host's balloons reached this
+   * screen" from "the count happens to be right". A guest runs no projectile
+   * simulation at all, so on that side this is purely what arrived in a
+   * snapshot.
+   */
+  balloonsDrawn: () => projectiles.activeCount,
   projectiles,
   world,
   build,

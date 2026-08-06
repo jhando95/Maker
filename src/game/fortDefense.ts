@@ -17,8 +17,12 @@
  */
 
 import { Bot, BOT_TIERS, type BotConfig } from './bot.ts';
+import { FIRST_BOT_ID, LOCAL_ACTOR_ID, type Actor } from './actor.ts';
+import { Fighters, isFighter, type Fighter } from './fighters.ts';
 import { ProjectileSystem, type BalloonTarget } from './projectiles.ts';
-import type { GameMode, Marker, ModeContext, ModeHud, ModeInput, ModeSummary } from './gameMode.ts';
+import type {
+  ActorInput, GameMode, Marker, ModeContext, ModeHud, ModeInput, ModeSelfHud, ModeSummary,
+} from './gameMode.ts';
 import { CAP_HEIGHT, CAP_RADIUS } from '../physics/constants.ts';
 import { NavField } from './navField.ts';
 import { Lumber, STARTING_LUMBER, PHASE_DELIVERY, LUMBER_CAP } from '../build/lumber.ts';
@@ -135,15 +139,19 @@ export class FortDefenseMode implements GameMode {
   private message: string | null = 'Build your fort. Protect the stash.';
   private messageTimer = 6;
 
-  private throwCooldown = 0;
-  private charge = 0;
-  private charging = false;
-  private ammo = PLAYER_AMMO_MAX;
-  private playerSoakedFor = 0;
-  private atBucket = -1;
-  private refillProgress = 0;
+  /**
+   * Balloons, wind-up, cooldown and the soaked timer — one set per person.
+   *
+   * Singular until a guest could throw. Every field here used to be a bare
+   * number on this class, which is the same as saying the mode has room for
+   * exactly one pair of hands.
+   */
+  private readonly fighters = new Fighters(PLAYER_AMMO_MAX);
+  /** Which bucket each person is channelling at, by actor id, or -1. */
+  private readonly atBuckets = new Map<number, number>();
+  private readonly refills = new Map<number, number>();
 
-  private nextBotId = 1;
+  private nextBotId = FIRST_BOT_ID;
   /**
    * One field for the whole wave, not one path per bot.
    *
@@ -165,9 +173,9 @@ export class FortDefenseMode implements GameMode {
     this.lumber.set(STARTING_LUMBER);
     this.stash.supplies = STASH_SUPPLIES;
     this.bots.length = 0;
-    this.ammo = PLAYER_AMMO_MAX;
-    this.refillProgress = 0;
-    this.atBucket = -1;
+    this.fighters.reset();
+    this.refills.clear();
+    this.atBuckets.clear();
     this.finished = false;
     this.won = false;
     this.setMessage('Build your fort. Protect the stash.', 6);
@@ -187,11 +195,17 @@ export class FortDefenseMode implements GameMode {
 
     this.messageTimer -= dt;
     if (this.messageTimer <= 0) this.message = null;
-    this.throwCooldown -= dt;
-    this.playerSoakedFor = Math.max(0, this.playerSoakedFor - dt);
+    this.fighters.tick(dt);
 
-    this.updateAmmo(dt, ctx);
-    this.updateThrow(dt, ctx, input);
+    // Everybody who is not a bot, in one pass. The roster is the only thing
+    // that knows how many people are in the yard, so it is what decides how
+    // many pairs of hands this loop runs.
+    for (const who of ctx.actors.all) {
+      if (!isFighter(who)) continue;
+      const self = this.fighters.of(who.id);
+      this.updateAmmo(dt, ctx, who, self);
+      this.updateThrow(dt, ctx, who, self, input.of(who.id));
+    }
 
     switch (this.phase) {
       case 'build':
@@ -278,13 +292,20 @@ export class FortDefenseMode implements GameMode {
       bot.targetY = this.stash.y;
       bot.targetZ = this.stash.z;
 
-      // They throw at the player, opportunistically, while still advancing.
-      bot.aimX = ctx.player.x;
-      bot.aimY = ctx.player.y;
-      bot.aimZ = ctx.player.z;
-      bot.hasAim = true;
+      // They throw at whoever is nearest, opportunistically, while still
+      // advancing. Nearest rather than always the host, or with a guest in the
+      // yard one of the two humans would be the only one ever shot at.
+      const mark = this.nearestDefender(ctx, bot);
+      if (mark !== null) {
+        bot.aimX = mark.controller.x;
+        bot.aimY = mark.controller.y;
+        bot.aimZ = mark.controller.z;
+      }
+      bot.hasAim = mark !== null;
 
-      const canSee = this.hasLineOfSightTo(ctx, bot, ctx.player.x, ctx.player.y + 0.9, ctx.player.z);
+      const canSee = mark !== null && this.hasLineOfSightTo(
+        ctx, bot, mark.controller.x, mark.controller.y + 0.9, mark.controller.z,
+      );
       bot.update(dt, ctx.projectiles, canSee, this.nav);
 
       // Reached the stash: take a balloon and leave.
@@ -365,97 +386,124 @@ export class FortDefenseMode implements GameMode {
    * the fort a decision with a cost, and it is the moment bots get a clear shot
    * at you.
    */
-  private updateAmmo(dt: number, ctx: ModeContext): void {
-    this.atBucket = -1;
+  private updateAmmo(dt: number, ctx: ModeContext, who: Actor, self: Fighter): void {
+    const body = who.controller;
+    let at = -1;
     for (let i = 0; i < BUCKETS.length; i++) {
       const b = BUCKETS[i]!;
-      if (Math.hypot(ctx.player.x - b.x, ctx.player.z - b.z) <= BUCKET_RADIUS) {
-        this.atBucket = i;
+      if (Math.hypot(body.x - b.x, body.z - b.z) <= BUCKET_RADIUS) {
+        at = i;
         break;
       }
     }
+    this.atBuckets.set(who.id, at);
 
-    if (this.atBucket === -1 || this.ammo >= PLAYER_AMMO_MAX) {
+    if (at === -1 || self.ammo >= PLAYER_AMMO_MAX) {
       // Walking away abandons the channel; it does not bank progress.
-      this.refillProgress = 0;
+      this.refills.set(who.id, 0);
       return;
     }
 
-    this.refillProgress += dt / REFILL_TIME;
-    if (this.refillProgress >= 1) {
-      this.refillProgress = 0;
-      this.ammo = PLAYER_AMMO_MAX;
-      ctx.emit({ type: 'refilled', x: ctx.player.x, y: ctx.player.y, z: ctx.player.z });
+    const progress = (this.refills.get(who.id) ?? 0) + dt / REFILL_TIME;
+    if (progress < 1) {
+      this.refills.set(who.id, progress);
+      return;
+    }
+    this.refills.set(who.id, 0);
+    self.ammo = PLAYER_AMMO_MAX;
+    // Only the person who filled up hears it: the sound and the flash belong to
+    // a bucket somebody is standing at, not to every bucket on the lawn.
+    if (who.id === LOCAL_ACTOR_ID) {
+      ctx.emit({ type: 'refilled', x: body.x, y: body.y, z: body.z });
     }
   }
 
   /** Balloons in hand. Exposed directly because the HUD hides it between waves. */
   get ammoCount(): number {
-    return this.ammo;
+    return this.fighters.of(LOCAL_ACTOR_ID).ammo;
   }
 
   /** Which bucket the player is standing at, or -1. For the HUD and renderer. */
   get currentBucket(): number {
-    return this.atBucket;
+    return this.atBuckets.get(LOCAL_ACTOR_ID) ?? -1;
   }
 
   get refillFraction(): number {
-    return this.refillProgress;
+    return this.refills.get(LOCAL_ACTOR_ID) ?? 0;
   }
 
-  private updateThrow(dt: number, ctx: ModeContext, input: ModeInput): void {
+  /** The nearest person a kid could throw at, or null when nobody is about. */
+  private nearestDefender(ctx: ModeContext, bot: Bot): Actor | null {
+    let best: Actor | null = null;
+    let bestDistance = Infinity;
+    for (const who of ctx.actors.all) {
+      if (!isFighter(who)) continue;
+      const d = Math.hypot(who.controller.x - bot.x, who.controller.z - bot.z);
+      if (d >= bestDistance) continue;
+      best = who;
+      bestDistance = d;
+    }
+    return best;
+  }
+
+  private updateThrow(
+    dt: number, ctx: ModeContext, who: Actor, self: Fighter, input: ActorInput,
+  ): void {
     // Building and throwing share the mouse button, so throwing is only live
     // once the fighting starts. During the build phase the button builds.
     if (this.phase === 'build' || this.phase === 'over') {
-      this.charging = false;
-      this.charge = 0;
+      self.charging = false;
+      self.charge = 0;
       return;
     }
 
-    if (input.firePressed && this.ammo > 0 && this.throwCooldown <= 0) {
-      this.charging = true;
-      this.charge = 0;
+    if (input.firePressed && self.ammo > 0 && self.cooldown <= 0) {
+      self.charging = true;
+      self.charge = 0;
     }
 
-    if (this.charging && input.fire) {
-      this.charge = Math.min(1, this.charge + dt / 0.55);
+    if (self.charging && input.fire) {
+      self.charge = Math.min(1, self.charge + dt / 0.55);
     }
 
-    if (this.charging && (input.fireReleased || !input.fire)) {
-      this.charging = false;
-      this.release(ctx);
+    if (self.charging && (input.fireReleased || !input.fire)) {
+      self.charging = false;
+      this.release(ctx, who, self, input);
     }
   }
 
-  private release(ctx: ModeContext): void {
-    if (this.ammo <= 0 || this.throwCooldown > 0) return;
-    this.ammo--;
-    this.throwCooldown = THROW_COOLDOWN;
+  private release(ctx: ModeContext, who: Actor, self: Fighter, input: ActorInput): void {
+    if (self.ammo <= 0 || self.cooldown > 0) return;
+    self.ammo--;
+    self.cooldown = THROW_COOLDOWN;
 
-    const eyeY = ctx.player.y + 1.5;
-    const dir = ctx.camera.getLookDirection();
-    const speed = ProjectileSystem.speedForCharge(this.charge);
+    const body = who.controller;
+    const eyeY = body.y + 1.5;
+    const speed = ProjectileSystem.speedForCharge(self.charge);
 
     // Spawn slightly ahead of the eye so the balloon is not born inside the
-    // player's own capsule, which would make it hit them immediately.
-    const ox = ctx.player.x + dir.x * (CAP_RADIUS + 0.2);
-    const oy = eyeY + dir.y * 0.2;
-    const oz = ctx.player.z + dir.z * (CAP_RADIUS + 0.2);
+    // thrower's own capsule, which would make it hit them immediately.
+    const ox = body.x + input.aimX * (CAP_RADIUS + 0.2);
+    const oy = eyeY + input.aimY * 0.2;
+    const oz = body.z + input.aimZ * (CAP_RADIUS + 0.2);
 
-    ctx.projectiles.spawn(ox, oy, oz, dir.x, dir.y, dir.z, speed, 0, 5);
+    ctx.projectiles.spawn(ox, oy, oz, input.aimX, input.aimY, input.aimZ, speed, who.id, 5);
     ctx.emit({ type: 'throw', x: ox, y: oy, z: oz });
-    this.charge = 0;
+    self.charge = 0;
   }
 
   private updateProjectiles(dt: number, ctx: ModeContext): void {
-    // Rebuild the target list: the player plus every live bot.
+    // Rebuild the target list: everybody defending, plus every live bot.
     this.targets.length = 0;
-    this.targets.push({
-      x: ctx.player.x, y: ctx.player.y, z: ctx.player.z,
-      radius: CAP_RADIUS, height: CAP_HEIGHT,
-      id: 0,
-      alive: true,
-    });
+    for (const who of ctx.actors.all) {
+      if (!isFighter(who)) continue;
+      this.targets.push({
+        x: who.controller.x, y: who.controller.y, z: who.controller.z,
+        radius: CAP_RADIUS, height: CAP_HEIGHT,
+        id: who.id,
+        alive: true,
+      });
+    }
     for (const bot of this.bots) {
       if (bot.alive) this.targets.push(bot.asTarget());
     }
@@ -472,9 +520,11 @@ export class FortDefenseMode implements GameMode {
       for (const index of caught) {
         const target = this.targets[index];
         if (target === undefined) continue;
-        if (target.id === 0) {
-          this.playerSoakedFor = PLAYER_SOAK_TIME;
-          ctx.emit({ type: 'playerSoaked' });
+        if (target.id < FIRST_BOT_ID) {
+          this.fighters.of(target.id).out = PLAYER_SOAK_TIME;
+          // Only the person it happened to, or the host's screen would flash
+          // for a soaking in somebody else's half of the garden.
+          if (target.id === LOCAL_ACTOR_ID) ctx.emit({ type: 'playerSoaked' });
         } else {
           const bot = this.bots.find((b) => b.id === target.id);
           if (bot !== undefined && bot.soak()) {
@@ -492,7 +542,11 @@ export class FortDefenseMode implements GameMode {
 
   /** Movement multiplier, so being soaked actually costs something. */
   get playerSpeedScale(): number {
-    return this.playerSoakedFor > 0 ? 0.55 : 1;
+    return this.speedScaleFor(LOCAL_ACTOR_ID);
+  }
+
+  speedScaleFor(actorId: number): number {
+    return this.fighters.isOut(actorId) ? 0.55 : 1;
   }
 
   /** The routing grid, for debug visualisation. */
@@ -520,11 +574,28 @@ export class FortDefenseMode implements GameMode {
       primary: { label: 'stash', value: '●'.repeat(Math.max(0, this.stash.supplies)) },
       secondary: this.phase === 'wave' ? { label: 'left', value: String(aliveBots) } : null,
       message: this.message,
-      charge: this.charging ? this.charge : null,
-      wetness: null,
-      ammo: this.buildingAllowed ? null : { current: this.ammo, max: PLAYER_AMMO_MAX },
-      refill: this.atBucket >= 0 && this.ammo < PLAYER_AMMO_MAX ? this.refillProgress : null,
+      ...this.selfHud(LOCAL_ACTOR_ID),
       lumber: this.buildingAllowed ? this.lumber.available : null,
+    };
+  }
+
+  /**
+   * Balloons, wind-up and the refill channel, about whoever is asked for.
+   *
+   * The local HUD is built from this too, so a guest's pips and the host's come
+   * out of one expression rather than two that have to be kept in step.
+   */
+  selfHud(actorId: number): ModeSelfHud {
+    const self = this.fighters.of(actorId);
+    const at = this.atBuckets.get(actorId) ?? -1;
+    const progress = this.refills.get(actorId) ?? 0;
+    return {
+      charge: self.charging ? self.charge : null,
+      // No soaking meter in this mode: a balloon takes you out of it for a few
+      // seconds outright, so there is nothing continuous to draw.
+      wetness: null,
+      ammo: this.buildingAllowed ? null : { current: self.ammo, max: PLAYER_AMMO_MAX },
+      refill: at >= 0 && self.ammo < PLAYER_AMMO_MAX ? progress : null,
     };
   }
 
@@ -550,7 +621,7 @@ export class FortDefenseMode implements GameMode {
 
   markers(): readonly Marker[] {
     for (let i = 0; i < BUCKETS.length; i++) {
-      this.markerList[i + 1]!.active = this.atBucket === i;
+      this.markerList[i + 1]!.active = this.currentBucket === i;
     }
     return this.markerList;
   }

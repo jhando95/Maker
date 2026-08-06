@@ -46,7 +46,13 @@ const send = (page, message) =>
  * the guest stands still and nothing says why.
  */
 let nextTick = 0;
-const walkCommand = (moveX, moveZ) => ({ t: 'cmd', c: [nextTick++, moveX, moveZ, 0, 0, 0, 0] });
+const walkCommand = (moveX, moveZ) => ({ t: 'cmd', c: [nextTick++, moveX, moveZ, 0, 0, 0, 0, 0] });
+
+/** Standing still with the trigger down, holding the weapon in `slot`. */
+const fireCommand = (slot = 0) => ({ t: 'cmd', c: [nextTick++, 0, 0, 0, 0, 0, BUTTON_FIRE, slot] });
+
+/** `BUTTON.fire` from src/core/command.ts, restated because this file is not TypeScript. */
+const BUTTON_FIRE = 1 << 3;
 
 /**
  * Wait for a message of this kind, and return the *newest* one seen.
@@ -137,7 +143,7 @@ export default async function (page) {
   let travelled = 0;
   for (let i = 0; i < 400 && travelled < WALK_TARGET; i++) {
     travelled = await page.evaluate(({ id, from, t }) => {
-      window.__maker.guestSend({ t: 'cmd', c: [t, 0, -1, 0, 0, 0, 0] });
+      window.__maker.guestSend({ t: 'cmd', c: [t, 0, -1, 0, 0, 0, 0, 0] });
       const a = window.__maker.actors.get(id);
       return a === undefined ? 0 : Math.hypot(a.controller.x - from.x, a.controller.z - from.z);
     }, { id: welcome.id, from: startedAt, t: nextTick++ });
@@ -198,6 +204,60 @@ export default async function (page) {
   await await_(page, 'unbuilt');
   const removed = await page.evaluate(() => window.__maker.stats().parts);
   assert(removed === before, `taking it down should leave ${before}, left ${removed}`);
+
+  // ── And they can fight, which is the thing the wire was built for ─────────
+  //
+  // Everything above is a guest being *present*: a body that walks, a plank
+  // that lands. This is the guest doing the one thing the round is about, and
+  // it is the only check here that fails if the host reads a command's position
+  // and throws away its trigger — which is exactly what the host used to do.
+  //
+  // Driven through a real command down a real transport rather than by calling
+  // the mode, because the seam under test is the one between them.
+  await page.evaluate(() => {
+    window.__maker.startRound('waterWar');
+    // Past the building phase: there is nothing to fire at during it, and the
+    // mode refuses to fire at all. Fast-forwarded with the trigger up so the
+    // only shot fired in this test is the guest's.
+    window.__maker.fastForward(90, 'RAID 1');
+  });
+  const phase = await page.evaluate(() => window.__maker.roundInfo().phase);
+  assert(
+    (phase ?? '').startsWith('RAID'),
+    `the raid should have started before the guest fires, phase is "${phase}"`,
+  );
+
+  await drain(page);
+  // Hold the trigger for a while. A tank is metered per second of stream, so
+  // this needs real ticks rather than a single command.
+  let tank = null;
+  let full = null;
+  for (let i = 0; i < 120; i++) {
+    await send(page, fireCommand(0));
+    await frames(page, 1);
+    const seen = (await drain(page)).filter((m) => m.t === 'snap' && m.you !== null);
+    for (const snap of seen) {
+      if (snap.you.ammo === null) continue;
+      if (full === null) full = snap.you.ammo[1];
+      tank = snap.you.ammo[0];
+    }
+    if (tank !== null && full !== null && tank < full * 0.95) break;
+  }
+  assert(full !== null, 'the host should tell a guest what is in their own tank');
+  assert(
+    tank < full,
+    `holding the trigger should spend the guest's own water; ${tank} of ${full}`,
+  );
+
+  // And the host's own tank is untouched, because it is a different tank.
+  const hostTank = await page.evaluate(() => window.__maker.getMode()?.tankLevel ?? null);
+  assert(
+    hostTank !== null && hostTank > tank,
+    `the host was not firing and should still be fuller than the guest;`
+    + ` host ${hostTank}, guest ${tank}`,
+  );
+  await page.evaluate(() => window.__maker.stopRound());
+  await frames(page, 4);
 
   // ── Leaving empties the lawn ───────────────────────────────────────────────
   // Out of the corner they spawned in, so the shot is two people on open lawn

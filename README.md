@@ -142,9 +142,33 @@ would stop a guest hearing about the round at all, while the host — which has 
 idea a menu is open — went on walking their character from the last command it
 received.
 
-Not yet: repeat-place and undo are host-only, and only the host and its bots
-fight. Guests move, build and score with everybody else; throwing, soaking and
-carrying a flag are the next piece of work.
+**Everybody fights, out of a tank of their own.** Every mode used to carry one
+`tank`, one `ammo`, one wind-up and one soaked timer, which is the same thing as
+saying it had room for one pair of hands. They are keyed by actor now, so a
+guest throws, soaks, gets soaked, is sent home and comes back on exactly the
+rules the host plays by — and the host slows a soaked guest by the same rule
+that slows a soaked host.
+
+Nothing new goes over the wire to make that work. A command already carried a
+trigger, a yaw and a pitch; the host read the position and threw the rest away.
+Two things do get sent back. The first is each peer's own four personal numbers
+— tank, wetness, wind-up, refill — because those are the four a guest's HUD
+showed as blank, and the reason was sound: a needle describing somebody else is
+not a meter. The answer was to ask the host the question *per peer* rather than
+to mirror its own. The second is the balloons in the air, because a guest runs
+no projectile simulation at all, so without them the lawn was silent and the
+first sign of an incoming throw was being wet.
+
+Kids now aim at whoever is nearest rather than at whoever is hosting. And people
+and bots are numbered out of separate ranges, which sounds like bookkeeping and
+is not: both allocators started at 1, so with one guest in the yard the guest and
+the first kid of the first raid were the same actor id. Nothing threw. The
+roster answered with whichever was added first and a player got dragged toward a
+bot.
+
+Not yet: repeat-place and undo are host-only, and only your own stream is drawn
+— everybody else's hose is computed and published but nothing draws it, which is
+a missing draw call rather than a missing rule.
 
 ## Wood costs something
 
@@ -430,7 +454,8 @@ src/
   net/         wire format, transports, host and guest sessions
   render/      cel shading, procedural geometry, instanced meshes
   world/       neighborhood map, scene, starter structures
-  game/        game modes, actors and teams, bots, flow-field navigation, projectiles
+  game/        game modes, actors and teams, per-person combat state, bots,
+               flow-field navigation, projectiles
   audio/       synthesized sound
   app/         settings, persistence, crash handling
   ui/          design tokens, HUD, menus, radial part picker
@@ -555,12 +580,14 @@ and around forever — every decision right, the result unusable. Shadows and
 outlines are never touched; they are how the game looks, and that is the
 player's call.
 
-**Multiplayer is not built, but it is not blocked.** Simulation runs on a fixed
-timestep with no `Math.random` in anything affecting world state. Placement is
-split into intent and application: `place()` returns a plain JSON-safe record
-quantized to a millimetre, and `applyPlace()` is the only thing that mutates the
-world. That is the seam a server would authorise against, and the same records
-are the save format.
+**The seams multiplayer was built on are still the right ones for a server.**
+Simulation runs on a fixed timestep with no `Math.random` in anything affecting
+world state. Placement is split into intent and application: `place()` returns a
+plain JSON-safe record quantized to a millimetre, and `applyPlace()` is the only
+thing that mutates the world — the seam a server would authorise against, and
+the same records are the save format. Input is split the same way: a mode reads
+`input.of(actorId)` and never touches a camera, so the machine firing a balloon
+does not have to be the machine the player is sitting at.
 
 ## Known limitations
 

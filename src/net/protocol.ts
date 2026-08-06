@@ -38,7 +38,7 @@ import type { PlacementRecord } from '../build/buildSystem.ts';
 import type { Team } from '../game/actor.ts';
 
 /** Bumped whenever a message shape changes. Mismatched peers are turned away. */
-export const PROTOCOL_VERSION = 2;
+export const PROTOCOL_VERSION = 3;
 
 /**
  * One person in a snapshot, as a flat tuple.
@@ -140,6 +140,40 @@ export interface PackedRound {
   over: { won: boolean; headline: string; lines: Array<[string, string]> } | null;
 }
 
+/**
+ * How your own fight is going — and only ever yours.
+ *
+ * The counterpart to `PackedRound`, and the line between them is the whole
+ * reason both exist. A round is the same on every screen and can be broadcast;
+ * a tank has an owner. This message is built per peer, from the host's mode,
+ * about that peer — which is why the snapshot is already sent one at a time.
+ *
+ * Before this, a guest's HUD showed four nulls where the personal meters go. It
+ * was the honest answer to a question nobody was asking on their behalf: the
+ * host knew how wet the guest was, because the host was the one soaking them,
+ * and simply never said.
+ */
+export interface PackedSelf {
+  /** 0..1 wind-up on a throw, or null when not charging. */
+  charge: number | null;
+  /** 0..1 soaked, or null in a mode without a meter. */
+  wet: number | null;
+  /** Current, max, and whether to draw it as a bar rather than pips. */
+  ammo: [current: number, max: number, gauge: 0 | 1] | null;
+  /** 0..1 on a refill channel, or null when not at a bucket. */
+  refill: number | null;
+  /**
+   * Where your own hose is landing, or null.
+   *
+   * Sent because the host computes it. A guest holding the trigger runs no
+   * stream of their own — the authority does — so without this they would see
+   * their tank empty and no water leave it.
+   */
+  stream: [x: number, y: number, z: number] | null;
+  /** True while you are soaked and sitting the next few seconds out. */
+  out: boolean;
+}
+
 /** Everything a client can say. */
 export type ClientMessage =
   /** First thing sent. The host replies with `welcome` or `refused`. */
@@ -190,6 +224,24 @@ export type HostMessage =
      * are always from the same instant as the people they are drawn among.
      */
     round: PackedRound | null;
+    /** How the fight is going for the one peer this copy is addressed to. */
+    you: PackedSelf | null;
+    /**
+     * Every balloon in the air, as bare positions.
+     *
+     * A guest runs no projectile simulation — `RemoteMode.fixedUpdate` is empty
+     * — so without this the yard is silent: kids wind up, throw, and nothing
+     * crosses the lawn until a guest is suddenly wet. A balloon in flight is the
+     * only warning this game gives, so leaving it out does not cost polish, it
+     * costs the ability to dodge.
+     *
+     * Positions only, at snapshot rate, with no identity attached. Every balloon
+     * is the same blue sphere, so nobody can tell which is which and numbering
+     * them would buy nothing. It does mean one steps twenty times a second
+     * rather than sixty, which is visible — and a great deal better than
+     * invisible.
+     */
+    balloons: Array<[x: number, y: number, z: number]>;
   }
   /** Somebody built something. Includes the host's own placements. */
   | { t: 'built'; id: number; r: PlacementRecord }

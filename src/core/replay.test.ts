@@ -13,9 +13,10 @@ import { DT } from '../physics/constants.ts';
 import { neighborhoodSlabs, installFixtures } from '../world/neighborhood.ts';
 import { BUTTON, commandToIntent, makeCommand, type Command } from './command.ts';
 import { hashBodies, playback, record, StateHash } from './replay.ts';
+import { sameForEveryone } from '../game/gameMode.ts';
 import type { GameMode, ModeContext } from '../game/gameMode.ts';
 
-const noInput = { fire: false, firePressed: false, fireReleased: false };
+const noInput = sameForEveryone({ fire: false, firePressed: false, fireReleased: false });
 
 /**
  * A scripted minute at the keyboard.

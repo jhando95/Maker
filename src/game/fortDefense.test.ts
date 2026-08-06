@@ -9,12 +9,13 @@ import {
   FortDefenseMode, BUILD_TIME, STASH_SUPPLIES, WAVE_COUNT,
   BUCKETS, BUCKET_DISTANCE, BUCKET_RADIUS, PLAYER_AMMO_MAX, REFILL_TIME, STASH_POSITION,
 } from './fortDefense.ts';
-import type { GameEvent, ModeContext, ModeInput } from './gameMode.ts';
+import { sameForEveryone } from './gameMode.ts';
+import type { GameEvent, ModeContext } from './gameMode.ts';
 import { Rng } from '../core/rng.ts';
 import { ActorRoster, LOCAL_ACTOR_ID } from './actor.ts';
 import { DT, CAP_HEIGHT, CAP_RADIUS } from '../physics/constants.ts';
 
-const noInput: ModeInput = { fire: false, firePressed: false, fireReleased: false };
+const noInput = sameForEveryone();
 
 function makeContext(): { ctx: ModeContext; events: GameEvent[]; world: CollisionWorld } {
   const world = new CollisionWorld();
@@ -354,8 +355,8 @@ describe('FortDefenseMode', () => {
     run(mode, ctx, BUILD_TIME + 0.2);
     // Spend the magazine.
     for (let i = 0; i < PLAYER_AMMO_MAX; i++) {
-      mode.fixedUpdate(DT, ctx, { fire: true, firePressed: true, fireReleased: false });
-      mode.fixedUpdate(DT, ctx, { fire: false, firePressed: false, fireReleased: true });
+      mode.fixedUpdate(DT, ctx, sameForEveryone({ fire: true, firePressed: true, fireReleased: false }));
+      mode.fixedUpdate(DT, ctx, sameForEveryone({ fire: false, firePressed: false, fireReleased: true }));
     }
     expect(mode.ammoCount).toBeLessThan(PLAYER_AMMO_MAX);
 
@@ -368,8 +369,8 @@ describe('FortDefenseMode', () => {
   it('standing at a bucket refills after the channel completes', () => {
     run(mode, ctx, BUILD_TIME + 0.2);
     for (let i = 0; i < PLAYER_AMMO_MAX; i++) {
-      mode.fixedUpdate(DT, ctx, { fire: true, firePressed: true, fireReleased: false });
-      mode.fixedUpdate(DT, ctx, { fire: false, firePressed: false, fireReleased: true });
+      mode.fixedUpdate(DT, ctx, sameForEveryone({ fire: true, firePressed: true, fireReleased: false }));
+      mode.fixedUpdate(DT, ctx, sameForEveryone({ fire: false, firePressed: false, fireReleased: true }));
     }
     const spent = mode.ammoCount;
     expect(spent).toBeLessThan(PLAYER_AMMO_MAX);
@@ -391,8 +392,8 @@ describe('FortDefenseMode', () => {
   it('walking away abandons the channel rather than banking it', () => {
     run(mode, ctx, BUILD_TIME + 0.2);
     for (let i = 0; i < PLAYER_AMMO_MAX; i++) {
-      mode.fixedUpdate(DT, ctx, { fire: true, firePressed: true, fireReleased: false });
-      mode.fixedUpdate(DT, ctx, { fire: false, firePressed: false, fireReleased: true });
+      mode.fixedUpdate(DT, ctx, sameForEveryone({ fire: true, firePressed: true, fireReleased: false }));
+      mode.fixedUpdate(DT, ctx, sameForEveryone({ fire: false, firePressed: false, fireReleased: true }));
     }
 
     const b = BUCKETS[0]!;

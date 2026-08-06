@@ -11,6 +11,7 @@
 
 import { describe, it, expect, beforeEach } from 'vitest';
 import { CollisionWorld } from '../physics/collisionWorld.ts';
+import { ProjectileSystem } from '../game/projectiles.ts';
 import { PartRenderer } from '../render/partRenderer.ts';
 import { BuildSystem } from '../build/buildSystem.ts';
 import { CharacterController } from '../player/controller.ts';
@@ -23,7 +24,9 @@ import { NetHost, NetClient, SNAPSHOT_HZ, type SessionContext } from './session.
 import { RemoteMode } from './remoteMode.ts';
 import { packRound } from './roundPacket.ts';
 import type { PackedRound } from './protocol.ts';
-import type { GameMode, Marker, ModeHud, ModeSummary } from '../game/gameMode.ts';
+import type {
+  GameMode, Marker, ModeHud, ModeSelfHud, ModeSummary,
+} from '../game/gameMode.ts';
 import type { Bot } from '../game/bot.ts';
 
 /** A mode with no rules, whose published state the test drives by hand. */
@@ -54,6 +57,35 @@ class StubMode implements GameMode {
   }
 
   wetnessOf(id: number): number { return this.wet.get(id) ?? 0; }
+
+  /**
+   * Deliberately different per person.
+   *
+   * Every number here is keyed on the id, so a guest that was shown the host's
+   * HUD would still get plausible-looking values — and fail, which is the whole
+   * point. A stub that answered the same for everybody could not tell the two
+   * apart, and the bug being guarded against is precisely showing one person
+   * somebody else's meters.
+   */
+  selfHud(id: number): ModeSelfHud {
+    return {
+      charge: 0.1 * (id + 1),
+      wetness: 0.2 * (id + 1),
+      ammo: { current: id + 1, max: 6, gauge: id === 0 },
+      refill: 0.05 * (id + 1),
+    };
+  }
+
+  streamFor(id: number): { x: number; y: number; z: number } | null {
+    return id === 0 ? null : { x: id, y: 2, z: -3 };
+  }
+
+  speedScaleFor(id: number): number {
+    return this.soaked.has(id) ? 0 : 1;
+  }
+
+  /** Whoever a test has decided is currently sitting one out. */
+  readonly soaked = new Set<number>();
 
   hud(): ModeHud {
     return {
@@ -87,6 +119,7 @@ function makeMachine(): Machine {
   };
   return {
     world, build, actors: new ActorRoster(localActor), local,
+    projectiles: new ProjectileSystem(world),
     worldChanged: () => {},
     spawnFor: (team) => ({ x: team === 'left' ? -2 : 2, y: 0.5, z: 0 }),
   };
@@ -111,7 +144,9 @@ function pair() {
   let remote: RemoteMode | null = null;
   guestCtx.setRound = (round: PackedRound | null) => {
     if (round === null || round.id === null) { remote = null; return; }
-    if (remote === null) remote = new RemoteMode((id) => guest.wetnessOf(id));
+    if (remote === null) {
+      remote = new RemoteMode((id) => guest.wetnessOf(id), () => guest.mine);
+    }
     remote.apply(round);
   };
 
@@ -273,16 +308,53 @@ describe('a guest in somebody else\'s round', () => {
     expect(net.remote).toBeNull();
   });
 
-  it('shows no meter for the things it does not have', () => {
-    // The stub reports a full HUD's worth of personal state. A guest is not
-    // fighting yet, so it has none of it, and a needle describing somebody else
-    // is not a meter.
+  it('shows the guest their own meters, not the host\'s', () => {
+    // These four fields were null, and the reason was sound: a needle
+    // describing somebody else is not a meter. The fix was never to mirror the
+    // host's — it was to ask the host the question per peer.
+    //
+    // The stub answers with values keyed on the actor id, so being shown the
+    // host's numbers fails here rather than looking plausible.
     net.step(SNAPSHOT_TICKS);
+    const id = net.guest.status.localId;
+    expect(id, 'the guest never got an id, so this proves nothing').toBeGreaterThan(0);
+
     const hud = net.remote!.hud();
+    expect(hud.charge).toBeCloseTo(0.1 * (id + 1), 5);
+    expect(hud.wetness).toBeCloseTo(0.2 * (id + 1), 5);
+    expect(hud.ammo).toEqual({ current: id + 1, max: 6, gauge: false });
+    expect(hud.refill).toBeCloseTo(0.05 * (id + 1), 5);
+  });
+
+  it('draws the guest their own stream, computed by the host', () => {
+    // A guest runs no stream — the authority does — so without this they hold
+    // the trigger, watch the tank empty, and see no water.
+    net.step(SNAPSHOT_TICKS);
+    const id = net.guest.status.localId;
+    expect(net.remote!.stream).toEqual({ x: id, y: 2, z: -3 });
+  });
+
+  it('says when the guest is out of it', () => {
+    // Published so the HUD can say so, not so the client can act on it: the
+    // host has already applied the penalty to the body it stepped.
+    net.step(SNAPSHOT_TICKS);
+    expect(net.remote!.playerIsOut).toBe(false);
+    net.stub.soaked.add(net.guest.status.localId);
+    net.step(SNAPSHOT_TICKS);
+    expect(net.remote!.playerIsOut).toBe(true);
+  });
+
+  it('goes back to showing nothing when the mode has nothing to say', () => {
+    // The old behaviour, kept as the honest fallback rather than deleted. A
+    // mode with no tank and no meter reports none, and four nulls is the right
+    // answer to a question with no answer.
+    const bare = new RemoteMode(() => 0);
+    const hud = bare.hud();
+    expect(hud.charge).toBeNull();
     expect(hud.wetness).toBeNull();
     expect(hud.ammo).toBeNull();
-    expect(hud.charge).toBeNull();
     expect(hud.refill).toBeNull();
+    expect(bare.stream).toBeNull();
   });
 
   it('does not slow its own body down twice', () => {

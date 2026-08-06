@@ -55,9 +55,33 @@ const banner = (page) =>
  * guest from outside — a scenario that got its message from the code under test
  * would agree with it no matter what either of them did.
  */
-function snapshot(tick, ack, round, actors) {
-  return { t: 'snap', tick, ack, actors, round };
+function snapshot(tick, ack, round, actors, you = null, balloons = []) {
+  return { t: 'snap', tick, ack, actors, round, you, balloons };
 }
+
+/** How this guest's own fight is going, as the host would describe it. */
+function self(extra = {}) {
+  return {
+    charge: null,
+    wet: 0.62,
+    ammo: [41, 100, 1],
+    refill: null,
+    stream: null,
+    out: false,
+    ...extra,
+  };
+}
+
+/** The personal meters, read off the DOM the way a player reads them. */
+const meters = (page) =>
+  page.evaluate(() => ({
+    ammo: document.querySelector('.maker-ammo')?.textContent ?? '',
+    hidden: document.querySelector('.maker-ammo')?.classList.contains('maker-hidden') ?? true,
+    tank: document.querySelector('.maker-tank .track i')?.getAttribute('style') ?? '',
+    pips: document.querySelectorAll('.maker-ammo .pip').length,
+    soak: document.querySelector('.maker-soak .track i')?.getAttribute('style') ?? '',
+    soakCap: document.querySelector('.maker-soak .cap')?.textContent ?? '',
+  }));
 
 const flagMarker = (x, z, color) => [2, x, 1, z, color, 0];
 
@@ -158,6 +182,66 @@ export default async function (page) {
     `the shared pile should be on the banner, saw ${JSON.stringify(live.vals)}`,
   );
 
+  // ── The meters on this screen describe the person reading them ─────────────
+  //
+  // Four fields on a guest's HUD used to be null on principle, and the
+  // principle was right: a needle describing somebody else is not a meter. The
+  // fix was to ask the host per peer, and this is where that arrives as pixels.
+  // The unit tests can prove the packet carries the numbers and that
+  // `RemoteMode` reads them; only this can notice that the HUD paints the
+  // personal half of a round exclusively when it is the one running it.
+  await send(page, snapshot(
+    6, 0,
+    round(null, { build: false }),
+    [[3, 1, 0, 0.5, 6, 0, 0, 0, 0, 3, 0.62]],
+    self(),
+  ));
+  await frames(page, 6);
+
+  const mine = await meters(page);
+  assert(!mine.hidden, 'a guest with a tank should see it; the ammo block stayed hidden');
+  assert(
+    mine.ammo.includes('41'),
+    `the tank should read what the host sent, saw "${mine.ammo}"`,
+  );
+  // A gauge rather than pips: 41 of 100 litres drawn as pips is a hundred pips.
+  assert(
+    mine.pips === 0 && /width:\s*41%/.test(mine.tank),
+    `a litre tank draws as a bar, saw ${mine.pips} pips and style "${mine.tank}"`,
+  );
+  // And the soaking meter, which is the one that says how close this player is
+  // to being out of the round. It is the field the guest most conspicuously did
+  // not have.
+  assert(
+    /width:\s*62%/.test(mine.soak),
+    `the guest's own wetness should be on screen, saw "${mine.soak}"`,
+  );
+  assert(
+    mine.soakCap === 'WET',
+    `and labelled by stage rather than by number, saw "${mine.soakCap}"`,
+  );
+
+  // ── And a balloon in the air is on screen before it lands ──────────────────
+  //
+  // A guest runs no projectile simulation, so without the host publishing them
+  // the lawn is silent and the first sign of an incoming balloon is being wet.
+  const before = await page.evaluate(() => window.__maker.balloonsDrawn());
+  await send(page, snapshot(
+    7, 0,
+    round(null, { build: false }),
+    [[3, 1, 0, 0.5, 6, 0, 0, 0, 0, 3, 0.62]],
+    self(),
+    [[1, 2, 3], [-4, 1.5, 0]],
+  ));
+  await frames(page, 6);
+  const after2 = await page.evaluate(() => window.__maker.balloonsDrawn());
+  assert(
+    before === 0 && after2 === 2,
+    `the host's balloons should be in the air here, saw ${before} then ${after2}`,
+  );
+
+  await page.screenshot({ path: `${process.env.RUNNER_TEMP ?? '/tmp'}/party-meters.png` });
+
   // ── And the round ends for everybody ───────────────────────────────────────
   await send(page, snapshot(4, 0, round({
     won: true,
@@ -203,5 +287,6 @@ export default async function (page) {
     after.mode === 'none',
     `a guest should let go of a round the host has ended; still in "${after.mode}"`,
   );
-  console.log('[party] verified: joined a round nobody here started, banner, clock, pins, result');
+  console.log('[party] verified: joined a round nobody here started, banner, clock, pins,'
+    + ' own meters, balloons in the air, result');
 }

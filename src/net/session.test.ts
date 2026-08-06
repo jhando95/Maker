@@ -1,10 +1,12 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { CollisionWorld } from '../physics/collisionWorld.ts';
+import { ProjectileSystem } from '../game/projectiles.ts';
 import { PartRenderer } from '../render/partRenderer.ts';
 import { BuildSystem } from '../build/buildSystem.ts';
 import { CharacterController } from '../player/controller.ts';
 import { ActorRoster, LOCAL_ACTOR_ID, type Actor } from '../game/actor.ts';
-import { commandToIntent, makeCommand, type Command } from '../core/command.ts';
+import { BUTTON, commandToIntent, makeCommand, type Command } from '../core/command.ts';
+import type { ActorInput, GameMode } from '../game/gameMode.ts';
 import { DT } from '../physics/constants.ts';
 import { installFixtures } from '../world/neighborhood.ts';
 import { neighborhoodSlabs } from '../world/neighborhood.ts';
@@ -25,7 +27,9 @@ import {
  * the code path a real socket uses. A test that stood up a server would be a test
  * that gets skipped in CI and then stops being true.
  */
-function makeMachine(withMap = false): SessionContext & { local: CharacterController } {
+type Machine = SessionContext & { local: CharacterController };
+
+function makeMachine(withMap = false): Machine {
   const world = new CollisionWorld();
   if (withMap) installFixtures(world, neighborhoodSlabs(new Rng('map')));
   const build = new BuildSystem(world, new PartRenderer());
@@ -35,7 +39,7 @@ function makeMachine(withMap = false): SessionContext & { local: CharacterContro
   };
   const actors = new ActorRoster(localActor);
   return {
-    world, build, actors, local,
+    world, build, actors, local, projectiles: new ProjectileSystem(world),
     worldChanged: () => {},
     // Two metres apart and clear of everything, so a test measures the network
     // rather than the map.
@@ -184,7 +188,7 @@ describe('joining', () => {
     // it timed out.
     const pipe = loopbackPair();
     host.accept(pipe.host);
-    pipe.client.send({ t: 'cmd', c: [0, 0, 0, 0, 0, 0, 0] });
+    pipe.client.send({ t: 'cmd', c: [0, 0, 0, 0, 0, 0, 0, 0] });
     host.beforeTick();
     pipe.client.send({ t: 'hello', version: PROTOCOL_VERSION, name: 'out of order' });
     host.beforeTick();
@@ -193,7 +197,7 @@ describe('joining', () => {
 
   it('gives up on a connection that never introduces itself', () => {
     const pipe = loopbackPair();
-    pipe.client.send({ t: 'cmd', c: [0, 0, 0, 0, 0, 0, 0] });
+    pipe.client.send({ t: 'cmd', c: [0, 0, 0, 0, 0, 0, 0, 0] });
     host.accept(pipe.host);
     for (let i = 0; i <= HELLO_GRACE_TICKS + 1; i++) host.beforeTick();
     expect(pipe.client.drain()[0]!.t).toBe('refused');
@@ -511,10 +515,10 @@ describe('the loopback transport', () => {
   it('round-trips through the encoder, so a field that would not survive a socket fails here', () => {
     const pipe = loopbackPair();
     const command = makeCommand(7);
-    pipe.client.send({ t: 'cmd', c: [command.tick, 1, 2, 0, 0.5, 0, 3] });
+    pipe.client.send({ t: 'cmd', c: [command.tick, 1, 2, 0, 0.5, 0, 3, 1] });
     const got = pipe.host.drain();
     expect(got).toHaveLength(1);
-    expect(got[0]).toEqual({ t: 'cmd', c: [7, 1, 2, 0, 0.5, 0, 3] });
+    expect(got[0]).toEqual({ t: 'cmd', c: [7, 1, 2, 0, 0.5, 0, 3, 1] });
   });
 
   it('empties on drain, so nothing is applied twice', () => {
@@ -529,5 +533,216 @@ describe('the loopback transport', () => {
     pipe.host.close();
     pipe.client.send({ t: 'unbuild', p: 1 });
     expect(pipe.host.drain()).toHaveLength(0);
+  });
+});
+
+describe('fighting together', () => {
+  /**
+   * A host with one guest attached, and nothing else.
+   *
+   * Deliberately without a mode by default: most of what is under test here is
+   * the session reading a command it already had, which is a question about
+   * this file rather than about anybody's rules.
+   */
+  function joined(): {
+    host: NetHost; hostCtx: Machine; client: NetClient; clientCtx: Machine; id: number;
+  } {
+    const hostCtx = makeMachine();
+    const clientCtx = makeMachine();
+    const pipe = loopbackPair();
+    const host = new NetHost(hostCtx);
+    const client = new NetClient(clientCtx, pipe.client, 'kid');
+    host.accept(pipe.host);
+    run(host, hostCtx, client, clientCtx, 3);
+    return { host, hostCtx, client, clientCtx, id: client.status.localId };
+  }
+
+  /**
+   * One tick, sampling the guest's input where the game samples it.
+   *
+   * Which is between `beforeTick` and `afterTick` — the mode runs there, and
+   * `afterTick` is what rolls the held-trigger memory forward. Sampling after
+   * it instead reports every press as already handled, which is what the first
+   * version of these tests did and why they read as a broken edge detector.
+   */
+  function tickSampling(
+    host: NetHost, hostCtx: Machine, client: NetClient, clientCtx: Machine,
+    id: number, command: Command,
+  ): ActorInput {
+    const tick = sharedTick++;
+    command.tick = tick;
+    host.beforeTick();
+    client.beforeTick();
+    const sampled = host.inputOf(id);
+    clientCtx.actors.local.controller.step(DT, commandToIntent(command));
+    host.afterTick(DT);
+    client.afterTick(DT, command);
+    void hostCtx;
+    return sampled;
+  }
+
+  it('turns a held trigger into a press exactly once', () => {
+    // A command carries a *held* bit and a mode asks about edges. A host that
+    // derived neither would give every guest a throw that never charges and
+    // never leaves their hand; one that reported a press every tick would make
+    // a cooldown-gated weapon read as spam.
+    const { host, hostCtx, client, clientCtx, id } = joined();
+    const firing = makeCommand(0);
+    firing.buttons = BUTTON.fire;
+
+    const seen: Array<[boolean, boolean, boolean]> = [];
+    for (let i = 0; i < 4; i++) {
+      const input = tickSampling(host, hostCtx, client, clientCtx, id, firing);
+      seen.push([input.fire, input.firePressed, input.fireReleased]);
+    }
+    // Nothing on the first tick: the command sent at the end of it has not been
+    // drained yet. Then the press, once, and held from there on.
+    expect(seen[0]).toEqual([false, false, false]);
+    expect(seen[1]).toEqual([true, true, false]);
+    expect(seen[2]).toEqual([true, false, false]);
+    expect(seen[3]).toEqual([true, false, false]);
+
+    // And letting go is a release, once.
+    const idle = makeCommand(0);
+    tickSampling(host, hostCtx, client, clientCtx, id, idle);
+    const after = tickSampling(host, hostCtx, client, clientCtx, id, idle);
+    expect([after.fire, after.firePressed, after.fireReleased]).toEqual([false, false, true]);
+    const later = tickSampling(host, hostCtx, client, clientCtx, id, idle);
+    expect([later.fire, later.firePressed, later.fireReleased]).toEqual([false, false, false]);
+  });
+
+  it("points a guest's aim where the guest was looking", () => {
+    // The vector has to be the one the guest's own crosshair is drawn on, or
+    // they aim at one thing and hit another. Held to the camera's own
+    // expression by command.test, which is where that convention lives.
+    const { host, hostCtx, client, clientCtx, id } = joined();
+    const looking = makeCommand(0);
+    looking.yaw = Math.PI / 2;
+    looking.pitch = 0;
+
+    tickSampling(host, hostCtx, client, clientCtx, id, looking);
+    const aim = tickSampling(host, hostCtx, client, clientCtx, id, looking);
+    expect(aim.aimX).toBeCloseTo(-1, 5);
+    expect(aim.aimZ).toBeCloseTo(0, 5);
+  });
+
+  it('carries which weapon a guest is holding, every tick rather than once', () => {
+    // A held weapon is a state, not an event. Sent on change, one dropped
+    // packet leaves the two machines disagreeing about what is in somebody's
+    // hands until the next time they touch the wheel.
+    const { host, hostCtx, client, clientCtx, id } = joined();
+    const holding = makeCommand(0);
+    holding.slot = 2;
+    run(host, hostCtx, client, clientCtx, 4, holding);
+    expect(host.inputOf(id).slot).toBe(2);
+  });
+
+  it('says nothing about somebody who has sent no command yet', () => {
+    // Idle rather than stale or undefined: a peer whose packets have not
+    // arrived should stand still, not repeat whatever the last person did.
+    const { host } = joined();
+    expect(host.inputOf(999).fire).toBe(false);
+    expect(host.inputOf(999).firePressed).toBe(false);
+  });
+
+  it('stops a soaked guest, by the same rule that stops a soaked host', () => {
+    // Left out at first, and nothing said so: the host stepped every guest at
+    // full speed regardless of what the mode thought of them, which made being
+    // knocked out of the fight a purely cosmetic thing to happen to anybody who
+    // was not the authority.
+    const hostCtx = makeMachine();
+    const clientCtx = makeMachine();
+    const stopped = new Set<number>();
+    // The thinnest thing `packRound` will accept, plus the one rule under test.
+    const mode: GameMode = {
+      id: 'stub', name: 'Stub', finished: false, won: false,
+      bots: [], buildingAllowed: true, playerSpeedScale: 1,
+      start: () => {}, fixedUpdate: () => {}, end: () => {},
+      markers: () => [],
+      summary: () => ({ headline: '', lines: [] }),
+      hud: () => ({
+        phase: 'STUB', timer: null, primary: null, secondary: null, message: null,
+        charge: null, wetness: null, ammo: null, refill: null,
+      }),
+      speedScaleFor: (id: number) => (stopped.has(id) ? 0 : 1),
+    };
+    hostCtx.mode = () => mode;
+
+    const pipe = loopbackPair();
+    const host = new NetHost(hostCtx);
+    const client = new NetClient(clientCtx, pipe.client, 'kid');
+    host.accept(pipe.host);
+    run(host, hostCtx, client, clientCtx, 3);
+
+    const id = client.status.localId;
+    const walking = makeCommand(0);
+    walking.moveZ = -1;
+
+    const body = (): { x: number; z: number } => {
+      const them = hostCtx.actors.get(id)!;
+      return { x: them.controller.x, z: them.controller.z };
+    };
+    const from = body();
+    run(host, hostCtx, client, clientCtx, 30, walking);
+    const walked = Math.hypot(body().x - from.x, body().z - from.z);
+    expect(walked, 'the guest never moved, so the next check proves nothing')
+      .toBeGreaterThan(0.5);
+
+    stopped.add(id);
+    const held = body();
+    run(host, hostCtx, client, clientCtx, 30, walking);
+    const coasted = Math.hypot(body().x - held.x, body().z - held.z);
+    // Not zero, and it should not be: the controller decelerates rather than
+    // stopping dead, so a body already moving carries about a tenth of a metre
+    // into the stop. What matters is that it is a stop and not a stroll.
+    expect(coasted).toBeLessThan(walked / 3);
+    expect(coasted).toBeLessThan(0.25);
+  });
+
+  it('shows a guest the balloons in the air, where they actually are', () => {
+    // A guest runs no projectile simulation, so without this the yard is
+    // silent: kids wind up, throw, and nothing crosses the lawn until the guest
+    // is suddenly wet. A balloon in flight is the only warning this game gives.
+    const { host, hostCtx, client, clientCtx } = joined();
+    hostCtx.projectiles.spawn(3, 2, -5, 0, 0, -1, 12, 0);
+    expect(clientCtx.projectiles.activeCount, 'the guest started with balloons').toBe(0);
+
+    run(host, hostCtx, client, clientCtx, 8);
+    expect(clientCtx.projectiles.activeCount).toBe(1);
+
+    // The position, not just the count. A mirror that reported a balloon at the
+    // origin would satisfy a count and put every throw in the same place.
+    const where = only(clientCtx);
+    expect(where[0]).toBeCloseTo(3, 2);
+    expect(where[2]).toBeCloseTo(-5, 2);
+
+    // And it follows. The host's own projectiles move when a mode ticks them;
+    // here they are stepped by hand, at the real timestep, because the subject
+    // is the mirror rather than the ballistics.
+    for (let i = 0; i < 6; i++) hostCtx.projectiles.update(DT, []);
+    run(host, hostCtx, client, clientCtx, 8);
+    expect(only(clientCtx)[2], 'the guest is still drawing the old position')
+      .toBeLessThan(-5);
+  });
+
+  /** Where the one balloon a machine can see is. Fails loudly if there is not exactly one. */
+  function only(ctx: Machine): [number, number, number] {
+    const seen: Array<[number, number, number]> = [];
+    ctx.projectiles.forEachActive((_i, x, y, z) => seen.push([x, y, z]));
+    expect(seen, 'expected exactly one balloon').toHaveLength(1);
+    return seen[0]!;
+  }
+
+  it("takes a guest's balloons away again when they land", () => {
+    // The mirror is the whole of a guest's knowledge of what is in the air, so
+    // a balloon it never clears is one that hangs in the sky forever.
+    const { host, hostCtx, client, clientCtx } = joined();
+    hostCtx.projectiles.spawn(0, 2, 0, 0, 0, -1, 12, 0);
+    run(host, hostCtx, client, clientCtx, 8);
+    expect(clientCtx.projectiles.activeCount).toBe(1);
+
+    hostCtx.projectiles.clear();
+    run(host, hostCtx, client, clientCtx, 8);
+    expect(clientCtx.projectiles.activeCount).toBe(0);
   });
 });

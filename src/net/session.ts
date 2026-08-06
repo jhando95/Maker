@@ -42,15 +42,18 @@
  */
 
 import { CharacterController, type ControllerState } from '../player/controller.ts';
-import { commandToIntent, packCommand, unpackCommand, type Command } from '../core/command.ts';
+import {
+  aimOf, commandToIntent, packCommand, pressed, unpackCommand, type Command,
+} from '../core/command.ts';
 import type { CollisionWorld } from '../physics/collisionWorld.ts';
 import type { BuildSystem, PlacementRecord } from '../build/buildSystem.ts';
-import { ActorRoster, opposing, type Actor, type Team } from '../game/actor.ts';
+import { ActorRoster, FIRST_REMOTE_ID, opposing, type Actor, type Team } from '../game/actor.ts';
 import {
   ACTOR_FLAG, PROTOCOL_VERSION, decode, indexToTeam, teamToIndex,
-  type HostMessage, type PackedActor, type PackedRound,
+  type HostMessage, type PackedActor, type PackedRound, type PackedSelf,
 } from './protocol.ts';
-import type { GameMode } from '../game/gameMode.ts';
+import { IDLE_INPUT, type ActorInput, type GameMode } from '../game/gameMode.ts';
+import type { ProjectileSystem } from '../game/projectiles.ts';
 import { packRound } from './roundPacket.ts';
 import type { Transport } from './transport.ts';
 
@@ -99,8 +102,6 @@ export const HELLO_GRACE_TICKS = 300;
 /** Unacknowledged commands a guest keeps for replay. Two seconds' worth. */
 const COMMAND_HISTORY = 120;
 
-/** IDs for people who are not the local player. Never zero — that is always you. */
-const FIRST_REMOTE_ID = 1;
 
 export type Role = 'host' | 'guest';
 
@@ -121,6 +122,11 @@ export interface SessionContext {
   build: BuildSystem;
   actors: ActorRoster;
   local: CharacterController;
+  /**
+   * Balloons in flight, so a host can publish them and a guest can be shown
+   * them. The same object main.ts hands the mode — there is one per game.
+   */
+  projectiles: ProjectileSystem;
   /** Tell the renderer the world changed, so static shadows refresh. */
   worldChanged(): void;
   /**
@@ -176,6 +182,15 @@ interface Peer {
   latest: Command | null;
   /** The newest command tick actually run, echoed back so they can reconcile. */
   ack: number;
+  /**
+   * Whether their trigger was down on the tick before this one.
+   *
+   * Kept because a command carries a *held* bit and a mode asks about edges —
+   * `firePressed` and `fireReleased` are what start and finish a wind-up. A
+   * host that derived neither would give every guest a throw that never
+   * charges and never leaves their hand.
+   */
+  wasFiring: boolean;
 }
 
 function makeRemoteActor(
@@ -308,7 +323,7 @@ export class NetHost {
     const where = this.ctx.spawnFor(team);
     const controller = new CharacterController(this.ctx.world, where.x, where.y, where.z);
     const actor = makeRemoteActor(id, team, controller, () => this.headings.get(id) ?? 0);
-    this.peers.set(id, { id, transport, actor, latest: null, ack: -1 });
+    this.peers.set(id, { id, transport, actor, latest: null, ack: -1, wasFiring: false });
     this.ctx.actors.addRemote(actor);
 
     transport.send({
@@ -367,15 +382,47 @@ export class NetHost {
    * in the world advances on the same clock — including anyone whose packets are
    * late, who simply repeats their last input rather than freezing.
    */
+  /**
+   * What a guest is trying to do this tick, in the shape a mode asks for.
+   *
+   * The command already carried everything needed — a fire bit, a yaw and a
+   * pitch — and the host threw all three away, stepping the body and nothing
+   * else. That is what "a guest cannot fight" actually was: not a missing
+   * message, a message nobody read.
+   *
+   * Called during the mode's tick, before `afterTick` rolls `wasFiring`
+   * forward, so the edges belong to the tick being simulated.
+   */
+  inputOf(actorId: number): ActorInput {
+    const peer = this.peers.get(actorId);
+    const command = peer?.latest;
+    if (peer === undefined || command === undefined || command === null) return IDLE_INPUT;
+    const firing = pressed(command, 'fire');
+    const aim = aimOf(command);
+    return {
+      fire: firing,
+      firePressed: firing && !peer.wasFiring,
+      fireReleased: !firing && peer.wasFiring,
+      aimX: aim.x, aimY: aim.y, aimZ: aim.z,
+      slot: command.slot,
+    };
+  }
+
   afterTick(dt: number): void {
     this.noticeRoundChange();
 
+    const mode = this.ctx.mode?.() ?? null;
     for (const peer of this.peers.values()) {
       const command = peer.latest;
       if (command === null) continue;
-      peer.actor.controller.step(dt, commandToIntent(command));
+      // Soaked guests walk slowly, or stop, by the same rule as a soaked host.
+      // Left out at first, which made being knocked out of the fight a purely
+      // cosmetic thing to happen to anybody who was not the authority.
+      const scale = mode?.speedScaleFor?.(peer.id) ?? 1;
+      peer.actor.controller.step(dt, commandToIntent(command, scale));
       this.headings.set(peer.id, command.yaw);
       peer.ack = command.tick;
+      peer.wasFiring = pressed(command, 'fire');
     }
 
     this.tick++;
@@ -429,9 +476,22 @@ export class NetHost {
       actors.push(packActor(who, mode?.wetnessOf?.(who.id) ?? 0));
     }
     const round = packRound(mode);
-    // One array, but each peer needs its own ack, so the message is per peer.
+    const balloons: Array<[number, number, number]> = [];
+    this.ctx.projectiles.forEachActive((_index, x, y, z) => {
+      balloons.push([round3(x), round3(y), round3(z)]);
+    });
+    // One array, but each peer needs its own ack — and now its own tank, which
+    // is the other reason this message could never have been a broadcast.
     for (const peer of this.peers.values()) {
-      peer.transport.send({ t: 'snap', tick: this.tick, ack: peer.ack, actors, round });
+      peer.transport.send({
+        t: 'snap',
+        tick: this.tick,
+        ack: peer.ack,
+        actors,
+        round,
+        you: packSelf(mode, peer.id),
+        balloons,
+      });
     }
   }
 
@@ -474,6 +534,32 @@ function packActor(who: Actor, wet: number): PackedActor {
 /** Quantized on the way out: full float precision is bytes nobody can see. */
 function round(v: number, step = 1e-3): number {
   return Math.round(v / step) * step;
+}
+
+const round3 = (v: number): number => round(v);
+
+/**
+ * One peer's own numbers, taken from the mode that is actually running them.
+ *
+ * Asked of the mode rather than assembled here, because what a tank is and
+ * whether there is one at all is a rule — Water War meters litres, Capture the
+ * Flag counts balloons, Fort Defense has a refill channel and no soaking meter.
+ * A session that decided any of that would be a fourth opinion on the subject.
+ */
+function packSelf(mode: GameMode | null, actorId: number): PackedSelf | null {
+  const self = mode?.selfHud?.(actorId);
+  if (self === undefined) return null;
+  const stream = mode?.streamFor?.(actorId) ?? null;
+  return {
+    charge: self.charge,
+    wet: self.wetness,
+    ammo: self.ammo === null
+      ? null
+      : [self.ammo.current, self.ammo.max, self.ammo.gauge === true ? 1 : 0],
+    refill: self.refill,
+    stream: stream === null ? null : [round3(stream.x), round3(stream.y), round3(stream.z)],
+    out: (mode?.speedScaleFor?.(actorId) ?? 1) <= 0,
+  };
 }
 
 /**
@@ -543,6 +629,19 @@ export class NetClient {
     return this.wetness.get(actorId) ?? 0;
   }
 
+  /**
+   * This machine's own tank, wind-up and soaking, as of the last snapshot.
+   *
+   * Read through by `RemoteMode` rather than copied into it, for the same
+   * reason as wetness: a second copy is one more thing that can be a frame
+   * behind the meter it is drawing.
+   */
+  private self: PackedSelf | null = null;
+
+  get mine(): PackedSelf | null {
+    return this.self;
+  }
+
   beforeTick(): void {
     if (!this.transport.open && this.connected) {
       this.connected = false;
@@ -590,6 +689,11 @@ export class NetClient {
 
       case 'snap':
         this.applySnapshot(message.tick, message.ack, message.actors);
+        this.self = message.you ?? null;
+        // Shown rather than simulated. Nothing here integrates or collides —
+        // the host owns which balloon hit whom, and a guest that ran its own
+        // physics on them would have a second opinion about it.
+        this.ctx.projectiles.mirror(message.balloons ?? []);
         // After the actors, so the shell sees a round whose objectives and
         // people came out of the same instant.
         this.ctx.setRound?.(message.round ?? null);
