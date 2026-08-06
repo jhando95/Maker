@@ -124,6 +124,18 @@ const STYLE = `
 .mk-btn.mk-mode { margin-bottom: 3px; }
 /* Sits directly under its button and is deliberately quiet: the name is the
    choice, this is the reason. */
+.mk-net { display: flex; gap: 6px; margin: 6px 0 2px; }
+.mk-input {
+  flex: 1; min-width: 0;
+  font: inherit; font-size: 13px; font-weight: 700;
+  padding: 7px 9px;
+  color: var(--ink);
+  background: #fff8ec;
+  border: var(--edge); border-radius: var(--r-sm);
+}
+.mk-input-short { flex: 0 0 88px; }
+.mk-input::placeholder { color: rgba(43, 32, 28, 0.45); font-weight: 600; }
+
 .mk-blurb {
   font-size: 12px; opacity: 0.6; line-height: 1.4;
   margin: 0 0 12px; padding: 0 4px; text-align: center;
@@ -164,6 +176,18 @@ export interface MenuCallbacks {
   /** The modes the title screen should offer, in the order to show them. */
   listModes(): ReadonlyArray<{ id: string; name: string; blurb: string }>;
   onPlaySandbox(): void;
+  /**
+   * Open the yard to other people, or go and stand in somebody else's.
+   *
+   * The relay address is a text field rather than a lobby browser, because a
+   * lobby browser needs a service to list lobbies and this needs nothing but a
+   * machine both players can reach.
+   */
+  onHost(url: string, room: string): void;
+  onJoin(url: string, room: string): void;
+  onLeaveSession(): void;
+  /** A line about the connection, or null when playing alone. */
+  sessionStatus(): string | null;
   onResume(): void;
   onRestart(): void;
   onQuitToTitle(): void;
@@ -264,6 +288,58 @@ export class Menu {
     }
   }
 
+  /**
+   * Hosting and joining, on the title screen rather than behind a submenu.
+   *
+   * The whole point of the project is party modes played with other people, and
+   * a feature that is the point should not be two clicks further away than
+   * "Settings". The room name is what lets two pairs of players share one relay
+   * without walking into each other's game.
+   */
+  private buildPlayTogether(): void {
+    const status = this.callbacks.sessionStatus();
+    if (status !== null) {
+      const line = document.createElement('div');
+      line.className = 'mk-blurb';
+      line.textContent = status;
+      this.card.appendChild(line);
+      this.button('Play Alone Again', () => {
+        this.callbacks.onLeaveSession();
+        this.show('title');
+      }, 'mk-secondary');
+      return;
+    }
+
+    const row = document.createElement('div');
+    row.className = 'mk-net';
+
+    const url = document.createElement('input');
+    url.type = 'text';
+    url.className = 'mk-input';
+    url.placeholder = 'ws://localhost:8787';
+    url.value = 'ws://localhost:8787';
+    url.setAttribute('aria-label', 'relay address');
+
+    const room = document.createElement('input');
+    room.type = 'text';
+    room.className = 'mk-input mk-input-short';
+    room.placeholder = 'room';
+    room.value = 'yard';
+    room.setAttribute('aria-label', 'room name');
+
+    row.append(url, room);
+    this.card.appendChild(row);
+
+    this.button('Host a Yard', () => {
+      this.callbacks.onHost(url.value.trim(), room.value.trim() || 'yard');
+      this.show('title');
+    }, 'mk-secondary');
+    this.button('Join a Yard', () => {
+      this.callbacks.onJoin(url.value.trim(), room.value.trim() || 'yard');
+      this.show('title');
+    }, 'mk-secondary');
+  }
+
   private button(label: string, onClick: () => void, variant = ''): HTMLButtonElement {
     const b = document.createElement('button');
     b.className = `mk-btn ${variant}`.trim();
@@ -307,6 +383,7 @@ export class Menu {
     }
 
     this.button('Free Build', () => this.callbacks.onPlaySandbox(), 'mk-secondary');
+    this.buildPlayTogether();
     this.button('Saved Builds', () => {
       this.returnTo = 'title';
       this.show('builds');

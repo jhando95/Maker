@@ -60,6 +60,27 @@ export interface MoveIntent {
   climb: number;
 }
 
+/**
+ * A whole controller, frozen.
+ *
+ * Its own type rather than an inline shape so a field added to the controller
+ * and forgotten here is a compile error rather than a rewind that quietly loses
+ * a timer.
+ */
+export interface ControllerState {
+  x: number; y: number; z: number;
+  vx: number; vy: number; vz: number;
+  onGround: boolean;
+  crouching: boolean;
+  climbing: boolean;
+  eyeHeight: number;
+  coyoteTimer: number;
+  jumpBuffer: number;
+  halfSpine: number;
+  prevX: number; prevY: number; prevZ: number;
+  prevEyeHeight: number;
+}
+
 export interface PlayerState {
   /** Feet position. */
   x: number; y: number; z: number;
@@ -132,6 +153,51 @@ export class CharacterController {
     this.y = this.prevY = y;
     this.z = this.prevZ = z;
     this.vx = this.vy = this.vz = 0;
+    this.syncCapsule();
+  }
+
+  /**
+   * Every bit of state a step depends on, so a step can be taken back.
+   *
+   * Client-side prediction needs exactly this: when the host says where you
+   * really were three ticks ago, the client puts the body back there and replays
+   * the inputs it has sent since. Replaying from a *partial* restore is worse
+   * than not predicting at all — a missed coyote timer or a stale crouch turns
+   * one late packet into a jump that silently does not happen, and the symptom
+   * is "the controls are unreliable" rather than anything a log would show.
+   *
+   * So this deliberately captures the private timers too. `prev*` is included
+   * because it is what render interpolation reads, and a rewind that leaves it
+   * behind draws a frame of the old position on top of the new one.
+   */
+  capture(): ControllerState {
+    return {
+      x: this.x, y: this.y, z: this.z,
+      vx: this.vx, vy: this.vy, vz: this.vz,
+      onGround: this.onGround,
+      crouching: this.crouching,
+      climbing: this.climbing,
+      eyeHeight: this.eyeHeight,
+      coyoteTimer: this.coyoteTimer,
+      jumpBuffer: this.jumpBuffer,
+      halfSpine: this.halfSpine,
+      prevX: this.prevX, prevY: this.prevY, prevZ: this.prevZ,
+      prevEyeHeight: this.prevEyeHeight,
+    };
+  }
+
+  restore(state: ControllerState): void {
+    this.x = state.x; this.y = state.y; this.z = state.z;
+    this.vx = state.vx; this.vy = state.vy; this.vz = state.vz;
+    this.onGround = state.onGround;
+    this.crouching = state.crouching;
+    this.climbing = state.climbing;
+    this.eyeHeight = state.eyeHeight;
+    this.coyoteTimer = state.coyoteTimer;
+    this.jumpBuffer = state.jumpBuffer;
+    this.halfSpine = state.halfSpine;
+    this.prevX = state.prevX; this.prevY = state.prevY; this.prevZ = state.prevZ;
+    this.prevEyeHeight = state.prevEyeHeight;
     this.syncCapsule();
   }
 

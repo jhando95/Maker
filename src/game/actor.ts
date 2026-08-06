@@ -61,12 +61,17 @@ export interface Actor {
 }
 
 /**
- * The local player is always id 0.
+ * Whoever is running the simulation is id 0.
  *
- * Fixed rather than allocated because it was already fixed — Water War's
- * projectile targets have used a literal `PLAYER_ID = 0` since they were
- * written, and Capture the Flag's flag carrier uses the same 0. Naming it here
- * turns a coincidence that held into a rule that is stated.
+ * Alone, that is you. In a session it is the host — and on a guest's machine
+ * the local player is *not* id 0, because 0 is already taken by the person
+ * whose browser is the authority. That is the one place this number stops being
+ * "you", so code that means "the person at this keyboard" must ask the roster
+ * (`actors.local.id`) rather than compare against this.
+ *
+ * Modes are the exception and may keep using it, because a mode only ever ticks
+ * on the authority. Water War's projectile owner and Capture the Flag's flag
+ * carrier both predate this and both remain correct for that reason.
  */
 export const LOCAL_ACTOR_ID = 0;
 
@@ -88,18 +93,64 @@ export class ActorRoster {
 
   private readonly remotes: Actor[] = [];
 
-  constructor(readonly local: Actor) {
+  /**
+   * The person at this keyboard. Not readonly, because a guest is renamed when
+   * the host tells it what it is called.
+   */
+  local: Actor;
+
+  constructor(local: Actor) {
+    this.local = local;
     this.all.push(local);
   }
 
   addRemote(actor: Actor): void {
+    if (actor.id === this.local.id) return;
     if (this.remotes.some((a) => a.id === actor.id)) return;
     this.remotes.push(actor);
+    // Straight into `all` as well, rather than waiting for the next refresh.
+    // Only a running mode calls refresh, so a person who joined a session with
+    // no mode existed, collided and could be hit — and was in nobody's list, so
+    // nothing ever drew them or told anyone about them.
+    this.all.push(actor);
   }
 
   removeRemote(id: number): void {
     const at = this.remotes.findIndex((a) => a.id === id);
     if (at !== -1) this.remotes.splice(at, 1);
+    const drawn = this.all.findIndex((a) => a.id === id && a.kind === 'remote');
+    if (drawn !== -1) this.all.splice(drawn, 1);
+  }
+
+  /**
+   * Take the identity the host handed out.
+   *
+   * A guest starts as id 0 like every other machine and stops being 0 the moment
+   * it learns the host already is. The controller and the body are kept — only
+   * the name changes — because everything pointing at that character (the
+   * camera, the build system, the viewmodel) is holding the controller, not the
+   * actor.
+   *
+   * It also decides what the player looks like, since appearance is seeded from
+   * the id. Doing it here means a guest sees themselves exactly as everybody
+   * else sees them, without anyone sending a description.
+   */
+  identifyLocal(id: number): void {
+    if (this.local.id === id) return;
+    const previous = this.local;
+    const renamed: Actor = {
+      ...previous,
+      id,
+      // Spreading an object loses a getter's laziness, so the one property that
+      // is derived per frame is re-declared rather than snapshotted.
+      get heading(): number {
+        return previous.heading ?? 0;
+      },
+    };
+    this.local = renamed;
+    const at = this.all.indexOf(previous);
+    if (at !== -1) this.all[at] = renamed;
+    else this.all.unshift(renamed);
   }
 
   /** Rebuild in place from the mode's current bots. Allocates nothing. */

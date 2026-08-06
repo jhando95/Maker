@@ -5,10 +5,11 @@ you nail together whatever you want — ladders, staircases, towers, forts,
 bridges. The long-term goal is party modes played *inside* the things you build:
 capture the flag, water balloon battles, tag.
 
-Single-player so far: a neighborhood lot with a house in the middle of it, the
-movement and building mechanics the whole game rests on, and three modes —
-**Capture the Flag** across the two yards, **Fort Defense** on the front lawn,
-and **Water War** over the paddling pool, the rain barrel and the garden tap.
+A neighborhood lot with a house in the middle of it, the movement and building
+mechanics the whole game rests on, three modes — **Capture the Flag** across the
+two yards, **Fort Defense** on the front lawn, and **Water War** over the
+paddling pool, the rain barrel and the garden tap — and two browsers can now
+share a lawn and build against each other.
 
 ```bash
 npm install
@@ -78,6 +79,48 @@ During a wave, a capture phase or a raid, the mouse throws and soaks instead of
 placing parts, so you are never fumbling between two things on one button. The
 on-screen hints follow, because half the build keys do nothing while you are
 holding a soaker and a player who tries them learns the wrong lesson.
+
+## Playing with other people
+
+Two browsers, one lawn. Start the relay, host in one tab, join from another:
+
+```bash
+npm run server                 # ws://localhost:8787
+```
+
+Then **Host a Yard** in the first tab and **Join a Yard** in the second. The
+relay carries bytes between browsers and knows nothing about the game — it never
+parses a message, so the protocol can change without touching it. It is a
+development relay: no TLS, no auth, no rate limiting.
+
+**Host-authoritative.** One player's browser runs the simulation and everybody
+else follows it. That is a real trade — the host cannot be stopped from cheating,
+and closing their tab ends the round — bought for two things worth more right
+now: no deploy target to pay for, and no dependence on two CPUs agreeing about a
+square root. The determinism tests prove a round replays identically *in one
+process*; they say nothing about float portability, and lockstep would depend on
+exactly that.
+
+**Guests predict and are corrected.** A guest moves the moment you press a key,
+and when a snapshot says where it really was at tick T it puts the body back
+there and replays every input since — so a correction moves you by the size of
+the error, not the size of the latency. In practice that is under two
+centimetres on a good connection, even though the host disagrees on every single
+snapshot: it is always at least one tick behind, because it cannot run a command
+it has not received yet.
+
+**Everyone else is interpolated, never simulated.** Remote players are drawn 120
+milliseconds behind live. That looks less smooth than extrapolating between
+packets and is more honest: it is always showing something that really happened,
+and the alternative drifts most exactly when the network is worst.
+
+Building goes through the host too. A guest asks, the host decides, and the
+answer reaches everybody — which is what stops two people building into the same
+space from opposite sides of a wall and ending up with two different worlds. Part
+ids are translated per machine, because two stores allocate them independently
+and "remove part 7" otherwise means two different planks.
+
+Not yet: repeat-place and undo are host-only, and modes run on the host alone.
 
 ## Wood costs something
 
@@ -332,20 +375,24 @@ src/
   physics/     spatial hash, capsule-vs-OBB collision, part store, collision world
   player/      character controller, camera rig
   build/       part kit, snapping, build system, the lumber budget
+  net/         wire format, transports, host and guest sessions
   render/      cel shading, procedural geometry, instanced meshes
   world/       neighborhood map, scene, starter structures
   game/        game modes, actors and teams, bots, flow-field navigation, projectiles
   audio/       synthesized sound
   app/         settings, persistence, crash handling
   ui/          design tokens, HUD, menus, radial part picker
+server/
+  relay.mjs    development WebSocket relay between two browsers
 tools/
   shoot.mjs    headless screenshot + smoke-test harness
+  imgdiff.mjs  counts changed pixels between two PNGs
   bench.ts     simulation cost per tick, at 3000 parts
 scenarios/     scripted checks driven through the harness
 ```
 
 ```bash
-npm test         # 547 unit tests
+npm test         # 586 unit tests
 npm run typecheck
 npm run bench    # what a tick costs, as a share of the 16.67ms budget
 node tools/shoot.mjs --out shots/x.png   # boot headless, screenshot, fail on any console error
@@ -360,7 +407,8 @@ whether emptying a water tank and refilling it from a paddling pool works once
 the mode, the shell and the HUD are wired together, whether a second person in
 the world reaches the renderer's instance buffers wearing the right shirt,
 whether the HUD can actually point at an objective that is behind you,
-whether running out of wood is ever visible to the player rather than just true. Each only
+whether running out of wood is ever visible to the player rather than just true,
+whether somebody who joined over the network is ever actually drawn. Each only
 happens in a browser, and each has broken at least once with the unit suite
 green.
 

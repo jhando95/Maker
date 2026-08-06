@@ -79,6 +79,13 @@ jobs:
       - name: HUD scenario
         run: node tools/shoot.mjs --scenario scenarios/hud.mjs --auto-quality --out /tmp/ci-hud.png
 
+      # Two people in one world over the real wire format. The session is
+      # unit-tested end to end against a loopback pair, but whether somebody who
+      # joined ever reaches the renderer is a different question — and the answer
+      # was no, once, because the roster was only rebuilt by a running mode.
+      - name: Multiplayer scenario
+        run: node tools/shoot.mjs --scenario scenarios/multiplayer.mjs --auto-quality --out /tmp/ci-multiplayer.png
+
       # The character rig is almost entirely a claim about pixels, and two of the
       # three things it is for went wrong in ways no unit test would have caught:
       # eyes placed inside the skull, and hair that grew down over the face. The
@@ -115,6 +122,7 @@ jobs:
             /tmp/ci-hud.png
             /tmp/ci-lumber.png
             /tmp/ci-kids.png
+            /tmp/ci-multiplayer.png
           if-no-files-found: ignore
 
   benchmark:

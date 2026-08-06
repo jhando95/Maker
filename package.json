@@ -10,7 +10,8 @@
     "shoot": "node tools/shoot.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
-    "bench": "vite-node tools/bench.ts"
+    "bench": "vite-node tools/bench.ts",
+    "server": "node server/relay.mjs"
   },
   "repository": {
     "type": "git",

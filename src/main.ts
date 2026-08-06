@@ -30,10 +30,13 @@ import { BUTTON, commandToIntent, makeCommand } from './core/command.ts';
 import { ProjectileSystem } from './game/projectiles.ts';
 import { ModeRenderer } from './game/modeRenderer.ts';
 import { CharacterBatch } from './render/character.ts';
+import { NetHost, NetClient, type SessionContext } from './net/session.ts';
+import { SocketTransport, loopbackPair, type Transport } from './net/transport.ts';
+import { RelayHostLink, relayUrl } from './net/relayLink.ts';
 import { FortDefenseMode } from './game/fortDefense.ts';
 import { CaptureTheFlagMode } from './game/captureTheFlag.ts';
 import { WaterWarMode } from './game/waterWar.ts';
-import { LEFT_SPAWN } from './world/neighborhood.ts';
+import { LEFT_SPAWN, RIGHT_SPAWN } from './world/neighborhood.ts';
 import type { GameEvent, GameMode, ModeContext, ModeInput } from './game/gameMode.ts';
 import { SettingsStore, ghostColors, loadBindings, saveBindings, clearBindings } from './app/settings.ts';
 import { BINDABLE, describeKey, type Action } from './core/input.ts';
@@ -389,6 +392,93 @@ const modeContext: ModeContext = {
 /** null means free build with no rules. */
 let mode: GameMode | null = null;
 
+// ── Multiplayer ──────────────────────────────────────────────────────────────
+//
+// One object either way. The rest of the loop asks it two questions — "did
+// anything arrive" and "here is what just happened" — and never has to know
+// which side of the connection it is on.
+const sessionContext: SessionContext = {
+  world, build, actors, local: player,
+  worldChanged: () => worldChanged(),
+  spawnFor: (team) => (team === 'left' ? LEFT_SPAWN : RIGHT_SPAWN),
+};
+
+let net: NetHost | NetClient | null = null;
+
+/** True when somebody else's browser owns the world. */
+function isGuest(): boolean {
+  return net instanceof NetClient;
+}
+
+/** The host's single relay connection, which several guests share. */
+let relayLink: RelayHostLink | null = null;
+/** A scenario standing in for a second player. Null in a real session. */
+let fakeGuest: Transport | null = null;
+let netMessage: string | null = null;
+
+/**
+ * Open the yard.
+ *
+ * The relay hands over one transport per guest, and each one goes straight to
+ * the session — which cannot tell them apart from the loopback pair the tests
+ * use, and does not need to.
+ */
+function startHosting(url: string, room: string): NetHost {
+  leaveSession();
+  const host = new NetHost(sessionContext);
+  net = host;
+  relayLink = new RelayHostLink(url, room, (transport) => host.accept(transport), (m) => {
+    netMessage = m;
+  });
+  netMessage = `hosting "${room}"`;
+  return host;
+}
+
+function joinSession(url: string, room: string, name = 'kid'): NetClient {
+  leaveSession();
+  const client = new NetClient(sessionContext, new SocketTransport(relayUrl(url, room)), name);
+  net = client;
+  netMessage = `joining "${room}"`;
+  return client;
+}
+
+/** Attach a session over an already-made transport. For scenarios and tests. */
+function hostOver(transport: Transport): NetHost {
+  const host = net instanceof NetHost ? net : startHostingHeadless();
+  host.accept(transport);
+  return host;
+}
+
+function startHostingHeadless(): NetHost {
+  leaveSession();
+  const host = new NetHost(sessionContext);
+  net = host;
+  netMessage = 'hosting';
+  return host;
+}
+
+function leaveSession(): void {
+  net?.close();
+  net = null;
+  relayLink?.close();
+  relayLink = null;
+  netMessage = null;
+  // Back to being the only person here. Without this, leaving a session leaves
+  // everyone who was in it standing on the lawn forever.
+  actors.identifyLocal(LOCAL_ACTOR_ID);
+  actors.refresh(mode?.bots ?? []);
+}
+
+/** A line about the connection for the menu, or null when playing alone. */
+function sessionStatus(): string | null {
+  if (net === null) return null;
+  const status = net.status;
+  const who = status.role === 'host' ? 'Hosting' : 'Playing in someone else\'s yard';
+  const people = status.peers === 1 ? '1 other person' : `${status.peers} other people`;
+  return `${who} — ${people}${status.message === null ? '' : `. ${status.message}`}`
+    + (netMessage === null ? '' : ` (${netMessage})`);
+}
+
 /** The world as it was when the round began, for restarts. */
 let roundSnapshot: ReturnType<typeof build.serialize> | null = null;
 /** Which mode a restart should rebuild. */
@@ -453,6 +543,14 @@ const menu = new Menu(app, settings, {
     startRound(id as ModeId);
     enterPlay();
   },
+  // Two buttons rather than one and a flag. The relay makes the first tab in a
+  // room the host, but the *game* has to be told which it is, because hosting
+  // means running the simulation and joining means following one — and a player
+  // who guessed wrong would rather be told than silently become the authority.
+  onHost: (url: string, room: string) => startHosting(url, room),
+  onJoin: (url: string, room: string) => joinSession(url, room),
+  onLeaveSession: () => leaveSession(),
+  sessionStatus: () => sessionStatus(),
   onPlaySandbox: () => {
     stopRound();
     resetPlayerToSpawn();
@@ -707,11 +805,26 @@ function doRepeat(): void {
   sounds.placed(placed.x, placed.y, placed.z, camera, player);
 }
 
-/** Place, and make a sound about it. Returns whether anything was placed. */
+/**
+ * Place, and make a sound about it. Returns whether anything was placed.
+ *
+ * A guest asks rather than places: the host owns the world, and a client that
+ * put the plank down itself would be building a second, private world that
+ * happens to look similar. The sound plays on the request, because the delay
+ * between asking and being answered is exactly the round trip and a click that
+ * feels like nothing is a click the player repeats.
+ */
 function tryPlaceWithFeedback(): boolean {
   const record = build.place();
   if (record === null) return false;
-  build.applyPlace(record);
+  if (net instanceof NetClient) {
+    net.requestPlacement(record);
+    sounds.placed(record.x, record.y, record.z, camera, player);
+    return true;
+  }
+  if (!build.tryPlace()) return false;
+  const id = build.lastPlacedId;
+  if (id !== null && net instanceof NetHost) net.announcePlacement(id, record);
   worldChanged();
   sounds.placed(record.x, record.y, record.z, camera, player);
   return true;
@@ -735,6 +848,11 @@ function simulate(dt: number): void {
     pendingCrash = false;
     throw new Error('deliberate scenario crash');
   }
+
+  // Before anything else this tick: whatever arrived is applied at a tick
+  // boundary, never in the middle of one. A socket that could deliver mid-step
+  // is a socket that can split one tick's inputs across two.
+  net?.beforeTick();
 
   input.beginTick();
 
@@ -821,6 +939,10 @@ function simulate(dt: number): void {
   // command because it is a rule the mode applies to your intent, not part of
   // the intent: a soaked player is pushing the stick just as hard.
   player.step(dt, commandToIntent(localCommand, mode?.playerSpeedScale ?? 1));
+  // After the step, so a guest records what it predicted for this tick and the
+  // host publishes where everybody actually ended up.
+  if (net instanceof NetHost) net.afterTick(dt);
+  else net?.afterTick(dt, localCommand);
   simTick++;
 
   // Keep the roster honest even with no mode running.
@@ -922,7 +1044,13 @@ function simulate(dt: number): void {
   }
 
   // Repeat the last step. Held, it runs a chain — two rungs become a ladder.
-  if (canBuild) {
+  //
+  // Off for a guest. Repeat places directly through the build system, and
+  // routing a whole chain through the authority one request at a time is a
+  // different design rather than a wiring change — so it is disabled honestly
+  // instead of quietly building a private world that drifts from everyone
+  // else's.
+  if (canBuild && !isGuest()) {
     if (input.wasPressed('repeatPlace')) {
       repeatHeldTicks = 0;
       doRepeat();
@@ -943,13 +1071,22 @@ function simulate(dt: number): void {
       py = world.store.center[c + 1]!;
       pz = world.store.center[c + 2]!;
     }
-    if (build.removeAimed()) {
+    if (net instanceof NetClient) {
+      // Named by the host's id for it, which the session translates. Nothing
+      // disappears here until they say so.
+      if (aimed >= 0) {
+        net.requestRemoval(aimed);
+        sounds.removed(px, py, pz, camera, player);
+      }
+    } else if (build.removeAimed()) {
+      if (net instanceof NetHost && aimed >= 0) net.announceRemoval(aimed);
       worldChanged();
       sounds.removed(px, py, pz, camera, player);
     }
   }
 
-  if (input.wasPressed('interact') && build.undo()) {
+  // Undo is off for a guest for the same reason as repeat.
+  if (!isGuest() && input.wasPressed('interact') && build.undo()) {
     worldChanged();
     sounds.removed(player.x, player.y + 1, player.z, camera, player);
   }
@@ -1023,7 +1160,7 @@ function draw(alpha: number, frameDt: number): void {
   // own head, which is a wall of shirt across the screen rather than a character.
   drawnActors.length = 0;
   for (const who of actors.all) {
-    if (who.id !== LOCAL_ACTOR_ID || camera.showsPlayer) drawnActors.push(who);
+    if (who.id !== actors.local.id || camera.showsPlayer) drawnActors.push(who);
   }
   characters.begin();
   modeRenderer.update(frameDt, mode, projectiles, performance.now() / 1000, drawnActors);
@@ -1216,6 +1353,29 @@ window.__maker = {
   setCharacterOutlines: (visible: boolean) => characters.setOutlinesVisible(visible),
   /** How many people the rig drew last frame. */
   charactersPosed: () => characters.posed,
+  /**
+   * Host, and hand the caller the other end of a guest's connection.
+   *
+   * A second full game in the same page is not possible — main.ts is a module,
+   * and there is one world — so the scenario *is* the second player, speaking
+   * the real protocol down a real transport into the real session. Everything on
+   * this side of the pipe is exactly what a relay would drive.
+   */
+  hostWithFakeGuest: (): void => {
+    const pipe = loopbackPair();
+    fakeGuest = pipe.client;
+    hostOver(pipe.host);
+  },
+  guestSend: (message: unknown): void => {
+    fakeGuest?.send(message as Parameters<Transport['send']>[0]);
+  },
+  guestDrain: (): unknown[] => fakeGuest?.drain() ?? [],
+  netStatus: () => net?.status ?? null,
+  leaveSession: () => {
+    fakeGuest?.close();
+    fakeGuest = null;
+    leaveSession();
+  },
   bindingFor: (code: string) => input.getBindings()[code] ?? null,
   /** Move the mouse, for scenarios that cannot hold pointer lock. */
   look: (dx: number, dy: number) => input.injectLook(dx, dy),

@@ -551,6 +551,18 @@ export class BuildSystem {
     return this.ghostEdgeMaterial.color.getHex();
   }
 
+  /**
+   * The id the most recent placement was given, or null.
+   *
+   * A host has to tell everyone else *which* part was created, not merely that
+   * one was, so a later removal can name it. The id is the store's, and this is
+   * the only way out of applyPlace that does not make every existing caller
+   * handle a return value they do not want.
+   */
+  get lastPlacedId(): number | null {
+    return this.history.length === 0 ? null : this.history[this.history.length - 1]!;
+  }
+
   /** Where the most recent placement landed, or null. */
   get lastPlacedAt(): { x: number; y: number; z: number } | null {
     const p = this.lastPlacement;
@@ -767,6 +779,25 @@ export class BuildSystem {
   }
 
   /** Serialize every placed part. Same shape the network would carry. */
+  /**
+   * The world with the ids attached.
+   *
+   * A save file does not need ids and a network does. Two machines allocate
+   * part ids independently — the host's store has gaps where things were taken
+   * down, a fresh client's does not — so "remove part 7" means two different
+   * planks on two machines. Sending the pairs is what lets a client keep a
+   * translation table instead of guessing.
+   */
+  serializeWithIds(): Array<[PartId, PlacementRecord]> {
+    const ids = [...this.world.store.live()];
+    const records = this.serialize();
+    // serialize() walks live() in the same order, so the two line up. Zipping is
+    // safe precisely because there is one traversal order, and this asserts it
+    // rather than trusting it.
+    if (ids.length !== records.length) throw new Error('buildSystem: id/record mismatch');
+    return ids.map((id, i) => [id, records[i]!]);
+  }
+
   serialize(): PlacementRecord[] {
     const out: PlacementRecord[] = [];
     const store = this.world.store;
