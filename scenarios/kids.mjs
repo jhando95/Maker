@@ -96,21 +96,103 @@ export default async function (page) {
       const mesh = group.getObjectByName(name);
       const m = mesh.instanceMatrix.array;
       const o = slot * 16;
-      return { x: m[o + 12], y: m[o + 13], z: m[o + 14] };
+      // The scale comes off the first basis column, because heads vary in size
+      // by a fifth and every claim below is a *fraction* of the head's radius.
+      // An absolute bound in metres cannot tell a well-placed eye on a big head
+      // from a badly placed one on a small head — which is exactly the mistake
+      // the placement itself made.
+      return {
+        x: m[o + 12], y: m[o + 13], z: m[o + 14], count: mesh.count,
+        scale: Math.hypot(m[o], m[o + 1], m[o + 2]),
+      };
     };
-    return { head: read('head', 0), eyeL: read('eyes', 0), eyeR: read('eyes', 1) };
+    return {
+      head: read('head', 0),
+      eyeL: read('eyes', 0),
+      eyeR: read('eyes', 1),
+      mouth: read('mouth', 0),
+      neck: read('neck', 0),
+    };
   });
   const eyeGap = Math.hypot(face.eyeL.x - face.eyeR.x, face.eyeL.z - face.eyeR.z);
   assert(eyeGap > 0.08, `two eyes should be apart, they were ${eyeGap.toFixed(3)}m`);
+  // The head is 0.235m before its own scale, and both ends of this have been
+  // wrong. At 0.86 of the radius the eyes sat *inside* the skull and every face
+  // was blank. Then they were placed at an offset whose length nobody had
+  // checked — `(0.35, -0.12, -1)` is 1.07 long, not 1 — which put them past the
+  // surface with a quarter-radius of eyeball still to come: invisible face on,
+  // a black bead stuck to the temple from the side.
+  const HEAD_RADIUS = 0.235 * face.head.scale;
+  const from = (p) => Math.hypot(
+    p.x - face.head.x, p.y - face.head.y, p.z - face.head.z,
+  ) / HEAD_RADIUS;
   for (const [name, eye] of [['left', face.eyeL], ['right', face.eyeR]]) {
-    const out = Math.hypot(eye.x - face.head.x, eye.z - face.head.z);
-    // The head is 0.235m at scale 1. An eye inside that radius is not a face.
+    const out = from(eye);
     assert(
-      out > 0.16,
-      `the ${name} eye should sit on the head, not in it — ${out.toFixed(3)}m from centre`,
+      out > 0.9 && out < 1.02,
+      `the ${name} eye should sit on the head, not in it or off it`
+        + ` — ${out.toFixed(3)} of a head radius from the centre`,
     );
     assert(eye.y < face.head.y, 'and below the crown, where eyes are');
   }
+
+  // A mouth, which for a long time there was not one of. Two dots on a blank
+  // face is a doll; the third mark is what makes it a kid.
+  assert(
+    face.mouth.count === 3,
+    `every kid should have a mouth drawn, ${face.mouth.count} of 3 were`,
+  );
+  assert(face.neck.count === 3, `and a neck, ${face.neck.count} of 3`);
+  const mouthOut = from(face.mouth);
+  assert(
+    mouthOut > 0.9 && mouthOut < 1.02,
+    `the mouth should sit on the face — ${mouthOut.toFixed(3)} of a head radius out`,
+  );
+  assert(
+    face.mouth.y < face.eyeL.y,
+    'and below the eyes, which is where a mouth goes',
+  );
+
+  // ── They are alive when they are doing nothing ─────────────────────────────
+  //
+  // Three of them standing on a lawn were three statues in identical poses.
+  // Checked here rather than only in the unit suite because the breath runs on
+  // the real frame's dt through the real loop, and a rig that animates when a
+  // test hands it a fixed timestep and not when the game hands it a real one is
+  // a thing this project has shipped before.
+  const torsoAt = () => page.evaluate(() => {
+    const m = window.__maker.scene.getObjectByName('characters')
+      .getObjectByName('torso').instanceMatrix.array;
+    return { y: m[13] };
+  });
+  const shoeAt = () => page.evaluate(() => {
+    const m = window.__maker.scene.getObjectByName('characters')
+      .getObjectByName('shoe0').instanceMatrix.array;
+    return { x: m[12], y: m[13], z: m[14] };
+  });
+  // Let the stride settle out first, so what is left moving is the breath.
+  await frames(page, 45);
+  const chestFrom = await torsoAt();
+  const footFrom = await shoeAt();
+  let chestMoved = 0;
+  let footMoved = 0;
+  for (let i = 0; i < 30; i++) {
+    await frames(page, 2);
+    const chest = await torsoAt();
+    const foot = await shoeAt();
+    chestMoved = Math.max(chestMoved, Math.abs(chest.y - chestFrom.y));
+    footMoved = Math.max(footMoved, Math.hypot(
+      foot.x - footFrom.x, foot.y - footFrom.y, foot.z - footFrom.z,
+    ));
+  }
+  assert(
+    chestMoved > 0.002,
+    `a kid standing still should still be breathing, their chest moved ${chestMoved.toFixed(4)}m`,
+  );
+  assert(
+    footMoved < 1e-6,
+    `but their feet should be on the ground, and moved ${footMoved.toFixed(4)}m`,
+  );
 
   // ── They are different people ──────────────────────────────────────────────
   const looks = await page.evaluate(() => {
@@ -172,7 +254,8 @@ export default async function (page) {
   await page.screenshot({ path: process.env.KIDS_SHOT ?? 'shots/kids.png' });
   console.log(
     `[kids] verified: one rig draws everyone including the local player in third person,`,
-    `eyes sit on the face and not in the skull, kids differ from each other,`,
-    `the walk cycle advances, and the ink moves ${diff} pixels`,
+    `eyes and a mouth sit on the face rather than in the skull or off the front of it,`,
+    `kids differ from each other, a standing one breathes (${chestMoved.toFixed(4)}m)`,
+    `without moving their feet, the walk cycle advances, and the ink moves ${diff} pixels`,
   );
 }

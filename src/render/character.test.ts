@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import * as THREE from 'three';
-import { CharacterBatch, lookFor, HIP_Y, TORSO_TOP, HEAD_Y } from './character.ts';
+import { CharacterBatch, lookFor, HIP_Y, TORSO_TOP, HEAD_Y, HEAD_R } from './character.ts';
 import { shirtColor, SHIRTS } from '../game/shirts.ts';
 import { CAP_HEIGHT } from '../physics/constants.ts';
 import { SOAKED } from '../game/wetness.ts';
@@ -153,6 +153,11 @@ describe('the character rig', () => {
     expect(torso.count).toBe(3);
     // Two eyes and two hands each, so those run at twice the count.
     expect((batch.group.getObjectByName('eyes') as THREE.InstancedMesh).count).toBe(6);
+    // And one neck and one mouth each. Listed by name rather than counted,
+    // because a part left at zero is a part that is simply never drawn and
+    // nothing else in the frame says so.
+    expect((batch.group.getObjectByName('mouth') as THREE.InstancedMesh).count).toBe(3);
+    expect((batch.group.getObjectByName('neck') as THREE.InstancedMesh).count).toBe(3);
     // And the ink follows the body it outlines, or a kid loses their outline.
     const ink = batch.group.getObjectByName('torso-ink') as THREE.InstancedMesh | null;
     if (ink !== null) expect(ink.count).toBe(3);
@@ -188,6 +193,250 @@ describe('the character rig', () => {
     const drift = new THREE.Vector3().setFromMatrixPosition(rest)
       .distanceTo(new THREE.Vector3().setFromMatrixPosition(stillRest));
     expect(drift).toBeLessThan(1e-3);
+  });
+
+  it('seats the face on the head rather than hanging it off the front', () => {
+    // The bug this replaced, and the reason it took a screenshot from the side
+    // to find. The eyes were placed at the offset (0.37r, -0.14r, -0.97r),
+    // which reads as "just inside the surface" and is nothing of the sort: that
+    // vector is 1.048r long, and the eye's own radius added another quarter of
+    // a head on top. Face on it looked perfect. In profile it was a black bead
+    // stuck to the temple.
+    //
+    // Checked across every head size the look generator can produce, because
+    // the eyes did not scale with the head either — so the bigger the head, the
+    // worse it got, and the ids that produce big heads are a minority.
+    const batch = new CharacterBatch(4);
+    const shirt = new THREE.Color(0xffffff);
+    const centre = new THREE.Vector3();
+    const at = new THREE.Vector3();
+    const scale = new THREE.Vector3();
+    const m = new THREE.Matrix4();
+
+    const readAt = (name: string, slot: number, out: THREE.Vector3): number => {
+      const mesh = batch.group.getObjectByName(name) as THREE.InstancedMesh;
+      mesh.getMatrixAt(slot, m);
+      out.setFromMatrixPosition(m);
+      m.decompose(new THREE.Vector3(), new THREE.Quaternion(), scale);
+      // How far the part stands out along its own facing, which is the number
+      // that matters. Its bounding *sphere* would be the eye's width, and the
+      // eye is a flattened disc — measuring the wrong axis would fail a feature
+      // that is doing exactly the right thing.
+      mesh.geometry.computeBoundingBox();
+      return mesh.geometry.boundingBox!.max.z * scale.z;
+    };
+
+    for (let id = 0; id < 120; id++) {
+      const look = lookFor(id);
+      const r = HEAD_R * look.headScale;
+      batch.begin();
+      batch.pose(1 / 60, { id, x: 0, y: 0, z: 0, facing: 0, speed: 0, onGround: true, shirt });
+      batch.finish();
+      readAt('head', 0, centre);
+
+      for (const [name, slot] of [['eyes', 0], ['eyes', 1], ['mouth', 0]] as const) {
+        const depth = readAt(name, slot, at);
+        const out = at.distanceTo(centre);
+        expect(out / r, `kid ${id}: the ${name} are floating off the face`)
+          .toBeLessThan(1.02);
+        expect(out / r, `kid ${id}: the ${name} are inside the skull`)
+          .toBeGreaterThan(0.9);
+        expect((out + depth) / r, `kid ${id}: the ${name} stand proud of the head`)
+          .toBeLessThan(1.14);
+      }
+    }
+  });
+
+  it('grows the face with the head, or a big kid has beady eyes', () => {
+    const batch = new CharacterBatch(4);
+    const shirt = new THREE.Color(0xffffff);
+    const scaleOf = (id: number): number => {
+      batch.begin();
+      batch.pose(1 / 60, { id, x: 0, y: 0, z: 0, facing: 0, speed: 0, onGround: true, shirt });
+      batch.finish();
+      const m = new THREE.Matrix4();
+      (batch.group.getObjectByName('eyes') as THREE.InstancedMesh).getMatrixAt(0, m);
+      const scale = new THREE.Vector3();
+      m.decompose(new THREE.Vector3(), new THREE.Quaternion(), scale);
+      return scale.x;
+    };
+    // Find the two extremes the generator actually produces rather than
+    // asserting on a pair of ids that might both land in the middle.
+    let smallest = 0;
+    let largest = 0;
+    for (let id = 0; id < 200; id++) {
+      if (lookFor(id).headScale < lookFor(smallest).headScale) smallest = id;
+      if (lookFor(id).headScale > lookFor(largest).headScale) largest = id;
+    }
+    expect(lookFor(largest).headScale).toBeGreaterThan(lookFor(smallest).headScale);
+    expect(scaleOf(largest)).toBeGreaterThan(scaleOf(smallest));
+  });
+
+  it('leaves no gap between the smallest head and the collar', () => {
+    // `headScale` runs down to 0.92, and the head's centre is fixed — so the
+    // small heads clear the top of the torso and float. That is what the neck
+    // is for, and it is invisible on every other kid, which is exactly the kind
+    // of part that stops being correct without anybody noticing.
+    const batch = new CharacterBatch(2);
+    const shirt = new THREE.Color(0xffffff);
+    const m = new THREE.Matrix4();
+    const at = new THREE.Vector3();
+    const scale = new THREE.Vector3();
+
+    let smallest = 0;
+    for (let id = 0; id < 200; id++) {
+      if (lookFor(id).headScale < lookFor(smallest).headScale) smallest = id;
+    }
+    batch.begin();
+    batch.pose(1 / 60, {
+      id: smallest, x: 0, y: 0, z: 0, facing: 0, speed: 0, onGround: true, shirt,
+    });
+    batch.finish();
+
+    const neck = batch.group.getObjectByName('neck') as THREE.InstancedMesh;
+    neck.getMatrixAt(0, m);
+    at.setFromMatrixPosition(m);
+    m.decompose(new THREE.Vector3(), new THREE.Quaternion(), scale);
+    neck.geometry.computeBoundingBox();
+    const half = neck.geometry.boundingBox!.max.y * scale.y;
+
+    const chin = HEAD_Y - HEAD_R * lookFor(smallest).headScale;
+    expect(at.y + half, 'the neck must reach the jaw').toBeGreaterThanOrEqual(chin);
+    expect(at.y - half, 'and down into the collar').toBeLessThanOrEqual(TORSO_TOP);
+  });
+
+  it('breathes when standing, without moving anybody\'s feet', () => {
+    // Four kids waiting on a lawn were four statues in identical poses, which
+    // is the loudest thing wrong with a group shot: a person who is completely
+    // still is not a person.
+    //
+    // The feet half is not decoration. The stride eases to neutral and settles
+    // when somebody stops, and a breath leaking into the legs would leave a
+    // walk cycle that never quite finishes — which is what the easing exists to
+    // prevent in the first place.
+    const batch = new CharacterBatch(2);
+    const shirt = new THREE.Color(0xffffff);
+    const sample = (part: string): THREE.Vector3 => {
+      const m = new THREE.Matrix4();
+      (batch.group.getObjectByName(part) as THREE.InstancedMesh).getMatrixAt(0, m);
+      return new THREE.Vector3().setFromMatrixPosition(m);
+    };
+    const step = (): void => {
+      batch.begin();
+      batch.pose(1 / 30, { id: 3, x: 0, y: 0, z: 0, facing: 0, speed: 0, onGround: true, shirt });
+      batch.finish();
+    };
+
+    // Let the stride settle first, so what is left moving is the breath.
+    for (let i = 0; i < 90; i++) step();
+    let mostTorso = 0;
+    let mostLeg = 0;
+    const torso0 = sample('torso');
+    const leg0 = sample('leg0');
+    for (let i = 0; i < 40; i++) {
+      step();
+      mostTorso = Math.max(mostTorso, sample('torso').distanceTo(torso0));
+      mostLeg = Math.max(mostLeg, sample('leg0').distanceTo(leg0));
+    }
+    expect(mostTorso, 'a standing kid should still be breathing').toBeGreaterThan(0.002);
+    expect(mostLeg, 'but their feet should be on the ground').toBeLessThan(1e-6);
+  });
+
+  it('does not have a whole lawn of them breathing in step', () => {
+    const batch = new CharacterBatch(8);
+    const shirt = new THREE.Color(0xffffff);
+    const heights: number[] = [];
+    const ids = [3, 4, 5, 6, 7];
+    batch.begin();
+    for (const id of ids) {
+      batch.pose(1 / 30, { id, x: 0, y: 0, z: 0, facing: 0, speed: 0, onGround: true, shirt });
+    }
+    batch.finish();
+    const torso = batch.group.getObjectByName('torso') as THREE.InstancedMesh;
+    const m = new THREE.Matrix4();
+    for (let i = 0; i < ids.length; i++) {
+      torso.getMatrixAt(i, m);
+      heights.push(new THREE.Vector3().setFromMatrixPosition(m).y);
+    }
+    const spread = Math.max(...heights) - Math.min(...heights);
+    expect(spread, 'they should not all inhale together').toBeGreaterThan(0.002);
+  });
+
+  it('builds kids to different widths and never to different heights', () => {
+    // Width is the safe axis. The joints are tied to `CAP_HEIGHT` precisely so
+    // the drawing and the thing that collides cannot disagree about how tall
+    // somebody is, and a kid drawn taller than their own capsule has feet that
+    // float.
+    const batch = new CharacterBatch(8);
+    const shirt = new THREE.Color(0xffffff);
+    const widths: number[] = [];
+    const heights = new Set<number>();
+    const m = new THREE.Matrix4();
+    const scale = new THREE.Vector3();
+    const at = new THREE.Vector3();
+    const torso = () => batch.group.getObjectByName('torso') as THREE.InstancedMesh;
+
+    for (let id = 0; id < 40; id++) {
+      batch.begin();
+      batch.pose(1 / 60, { id, x: 0, y: 0, z: 0, facing: 0, speed: 0, onGround: true, shirt });
+      batch.finish();
+      torso().getMatrixAt(0, m);
+      m.decompose(at, new THREE.Quaternion(), scale);
+      widths.push(scale.x);
+      heights.add(Number(scale.y.toFixed(6)));
+    }
+    expect(new Set(widths.map((w) => w.toFixed(3))).size,
+      'a line of kids should not be one kid recoloured').toBeGreaterThan(8);
+    expect(heights, 'nobody may be drawn taller or shorter than their capsule')
+      .toEqual(new Set([1]));
+  });
+
+  it('forgets a kid who is no longer being drawn', () => {
+    // Ids come from a counter that never goes backwards inside a round and Water
+    // War spawns a raid every few seconds, so state keyed by id and never pruned
+    // grows for as long as a round lasts. Pruning on "was not posed" rather than
+    // on a departure hook is the point: a bot goes down inside its mode, a guest
+    // drops off a socket, a whole roster is replaced at the end of a round —
+    // three places to remember, and the one that is forgotten leaves a ghost.
+    const batch = new CharacterBatch(8);
+    const shirt = new THREE.Color(0xffffff);
+    const drawSome = (count: number): void => {
+      batch.begin();
+      for (let id = 0; id < count; id++) {
+        batch.pose(1 / 60, { id, x: id, y: 0, z: 0, facing: 0, speed: 3, onGround: true, shirt });
+      }
+      batch.finish();
+    };
+    drawSome(5);
+    expect(batch.remembered).toBe(5);
+    drawSome(2);
+    expect(batch.remembered, 'three kids left the world and are still remembered').toBe(2);
+    drawSome(0);
+    expect(batch.remembered).toBe(0);
+  });
+
+  it('opens the mouth of somebody who is out of it', () => {
+    // The only expression in the game, and it costs a different scale rather
+    // than different geometry. The shirt already says "out of the fight" at
+    // forty metres; this says it at four.
+    const batch = new CharacterBatch(2);
+    const shirt = new THREE.Color(0xffffff);
+    const mouth = (stunned: boolean): THREE.Vector3 => {
+      batch.begin();
+      batch.pose(1 / 60, {
+        id: 0, x: 0, y: 0, z: 0, facing: 0, speed: 0, onGround: true, shirt, stunned,
+      });
+      batch.finish();
+      const m = new THREE.Matrix4();
+      (batch.group.getObjectByName('mouth') as THREE.InstancedMesh).getMatrixAt(0, m);
+      const scale = new THREE.Vector3();
+      m.decompose(new THREE.Vector3(), new THREE.Quaternion(), scale);
+      return scale;
+    };
+    const calm = mouth(false);
+    const shocked = mouth(true);
+    expect(shocked.y).toBeGreaterThan(calm.y);
+    expect(shocked.x).toBeLessThan(calm.x);
   });
 
   it('poses the air differently from the ground', () => {

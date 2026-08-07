@@ -19,21 +19,33 @@
  * that did not — the single most important thing on screen was the only thing
  * not drawn in the game's own style. Every silhouette part carries a shell now.
  *
- * **A face.** Two eyes are four hundred bytes of geometry and they do more than
- * everything else here put together. A capsule has no front; a head with eyes
- * has a front, and "which way is that kid facing" stops being a guess.
+ * **A face.** Two eyes and a mouth are a few hundred bytes of geometry and they
+ * do more than everything else here put together. A capsule has no front; a head
+ * with a face has a front, and "which way is that kid facing" stops being a
+ * guess. Two eyes on their own is a doll — the mouth is what makes it a person,
+ * and it is one more box.
  *
- * **Being different from each other.** Skin, hair colour and hair shape vary by
- * actor id, so six kids on a lawn are six kids rather than six copies. Seeded
- * from the id rather than randomised, so the same kid looks the same every time
- * you see them — including on two machines that have never spoken.
+ * **Being different from each other.** Skin, hair colour, hair shape, head size
+ * and build vary by actor id, so six kids on a lawn are six kids rather than six
+ * copies. Seeded from the id rather than randomised, so the same kid looks the
+ * same every time you see them — including on two machines that have never
+ * spoken.
+ *
+ * **Being alive when nothing is happening.** A kid standing still used to be
+ * perfectly rigid, and a group of them read as a row of statues. They breathe
+ * now, out of phase with each other, which costs a sine and about a centimetre.
  *
  * ## Why instanced, and what that costs
  *
- * Twelve instanced meshes and nine outline shells, each one draw call however
- * many people are in the world. That is twenty-one draws for the entire cast,
- * fixed, with no allocation when a wave arrives and no shader compiled mid-round
- * — the two things that produce a visible hitch at exactly the wrong moment.
+ * Twenty-two instanced meshes, nine of which are outline shells, each one draw
+ * call however many people are in the world — with no allocation when a wave
+ * arrives and no shader compiled mid-round, the two things that produce a
+ * visible hitch at exactly the wrong moment. The neck and the mouth are the two
+ * that were added last and they are the whole of the increase: twenty draws
+ * became twenty-two, and one kid went from 1,064 triangles to 1,152.
+ *
+ * All of it is free when the lawn is empty, because `finish` lowers `count` to
+ * zero rather than parking unused slots out of sight.
  *
  * The cost is that a part can only be posed by a matrix and tinted by one
  * colour. So there are no bendable knees and no per-vertex anything: a limb is a
@@ -56,7 +68,17 @@ import { CAP_HEIGHT, CAP_RADIUS } from '../physics/constants.ts';
  */
 export const HIP_Y = CAP_HEIGHT * 0.42;
 export const TORSO_TOP = CAP_HEIGHT * 0.79;
-export const HEAD_Y = CAP_HEIGHT * 0.905;
+/**
+ * The head's centre, raised from 0.905 because the chin was inside the shirt.
+ *
+ * At 0.905 the bottom of a scale-1 head sat four centimetres *below* the top of
+ * the torso, so a kid seen close up had no chin at all — the skull went
+ * straight into the collar. At 0.92 it overlaps by one and a half, which is a
+ * jaw resting on a collar rather than a head pushed into a body.
+ *
+ * The gap that opens for a small head is what the neck is for; see NECK_R.
+ */
+export const HEAD_Y = CAP_HEIGHT * 0.92;
 const LEG_LEN = HIP_Y - 0.09;
 const ARM_LEN = CAP_HEIGHT * 0.32;
 const HIP_X = CAP_RADIUS * 0.44;
@@ -83,7 +105,21 @@ const TORSO_D = CAP_RADIUS * 1.1;
  * that it is where the face is — the part of a character a player actually
  * looks at.
  */
-const HEAD_R = 0.235;
+export const HEAD_R = 0.235;
+/**
+ * A neck, which there was not one of.
+ *
+ * It exists for the small heads rather than for the look. `headScale` runs down
+ * to 0.92, and at that size a head centred at `HEAD_Y` clears the top of the
+ * torso by two centimetres — so before this, the smallest kids were heads
+ * floating over their own shoulders, and the only reason nobody saw it is that
+ * the head used to be sunk far enough for even the smallest to reach.
+ *
+ * Uninked, and for the same reason the hands and eyes are: it is small, it is
+ * pressed between two things that already carry a shell, and a rim of ink round
+ * it would draw a collar nobody asked for.
+ */
+const NECK_R = 0.072;
 /**
  * Hair, narrower than the skull it sits on.
  *
@@ -92,7 +128,61 @@ const HEAD_R = 0.235;
  */
 const HAIR_W = HEAD_R * 1.78;
 const HAIR_H = HEAD_R * 0.62;
-const HAIR_D = HEAD_R * 1.72;
+/**
+ * Deeper than it was, because from behind these were bald.
+ *
+ * At 1.72 the slab reached about six-sevenths of the way across a head two
+ * radii deep, and it was pushed forward as well — so the back of every skull
+ * was bare skin from the crown down. Front on nobody could tell; the back is
+ * the view you have of somebody running away from you, which in a game about
+ * chasing is most of the views there are.
+ */
+const HAIR_D = HEAD_R * 2.02;
+
+/**
+ * Where a feature sits, as a fraction of the head's radius **along its own
+ * direction from the centre**.
+ *
+ * The distinction is the bug this replaced. The eyes were placed at the offset
+ * `(±0.37r, -0.14r, -0.97r)`, which reads as "just inside the surface" and is
+ * not: that vector is 1.048r long, so an eye whose own radius was another
+ * 0.25r stood a third of a head proud of the skull. Face on it looked fine.
+ * In profile it was a black ball stuck to the temple, which is exactly the kind
+ * of thing that only a screenshot from the side ever finds.
+ *
+ * So a direction is chosen, normalised, and *then* scaled — and the number
+ * below means what it says at last.
+ */
+const FACE_SEAT = 1.0;
+/** Eyes: out from the middle of the face, and a little below centre. */
+const EYE_AIM = { x: 0.35, y: -0.12, z: -1 };
+/**
+ * Big, and deliberately so — but not as big as they were.
+ *
+ * At 0.055 an eye was very nearly half the head's radius across, which is fine
+ * at the four to thirty metres a round is played at and reads as goggles the
+ * moment anybody stands next to you. The job they do at distance is "which way
+ * is that kid facing", and most of that is carried by the silhouette anyway:
+ * the hair sits back, the shoes point forward. So they only have to be visible,
+ * not enormous.
+ */
+const EYE_R = 0.046;
+/**
+ * How flat an eye is.
+ *
+ * A sphere on a sphere is a bead. Squashing it along the face's own normal
+ * makes it read as painted on from every angle, which is what a cel-shaded
+ * face wants, and it is what keeps the profile clean no matter how proud the
+ * centre sits.
+ */
+const EYE_FLATTEN = 0.34;
+/** A mouth, which there was not one of. Two dots is a doll, not a kid. */
+const MOUTH_AIM = { x: 0, y: -0.44, z: -1 };
+const MOUTH_W = 0.092;
+const MOUTH_H = 0.024;
+const MOUTH_D = 0.03;
+/** Dark, but warmer than the eyes: a black slot in a face reads as a wound. */
+const MOUTH_INK = 0x53312c;
 
 /** Metres of ground per complete stride. Shorter than an adult's, they are kids. */
 const STRIDE_LENGTH = 1.45;
@@ -104,6 +194,25 @@ const ARM_SWING = 0.58;
 const FULL_SPEED = 6.0;
 /** How far a running kid tips into it. */
 const LEAN_MAX = 0.2;
+
+/**
+ * A standing kid still breathes.
+ *
+ * Four of them waiting on a lawn were four statues in identical poses, which is
+ * the single loudest thing wrong with a group shot — more than any proportion,
+ * because a person who is completely still is not a person. It costs a sine and
+ * a millimetre or two of lift.
+ *
+ * The phase is per kid, taken from the same seeded look, so a group does not
+ * inhale together. Legs are deliberately left out of it: feet on the ground do
+ * not move, and a walk cycle that never quite settles is the thing the stride's
+ * easing exists to prevent.
+ */
+const IDLE_RATE = 1.5;
+const IDLE_LIFT = 0.009;
+/** How much the arms drift with the breath. Radians. */
+const IDLE_SWAY = 0.035;
+const TAU = Math.PI * 2;
 
 /**
  * Skin and hair, chosen by actor id.
@@ -167,6 +276,18 @@ export interface Look {
   hairScaleXZ: number;
   /** Head size, the cheapest way to make two kids obviously different people. */
   headScale: number;
+  /**
+   * How stocky, across the shoulders and through the chest.
+   *
+   * Everything about a kid used to be the same size but a different colour, so
+   * a line of them read as one child recoloured. Width is the safe axis to vary
+   * and height is not: the joints are tied to `CAP_HEIGHT` precisely so the
+   * drawing and the thing that collides cannot disagree, and a kid drawn taller
+   * than their own capsule has feet that float.
+   */
+  build: number;
+  /** Where in a breath they are, so a group of them does not inhale together. */
+  idlePhase: number;
 }
 
 const lookCache = new Map<number, Look>();
@@ -196,6 +317,8 @@ export function lookFor(id: number): Look {
     hairScaleY: 0.55 + rng.next() * 1.15,
     hairScaleXZ: 0.92 + rng.next() * 0.2,
     headScale: 0.92 + rng.next() * 0.18,
+    build: 0.9 + rng.next() * 0.24,
+    idlePhase: rng.next() * TAU,
   };
   lookCache.set(id, look);
   return look;
@@ -213,6 +336,15 @@ const INK = 0x2b201c;
  */
 const OUTLINE_THICKNESS = 0.03;
 
+/** Per-kid animation state, carried between frames. See `CharacterBatch.state`. */
+interface KidState {
+  stride: number;
+  lean: number;
+  idle: number;
+  /** The last frame this kid was posed on. Anything older is not here any more. */
+  seen: number;
+}
+
 export class CharacterBatch {
   readonly group = new THREE.Group();
 
@@ -223,6 +355,8 @@ export class CharacterBatch {
   private readonly arms: Part[] = [];
   private readonly legs: Part[] = [];
   private readonly shoes: Part[] = [];
+  private readonly neck: THREE.InstancedMesh;
+  private readonly mouth: THREE.InstancedMesh;
   private readonly hands: THREE.InstancedMesh;
   private readonly eyes: THREE.InstancedMesh;
 
@@ -230,15 +364,22 @@ export class CharacterBatch {
   private readonly parts: Part[] = [];
 
   /**
-   * How far through a stride each character is, by actor id.
+   * What the rig remembers about one kid between frames.
    *
-   * Advanced by distance travelled rather than by wall-clock, so feet keep pace
-   * with the ground instead of sliding — the difference between a walk cycle and
-   * a character skating along with their legs waving.
+   * `stride` advances by distance travelled rather than by wall-clock, so feet
+   * keep pace with the ground instead of sliding — the difference between a
+   * walk cycle and a character skating along with their legs waving. `lean` and
+   * the slump are eased rather than snapped, or every stop is a jolt. `idle` is
+   * a breath, and is the one of the three that runs on the clock, because
+   * breathing is not a function of how far you walked.
+   *
+   * One record rather than a map per field: three `Map.get`s per kid per frame
+   * to assemble three numbers that are always wanted together, and three places
+   * to forget somebody from instead of one.
    */
-  private readonly stride = new Map<number, number>();
-  /** Lean and slump are eased rather than snapped, or every stop is a jolt. */
-  private readonly lean = new Map<number, number>();
+  private readonly state = new Map<number, KidState>();
+  /** Which frame we are on, so `finish` can tell who was not drawn. */
+  private frame = 0;
 
   private readonly matrix = new THREE.Matrix4();
   private readonly pos = new THREE.Vector3();
@@ -290,11 +431,31 @@ export class CharacterBatch {
       this.shoes.push(this.makePart(`shoe${i}`, shoe, 0xe8e2d4, true));
     }
 
-    // Hands and eyes carry no outline. Both are small enough that a shell would
-    // be most of the shape, and both sit against something already outlined.
-    // Two slots per person, hence the doubled pool.
-    this.hands = this.makeMesh('hands', blob(0.072, 0, 0.14, () => rng.next()), 0xffffff, capacity * 2);
-    this.eyes = this.makeMesh('eyes', new THREE.SphereGeometry(0.058, 8, 6), 0x241c18, capacity * 2);
+    // A neck, which fills the gap a small head leaves over the collar. Skin, so
+    // it is tinted per kid like the head and the hands.
+    this.neck = this.makeMesh(
+      'neck', chamferedBox(NECK_R * 2, 0.1, NECK_R * 2, 0.02), 0xffffff,
+    );
+
+    // Hands, eyes and the mouth carry no outline. All are small enough that a
+    // shell would be most of the shape, and all sit against something already
+    // outlined.
+    //
+    // The eye is a sphere squashed along the face's normal rather than a ball.
+    // A ball on a ball reads as a bead stuck to the head from any angle that is
+    // not straight on, which is what the old one did.
+    const eye = new THREE.SphereGeometry(EYE_R, 8, 6);
+    eye.scale(1, 1, EYE_FLATTEN);
+    // Two slots per person, hence the doubled pool — `pairCapacity` rather than
+    // `capacity * 2`, which is what the helper was written for and was not
+    // being used by the one place that had to agree with it.
+    this.hands = this.makeMesh(
+      'hands', blob(0.072, 0, 0.14, () => rng.next()), 0xffffff, pairCapacity(capacity),
+    );
+    this.eyes = this.makeMesh('eyes', eye, 0x241c18, pairCapacity(capacity));
+    this.mouth = this.makeMesh(
+      'mouth', chamferedBox(MOUTH_W, MOUTH_H, MOUTH_D, 0.008), MOUTH_INK,
+    );
 
     this.hideAll();
   }
@@ -357,6 +518,7 @@ export class CharacterBatch {
   /** Begin a frame. Everything not posed before `finish` is hidden. */
   begin(): void {
     this.drawn = 0;
+    this.frame++;
   }
 
   /**
@@ -377,22 +539,37 @@ export class CharacterBatch {
     const sin = Math.sin(facing);
 
     // ── The walk cycle ────────────────────────────────────────────────────────
+    let kid = this.state.get(p.id);
+    if (kid === undefined) {
+      kid = { stride: 0, lean: 0, idle: look.idlePhase, seen: this.frame };
+      this.state.set(p.id, kid);
+    }
+    kid.seen = this.frame;
+
     const moving = p.onGround && !(p.stunned === true) && p.speed > 0.25;
-    let phase = this.stride.get(p.id) ?? 0;
+    let phase = kid.stride;
     if (moving) {
-      phase = (phase + (p.speed / STRIDE_LENGTH) * Math.PI * 2 * dt) % (Math.PI * 2);
+      phase = (phase + (p.speed / STRIDE_LENGTH) * TAU * dt) % TAU;
     } else {
       // Toward the nearest neutral, whichever way is shorter, so stopping
       // settles into a stance rather than freezing mid-step.
-      const target = phase < Math.PI ? 0 : Math.PI * 2;
+      const target = phase < Math.PI ? 0 : TAU;
       phase += (target - phase) * Math.min(1, dt * 9);
     }
-    this.stride.set(p.id, phase);
+    kid.stride = phase;
+
+    // The breath runs whatever they are doing, so there is no seam at the
+    // moment somebody stops — it is simply uncovered by the stride settling.
+    kid.idle = (kid.idle + IDLE_RATE * dt) % TAU;
+    const breath = Math.sin(kid.idle);
 
     const effort = Math.min(1, p.speed / FULL_SPEED);
     const swing = moving ? Math.sin(phase) * SWING_MAX * (0.55 + effort * 0.45) : 0;
     // Twice a stride: both feet plant per cycle, so the bob is at double rate.
-    const bob = moving ? Math.cos(phase * 2) * 0.024 : 0;
+    // Standing, it is a breath instead — a kid waiting on a lawn who is
+    // perfectly rigid is the loudest thing wrong with a group of them.
+    const bob = moving ? Math.cos(phase * 2) * 0.024 : breath * IDLE_LIFT;
+    const sway = moving ? 0 : breath * IDLE_SWAY;
 
     // Lean into a run, slump when stunned, arch back a little in the air. Eased,
     // because all three change abruptly and a body should not.
@@ -402,9 +579,9 @@ export class CharacterBatch {
     // is flipped once, at the point the angle becomes a rotation, rather than
     // being carried inverted through every offset below.
     const wantLean = p.stunned === true ? 0.42 : !p.onGround ? -0.14 : effort * LEAN_MAX;
-    let lean = this.lean.get(p.id) ?? 0;
+    let lean = kid.lean;
     lean += (wantLean - lean) * Math.min(1, dt * 8);
-    this.lean.set(p.id, lean);
+    kid.lean = lean;
 
     // ── Torso ─────────────────────────────────────────────────────────────────
     //
@@ -424,10 +601,14 @@ export class CharacterBatch {
     );
     this.euler.set(-lean, facing, 0, 'YXZ');
     this.quat.setFromEuler(this.euler);
-    this.setPart(this.torso, index, this.pos, this.quat, this.one);
+    // Wider or narrower per kid, never taller: the joints are tied to
+    // `CAP_HEIGHT` so the drawing and the capsule agree about how tall somebody
+    // is, and a kid drawn taller than their own capsule has floating feet.
+    this.scratchScale.set(look.build, 1, look.build);
+    this.setPart(this.torso, index, this.pos, this.quat, this.scratchScale);
     this.torso.mesh.setColorAt(index, p.shirt);
 
-    // ── Head, hair, eyes ──────────────────────────────────────────────────────
+    // ── Head, hair, face, neck ────────────────────────────────────────────────
     //
     // The head rides on top of the leaned torso, so it travels forward with the
     // chest instead of staying pinned over the hips.
@@ -445,16 +626,14 @@ export class CharacterBatch {
     this.setPart(this.head, index, this.pos, this.quat, this.scratchScale);
     this.head.mesh.setColorAt(index, look.skin);
 
-    // Hair and eyes are placed by rotating an offset in the *head's* frame,
-    // rather than by the facing alone. Otherwise a tipped head keeps its face
-    // pointing at the horizon while the skull turns underneath it.
+    // Hair, eyes and mouth are placed by rotating an offset in the *head's*
+    // frame, rather than by the facing alone. Otherwise a tipped head keeps its
+    // face pointing at the horizon while the skull turns underneath it.
     const r = HEAD_R * look.headScale;
-    const attach = (lx: number, ly: number, lz: number): THREE.Vector3 =>
-      this.offset.set(lx, ly, lz).applyQuaternion(this.quat)
-        .add(this.head3.set(headX, headY, headZ));
+    this.head3.set(headX, headY, headZ);
 
     // Sits on the crown and slightly back, so a fringe never reaches the eyes.
-    this.pos.copy(attach(0, r * 0.34, r * 0.1));
+    this.pos.copy(this.attach(0, r * 0.34, r * 0.12));
     this.scratchScale.set(
       look.hairScaleXZ * look.headScale,
       look.hairScaleY * look.headScale,
@@ -463,17 +642,39 @@ export class CharacterBatch {
     this.setPart(this.hair, index, this.pos, this.quat, this.scratchScale);
     this.hair.mesh.setColorAt(index, look.hair);
 
-    // Two eyes, on the front of the head. A few hundred bytes of geometry that
-    // do more work than everything else here: a capsule has no front, and a kid
-    // walking at you and one walking away used to be the same silhouette.
+    // Two eyes and a mouth, on the front of the head. A few hundred bytes of
+    // geometry that do more work than everything else here: a capsule has no
+    // front, and a kid walking at you and one walking away used to be the same
+    // silhouette.
     for (let e = 0; e < 2; e++) {
-      // Forward is -Z in the head's own frame.
-      // Just proud of the surface. At 0.86 of the radius they sat inside the
-      // skull and the face was blank — the one thing this was all for.
-      this.pos.copy(attach((e === 0 ? -1 : 1) * r * 0.37, -r * 0.14, -r * 0.97));
-      this.matrix.compose(this.pos, this.quat, this.one);
+      this.seat(EYE_AIM.x * (e === 0 ? -1 : 1), EYE_AIM.y, EYE_AIM.z, r);
+      this.matrix.compose(this.pos, this.quat, this.scratchScale.setScalar(look.headScale));
       this.eyes.setMatrixAt(index * 2 + e, this.matrix);
     }
+
+    // A mouth, which there was not one of. Two dots on a blank face is a doll;
+    // the third mark is what makes it a kid, and it is one more box.
+    //
+    // Stunned, it goes round and open — the only expression in the game, and it
+    // costs a different scale rather than different geometry. Being out of the
+    // fight already shows in the shirt, and a shirt is a thing you read at forty
+    // metres while a face is a thing you read at four.
+    this.seat(MOUTH_AIM.x, MOUTH_AIM.y, MOUTH_AIM.z, r);
+    this.scratchScale.set(
+      look.headScale * (p.stunned === true ? 0.5 : 1),
+      look.headScale * (p.stunned === true ? 2.6 : 1),
+      look.headScale,
+    );
+    this.matrix.compose(this.pos, this.quat, this.scratchScale);
+    this.mouth.setMatrixAt(index, this.matrix);
+
+    // The neck, bridging collar to jaw. Placed halfway between the two so it
+    // covers the gap a small head leaves and disappears inside a large one.
+    this.pos.copy(this.attach(0, -r * 0.86, 0));
+    this.pos.y = (this.pos.y + p.y + TORSO_TOP + bob) / 2;
+    this.matrix.compose(this.pos, this.quat, this.one);
+    this.neck.setMatrixAt(index, this.matrix);
+    this.neck.setColorAt(index, look.skin);
 
     // ── Limbs ─────────────────────────────────────────────────────────────────
     //
@@ -487,15 +688,20 @@ export class CharacterBatch {
     // Airborne: legs tuck up and arms come out, which is the difference between
     // a jump and a person sliding upwards.
     const airborne = !p.onGround;
-    const armSwingL = airborne ? -0.85 : -swing * ARM_SWING + lean * 0.5;
-    const armSwingR = airborne ? -0.85 : swing * ARM_SWING + lean * 0.5;
+    // The sway is the breath again, mirrored, so the arms drift apart and back
+    // rather than swinging in step like a march.
+    const armSwingL = airborne ? -0.85 : -swing * ARM_SWING + lean * 0.5 + sway;
+    const armSwingR = airborne ? -0.85 : swing * ARM_SWING + lean * 0.5 - sway;
     const legSwingL = airborne ? 0.55 : swing;
     const legSwingR = airborne ? 0.25 : -swing;
 
+    // Shoulders follow the build, or a stocky kid's arms hang inside their own
+    // chest and a slight one's float clear of it.
+    const shoulderOut = SHOULDER_X * look.build;
     this.poseLimb(this.arms[0]!, index, shoulderX, shoulderY, shoulderZ,
-      cos, sin, -SHOULDER_X, facing, armSwingL, p.shirt);
+      cos, sin, -shoulderOut, facing, armSwingL, p.shirt);
     this.poseLimb(this.arms[1]!, index, shoulderX, shoulderY, shoulderZ,
-      cos, sin, SHOULDER_X, facing, armSwingR, p.shirt);
+      cos, sin, shoulderOut, facing, armSwingR, p.shirt);
     this.poseLimb(this.legs[0]!, index, p.x, p.y + HIP_Y, p.z,
       cos, sin, -HIP_X, facing, legSwingL, null);
     this.poseLimb(this.legs[1]!, index, p.x, p.y + HIP_Y, p.z,
@@ -505,15 +711,47 @@ export class CharacterBatch {
     // swinging them by the same angle about the same joint rather than guessing
     // at where the limb ended up.
     this.tipOf(this.hands, index * 2, shoulderX, shoulderY, shoulderZ,
-      cos, sin, -SHOULDER_X, facing, armSwingL, ARM_LEN, look.skin);
+      cos, sin, -shoulderOut, facing, armSwingL, ARM_LEN, look.skin);
     this.tipOf(this.hands, index * 2 + 1, shoulderX, shoulderY, shoulderZ,
-      cos, sin, SHOULDER_X, facing, armSwingR, ARM_LEN, look.skin);
+      cos, sin, shoulderOut, facing, armSwingR, ARM_LEN, look.skin);
     this.tipOfPart(this.shoes[0]!, index, p.x, p.y + HIP_Y, p.z,
       cos, sin, -HIP_X, facing, legSwingL, LEG_LEN);
     this.tipOfPart(this.shoes[1]!, index, p.x, p.y + HIP_Y, p.z,
       cos, sin, HIP_X, facing, legSwingR, LEG_LEN);
 
     return true;
+  }
+
+  /**
+   * Put something in the head's frame, at a local offset.
+   *
+   * Was a closure built inside `pose`, in a file that hoists a scratch vector
+   * two lines above it with a note saying this runs per kid per frame. One
+   * allocation a kid a frame is not a cliff, but it is the thing the rest of
+   * this class is careful about, and a method costs nothing.
+   *
+   * Reads `this.quat` and `this.head3`, which the caller has already set.
+   */
+  private attach(lx: number, ly: number, lz: number): THREE.Vector3 {
+    return this.offset.set(lx, ly, lz).applyQuaternion(this.quat).add(this.head3);
+  }
+
+  /**
+   * Put a face feature **on the surface**, along the direction it faces.
+   *
+   * The whole point of normalising first. Written as three offsets and scaled
+   * by the radius — which is what this replaced — the numbers say "just inside
+   * the skull" and mean nothing of the sort: `(0.37, -0.14, -1)` is 1.07 long,
+   * so a feature "at" the surface sat seven per cent outside it before its own
+   * thickness was added. That was a third of a head of black bead hanging off
+   * every kid's temple, invisible face-on and unmissable from the side.
+   *
+   * Leaves the answer in `this.pos`.
+   */
+  private seat(lx: number, ly: number, lz: number, radius: number): void {
+    const len = Math.hypot(lx, ly, lz);
+    const k = (radius * FACE_SEAT) / len;
+    this.pos.copy(this.attach(lx * k, ly * k, lz * k));
   }
 
   /**
@@ -620,12 +858,42 @@ export class CharacterBatch {
         part.outline.instanceMatrix.needsUpdate = true;
       }
     }
+    for (const single of [this.neck, this.mouth]) {
+      single.count = this.drawn;
+      single.instanceMatrix.needsUpdate = true;
+      if (single.instanceColor !== null) single.instanceColor.needsUpdate = true;
+    }
     // Two of these per person — a left and a right — so the pair meshes run at
     // twice the count rather than at it.
     for (const pair of [this.hands, this.eyes]) {
-      pair.count = this.drawn * 2;
+      pair.count = pairCapacity(this.drawn);
       pair.instanceMatrix.needsUpdate = true;
       if (pair.instanceColor !== null) pair.instanceColor.needsUpdate = true;
+    }
+
+    this.forgetTheAbsent();
+  }
+
+  /**
+   * Drop the animation state of anybody who was not drawn this frame.
+   *
+   * Ids are handed out by a counter that never goes backwards inside a round,
+   * and Water War spawns a fresh raid every few seconds, so a map keyed by id
+   * and never pruned grows for as long as a round lasts. It is small — a few
+   * numbers each — and it is still unbounded, which is a different thing from
+   * small.
+   *
+   * Pruning on "was not posed" rather than on a departure hook is deliberate.
+   * There is no one place a kid leaves from: a bot goes down inside its mode, a
+   * guest drops off a socket, a whole roster is replaced when the round ends.
+   * Three call sites to remember means one of them eventually is not, and the
+   * one that is not leaves a ghost nobody notices. Whether somebody was drawn
+   * is a thing this class already knows for certain.
+   */
+  private forgetTheAbsent(): void {
+    if (this.state.size === this.drawn) return;
+    for (const [id, kid] of this.state) {
+      if (kid.seen !== this.frame) this.state.delete(id);
     }
   }
 
@@ -647,16 +915,24 @@ export class CharacterBatch {
   /** Hide everyone, e.g. on returning to the menu. */
   hideAll(): void {
     this.drawn = 0;
+    this.state.clear();
+    this.frame++;
     this.finish();
-    this.stride.clear();
-    this.lean.clear();
+  }
+
+  /** How many kids the rig is remembering a stride for. For tests. */
+  get remembered(): number {
+    return this.state.size;
   }
 }
 
 /**
  * Hands and eyes need two slots per person, so the pools are twice as long.
  *
- * Split out so the two places that build a batch cannot disagree about it.
+ * Split out so the two places that build a batch cannot disagree about it —
+ * which they were free to, because the constructor wrote `capacity * 2` by hand
+ * and this was called by nobody at all. A helper that exists to stop two things
+ * drifting apart and is used by one of them is not doing the job it claims to.
  */
 export function pairCapacity(capacity: number): number {
   return capacity * 2;
