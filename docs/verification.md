@@ -252,6 +252,31 @@ what "the fort is working" actually means — circling a wall holds the distance
 to what is inside it exactly constant, and a way in reduces it. An open fort is
 still beaten by walking through the gap, and there is now a test that says so.
 
+## What the GPU said about the 88%
+
+`FrameProfile` landed with the leftover at 88% of a frame in an empty yard and
+97% in Tag, and the honest reading at the time was "almost the whole frame is
+outside everything this project instruments". It could not be narrower than
+that, because a stopwatch on the main thread cannot see past the main thread.
+
+A timer query can, and it turns out `EXT_disjoint_timer_query_webgl2` *is*
+present under SwiftShader — the one machine nobody expected it on. Measured in
+an empty yard: the CPU spends **28.7ms submitting** draw calls and the driver
+reports **374ms of GPU time**, against a frame of about 250ms.
+
+More GPU milliseconds than the frame has is not a contradiction, and it is worth
+writing down because the number would otherwise look like a bug in the timer.
+SwiftShader rasterises across several worker threads and `TIME_ELAPSED` sums
+them, so 374 is thread-milliseconds rather than wall clock. The reading that
+settles it is `latency`, stable at 4 frames in all three scenes: a renderer
+genuinely 374ms behind a 250ms frame would fall further behind every frame and
+the queue would grow without bound.
+
+So the leftover is rasterisation, and there is a number for it now rather than
+an inference. It also confirms, rather than merely suspects, that every
+performance figure this repository has taken from CI is a figure about a
+software rasteriser.
+
 ## Every bug that was planted on purpose
 
 Each of these was introduced deliberately, to watch one assertion fail, and then
@@ -293,3 +318,12 @@ blueprint places whatever fits; the support cascade disabled so a tower reports
 one part down instead of three; a house light removed to see whether the check
 was really looking at the house; a collapse-volume clamp removed; a collapse
 falloff halved to a placement's; and a collapse pitch flattened.
+
+And on the GPU timer, ten in a row, all caught: collecting the query the timer
+is still inside; reading the disjoint flag after the results instead of before;
+leaving the open query untainted when the driver goes disjoint; a skipped frame
+that is not counted; a straggler dragging the reported lateness backwards; a
+negative result trusted; a result read without asking whether it is ready — the
+one that would stall the whole pipeline; a second query opened while one is
+active; a tainted result recorded anyway; and a timer that claims to work on a
+machine with no extension.

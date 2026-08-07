@@ -879,6 +879,15 @@ export class Hud {
      * part of it did, which is the difference between a number and a lead.
      */
     sections: readonly SectionTime[] = [],
+    /**
+     * Milliseconds the GPU spent, or null where it will not say.
+     *
+     * Null rather than zero, because zero is a legitimate reading on a scene
+     * that is cheap and "we cannot measure this" is not a small number — it is
+     * a different statement, and showing it as 0.0 would be the readout lying
+     * about the one machine where the answer matters most.
+     */
+    gpuMs: number | null = null,
   ): void {
     this.stats.classList.toggle('maker-hidden', summary === null);
     if (summary === null) return;
@@ -897,6 +906,10 @@ export class Hud {
       `<b>${summary.fps.toFixed(0)}</b> fps<span class="dim"> · ${summary.ms.toFixed(1)} ms</span>`
       + `<br><span class="dim">low</span> ${summary.low.toFixed(0)}`
       + `<span class="dim"> · ${drawCalls} draws · ${k(triangles)} tris</span>`
+      // Beside the draws and the triangles rather than beside the CPU sections:
+      // it is the third fact about the same thing, and the question a draw count
+      // raises is always "and did that cost anything".
+      + (gpuMs === null ? '' : `<span class="dim"> · gpu </span>${gpuMs.toFixed(1)}`)
       + breakdown;
   }
 

@@ -36,7 +36,11 @@ const measure = async (page, label) => {
     .slice().sort((a, b) => b.ms - a.ms)
     .map((s) => `${s.name} ${s.ms.toFixed(2)}ms ${(s.share * 100).toFixed(0)}%`)
     .join('  ');
-  console.log(`[profile] ${label}: ${p.depth} frames, heaviest ${p.heaviest} | ${rows}`);
+  const g = p.gpu.available
+    ? `gpu ${p.gpu.ms.toFixed(2)}ms over ${p.gpu.depth}, ${p.gpu.latency} frames late`
+    + `, ${p.gpu.skipped} skipped, ${p.gpu.discarded} binned`
+    : 'gpu unavailable';
+  console.log(`[profile] ${label}: ${p.depth} frames, heaviest ${p.heaviest} | ${rows} | ${g}`);
   return p;
 };
 
@@ -62,6 +66,45 @@ export default async function (page) {
     assert(Number.isFinite(s.ms), `${s.name} reported ${s.ms}`);
   }
 
+  // ── The GPU half, and the readout agreeing with the machine ────────────────
+  //
+  // Deliberately not "the timer works here": `EXT_disjoint_timer_query_webgl2`
+  // is absent from Safari, from most mobile drivers and almost certainly from
+  // the software rasteriser this runs on, so asserting it is present would be
+  // asserting a property of GitHub's fleet — exactly the mistake the note at
+  // the top of this file exists to avoid. What is asserted holds on any
+  // machine: whatever the capability is, everything downstream says the same
+  // thing. A dead timer invents nothing and a live one produces something.
+  const line = await page.evaluate(() => window.__maker.statsLine(true));
+  assert(line !== null, 'turning the performance readout on should show it');
+  const shown = /\bgpu\b/.test(line);
+  assert(
+    shown === idle.gpu.available,
+    `the readout ${shown ? 'shows' : 'omits'} a GPU figure while the timer says`
+    + ` it is ${idle.gpu.available ? 'available' : 'unavailable'}: ${JSON.stringify(line)}`,
+  );
+
+  if (idle.gpu.available) {
+    // A timer that never returns anything is worse than no timer: it holds a
+    // ring of queries open and reports a confident zero.
+    assert(idle.gpu.depth > 0, 'the extension is present but no result ever came back');
+    assert(Number.isFinite(idle.gpu.ms) && idle.gpu.ms >= 0, `gpu reported ${idle.gpu.ms}ms`);
+    assert(
+      idle.gpu.latency > 0 && idle.gpu.latency < 30,
+      `a GPU reading should be a few frames late, not ${idle.gpu.latency}`,
+    );
+  } else {
+    // Absence is the ordinary case, and it has to cost nothing and claim
+    // nothing — not a zero that reads as "the GPU is free".
+    assert(idle.gpu.depth === 0 && idle.gpu.ms === 0, 'an unavailable timer reported a figure');
+    assert(idle.gpu.latency === -1, `an unavailable timer claimed ${idle.gpu.latency} frames of lag`);
+    assert(
+      idle.gpu.skipped === 0 && idle.gpu.discarded === 0,
+      'an unavailable timer should not be doing bookkeeping',
+    );
+  }
+  await page.evaluate(() => window.__maker.statsLine(false));
+
   // ── The attribution moves when the work does ───────────────────────────────
   //
   // The only functional claim worth making here, and the one that says the
@@ -86,5 +129,6 @@ export default async function (page) {
 
   console.log('[profile] verified: the sections account for the whole frame with nothing'
     + ' negative and nothing lost, and simulation cost rises with a crowd —'
-    + ` ${simIdle.toFixed(2)}ms empty against ${simBusy.toFixed(2)}ms in Tag`);
+    + ` ${simIdle.toFixed(2)}ms empty against ${simBusy.toFixed(2)}ms in Tag;`
+    + ` the GPU timer is ${idle.gpu.available ? 'live' : 'absent'} here and the readout agrees`);
 }

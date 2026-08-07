@@ -80,6 +80,7 @@ import { GamepadManager } from './core/gamepadManager.ts';
 import { PerformanceGovernor } from './app/performanceGovernor.ts';
 import { FrameStats } from './app/frameStats.ts';
 import { FrameProfile, type SectionTime } from './app/frameProfile.ts';
+import { GpuTimer, type TimerGl } from './render/gpuTimer.ts';
 
 /** How far off the window edge an off-screen objective chevron sits. */
 const PIN_EDGE_MARGIN = 54;
@@ -2334,6 +2335,10 @@ function render(alpha: number, frameDt: number): void {
   // compositor, whatever is not one of the named sections — lands in `rest`,
   // which is reported rather than lost.
   profile.endFrame(frameDt * 1000);
+  // After the frame rather than after the render: a query issued this frame has
+  // no answer yet, and asking for one before the driver has it would stall the
+  // CPU on the GPU — a profiler that flattens the frame rate it is measuring.
+  gpu.poll();
 }
 
 function draw(alpha: number, frameDt: number): void {
@@ -2436,7 +2441,14 @@ function draw(alpha: number, frameDt: number): void {
   profile.stop('anim');
 
   profile.start('draw');
+  // The CPU span around this call measures *submission*. Whether the GPU then
+  // spent one millisecond on those commands or thirty is a question the main
+  // thread cannot answer, because `render` returns when the queue is full and
+  // not when the pixels are done. The query brackets exactly the same work, so
+  // the two numbers are about the same thing and can be read side by side.
+  gpu.begin();
   renderer.render(scene, camera.camera);
+  gpu.end();
   profile.stop('draw');
 
   // The HUD: every DOM write this game makes, in one place. Cheap on a good day
@@ -2487,6 +2499,7 @@ function draw(alpha: number, frameDt: number): void {
       renderer.info.render.calls,
       renderer.info.render.triangles,
       profile.read(sectionScratch),
+      gpu.depth > 0 ? gpu.ms : null,
     );
   } else if (!settings.get('showStats')) {
     hud.setStats(null, 0, 0);
@@ -2518,6 +2531,19 @@ const frameStats = new FrameStats();
  */
 const profile = new FrameProfile();
 const sectionScratch: SectionTime[] = [];
+
+/**
+ * And how long the GPU took, where the machine will say.
+ *
+ * The first thing `FrameProfile` found was that most of a frame is outside
+ * everything this project instruments, and it could not say whether that is the
+ * browser, the compositor or the GPU — a stopwatch on the main thread cannot.
+ * This is the other end of the same question, asked of the only party that
+ * knows. Absent on most machines, which is why nothing above branches on it:
+ * `available` is false, every call is a no-op and the line simply does not
+ * appear.
+ */
+const gpu = new GpuTimer(renderer.getContext() as unknown as TimerGl);
 
 const loop = new GameLoop({ fixedUpdate, render }, { tickRate: TICK_RATE });
 
@@ -2996,7 +3022,33 @@ window.__maker = {
     depth: profile.depth,
     heaviest: profile.heaviest()?.name ?? null,
     sections: profile.read().map((x) => ({ name: x.name, ms: x.ms, share: x.share })),
+    // The other end of the same question, and the honest answer on most
+    // machines is "this one will not say". Reported rather than hidden so a
+    // scenario can check that the readout agrees with the capability instead of
+    // hard-coding what the CI runner happens to support.
+    gpu: {
+      available: gpu.available,
+      depth: gpu.depth,
+      ms: gpu.ms,
+      latency: gpu.latency,
+      skipped: gpu.skipped,
+      discarded: gpu.discarded,
+    },
   }),
+  /**
+   * Turn the performance readout on and hand back what it actually says.
+   *
+   * Through `settings.set` and then the rendered text, rather than a shortcut
+   * into the numbers: the claim worth checking is that the *readout* agrees
+   * with what the machine can measure, and a hook that read the timer straight
+   * back would pass with the HUD line deleted.
+   */
+  statsLine: async (on = true) => {
+    settings.set('showStats', on);
+    await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+    const el = hud.root.querySelector('.maker-stats');
+    return el && !el.classList.contains('maker-hidden') ? (el.textContent ?? '') : null;
+  },
   inputDevice: () => input.lastDevice,
   /** Half the width of the world, so a scenario cannot drift from the constant. */
   playHalf: () => PLAY_HALF,
