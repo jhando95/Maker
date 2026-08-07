@@ -368,6 +368,13 @@ export default async function (page) {
   // SwiftShader, and the placement ghost eases toward wherever the aim ray
   // lands. The first version of this bet 400ms, passed on my machine and read
   // 8,940 moving pixels on CI. So it asks the picture rather than the clock.
+  // The band the lamps are in: the street lamps' heads, the lit windows below
+  // them and the sky between. It leaves out the bottom third — the fence and
+  // the near lawn, which is the part of this shot that is never quite still —
+  // and it is a crop *toward* the claim rather than away from it, because a
+  // check about lamps has no business measuring grass.
+  const LAMPS = { x0: 0.04, x1: 0.96, y0: 0.22, y1: 0.74 };
+
   const holdStill = async (a, b) => {
     let prev = a;
     let cur = b;
@@ -376,7 +383,7 @@ export default async function (page) {
     for (let i = 0; i < 8; i++) {
       await new Promise((r) => setTimeout(r, 350));
       await page.screenshot({ path: cur });
-      const moved = brighter(prev, cur);
+      const moved = brighter(prev, cur, 8, LAMPS);
       seen.push(moved.up + moved.down);
       // Quiet enough to stop early. Not zero — a few hundred pixels of this
       // yard move on their own — and not required either: see below.
@@ -407,7 +414,18 @@ export default async function (page) {
   // is never noticed; on CI, at seven frames a second, it never stopped moving
   // and the settle loop ran out of tries. Turned off here and back on after, so
   // the rest of the scenario finds the game as it left it.
+  // Pinned, and then *waited for* — turning the governor off restores the scale
+  // it had been throttling, which resizes the buffer the whole picture is drawn
+  // into. Asserting afterwards that the scale held was checking the wrong end:
+  // the move happens at the start, and the measurement below had already been
+  // taken across it.
   await page.evaluate(() => window.__maker.setAutoQuality(false));
+  await page.waitForFunction(() => {
+    const now = window.__maker.renderScale().effective;
+    const last = window.__makerLastScale;
+    window.__makerLastScale = now;
+    return last === now;
+  }, null, { timeout: 8000, polling: 250 });
   const pinned = await page.evaluate(() => window.__maker.renderScale().effective);
 
   // And the aiming furniture out of the picture. The build ghost sits a hand's
@@ -432,7 +450,7 @@ export default async function (page) {
     `the render scale moved under the measurement: ${pinned} -> ${held}`,
   );
 
-  const glow = brighter(lit.path, dark.path);
+  const glow = brighter(lit.path, dark.path, 8, LAMPS);
   assert(
     glow.up > 4000 && glow.up > restless * 4,
     `the lamps should reach pixels — ${glow.up} of ${glow.total} got brighter against`

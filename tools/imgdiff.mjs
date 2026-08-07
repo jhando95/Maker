@@ -83,17 +83,26 @@ export function diffPixels(a, b, tolerance = 8) {
  * to be. A glow drawn with normal blending, or with a sign error, changes just
  * as many pixels — and half of them the wrong way.
  */
-export function brighter(a, b, tolerance = 8) {
+export function brighter(a, b, tolerance = 8, region = null) {
   const A = decode(a), B = decode(b);
   if (A.w !== B.w || A.h !== B.h) throw new Error('imgdiff: different sizes');
   const luma = (px, i) => 0.2126 * px[i] + 0.7152 * px[i + 1] + 0.0722 * px[i + 2];
+  // Fractional, so a caller says "the middle band" rather than doing arithmetic
+  // against a resolution it would then have to keep in step with the harness.
+  const x0 = Math.max(0, Math.floor((region?.x0 ?? 0) * A.w));
+  const x1 = Math.min(A.w, Math.ceil((region?.x1 ?? 1) * A.w));
+  const y0 = Math.max(0, Math.floor((region?.y0 ?? 0) * A.h));
+  const y1 = Math.min(A.h, Math.ceil((region?.y1 ?? 1) * A.h));
   let up = 0, down = 0;
-  for (let i = 0; i < A.px.length; i += A.ch) {
-    const d = luma(A.px, i) - luma(B.px, i);
-    if (d > tolerance) up++;
-    else if (d < -tolerance) down++;
+  for (let y = y0; y < y1; y++) {
+    for (let x = x0; x < x1; x++) {
+      const i = (y * A.w + x) * A.ch;
+      const d = luma(A.px, i) - luma(B.px, i);
+      if (d > tolerance) up++;
+      else if (d < -tolerance) down++;
+    }
   }
-  return { up, down, total: A.w * A.h };
+  return { up, down, total: Math.max(0, (x1 - x0) * (y1 - y0)) };
 }
 
 // Also usable from the shell, which is how it started.

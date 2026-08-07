@@ -127,6 +127,19 @@ and because a red check deserves an account rather than a shrug.
   "in first person" was a bet on frame time and the local player was still being
   drawn.
 
+- **And then it was the scale settling, and the crop that should have been
+  there from the start.** With the ghost hidden the check finally failed on its
+  *margin* rather than on a precondition — 16,776 lit pixels against 4,812
+  moving on their own, needing four times that. Two things were wrong. Turning
+  adaptive quality off *restores* the scale it had been throttling, which
+  resizes the buffer the whole picture is drawn into: the assertion that the
+  scale had held ran after the measurement, checking the wrong end of a move
+  that happens at the start. It waits for two consecutive readings to agree
+  before shooting now. And the comparison measured the whole frame for a claim
+  about lamps — it is cropped to the band the lamps and the lit windows are in,
+  which leaves out the near fence and lawn, the part of that shot that is never
+  quite still. A crop *toward* the claim rather than away from it: a check about
+  lamps has no business measuring grass.
 - **And then it was the build ghost, and the real mistake was the shape of the
   check.** Pinning the render scale did not fix it either; the third failure
   printed the sequence — `3232, 2610, 8548, 2485, 2721, 2334, 8649, …` — which
