@@ -56,6 +56,7 @@ import {
   type RtcSignal,
 } from './protocol.ts';
 import { SignalBudget } from '../voice/voiceRules.ts';
+import { clampAppearance, type Appearance } from '../game/appearance.ts';
 import { MAX_BLUEPRINT_PARTS } from '../build/blueprint.ts';
 import { IDLE_INPUT, type ActorInput, type GameMode } from '../game/gameMode.ts';
 import type { ProjectileSystem } from '../game/projectiles.ts';
@@ -188,6 +189,21 @@ export interface SessionContext {
    * ever shown to anybody; it goes to a peer connection or nowhere.
    */
   signalled?(from: number, signal: RtcSignal): void;
+  /**
+   * Somebody is wearing this.
+   *
+   * Separate from `heard` because an outfit is not an event — it is a fact that
+   * stays true, and something that arrives once and holds does not belong on
+   * the channel carrying things which appear for four seconds and go.
+   */
+  /**
+   * Somebody is wearing this, or has left and is wearing nothing.
+   *
+   * Null means "forget them" rather than "put them in the default", which is a
+   * distinction the renderer already draws: an id with no chosen appearance
+   * falls back to the seeded one, and that is what a departed peer should cost.
+   */
+  wearing?(id: number, appearance: Appearance | null): void;
 }
 
 /** Something to show the person at this keyboard. */
@@ -384,6 +400,19 @@ export class NetHost {
       // everybody built before they arrived, or they are playing a different map.
       parts: this.ctx.build.serializeWithIds(),
     });
+
+    // What everybody already here is wearing.
+    //
+    // Sent to the newcomer only, and this is the half that is easy to forget:
+    // the other half — telling everybody what the newcomer wears — happens when
+    // their own `wear` arrives, which it will, because a client sends one the
+    // moment it is welcomed. Without this, a locker works perfectly for whoever
+    // hosted and everybody who joined after you is a stranger in default
+    // clothes, which is a bug you only see with three people in the yard.
+    for (const [wornBy, appearance] of this.worn) {
+      transport.send({ t: 'wearing', id: wornBy, a: appearance });
+    }
+
     this.message = `${first.name} joined`;
   }
 
@@ -470,6 +499,15 @@ export class NetHost {
       case 'signal': {
         if (!this.signalBudget.allow(peer.id)) return;
         this.relaySignal(peer.id, message.to, message.s);
+        break;
+      }
+      case 'wear': {
+        // Rate-limited on the chat budget rather than a new one. An outfit
+        // changes when somebody closes a menu, which is exactly the cadence a
+        // chat line arrives at, and one limiter that covers both is one thing
+        // to reason about instead of two.
+        if (!this.sayLimit.allow(peer.id)) return;
+        this.dressPeer(peer.id, message.a);
         break;
       }
       default:
@@ -650,6 +688,14 @@ export class NetHost {
    * in bursts. See `SignalBudget`; the shape of the traffic is the reason.
    */
   private readonly signalBudget = new SignalBudget();
+  /**
+   * What everybody is wearing, including the host.
+   *
+   * Kept because a late arrival cannot derive it — that is the property a
+   * locker gives up — so somebody has to remember it, and the host is the only
+   * one who sees every join.
+   */
+  private readonly worn = new Map<number, Appearance>();
   private hostName = 'the host';
 
   /**
@@ -796,6 +842,27 @@ export class NetHost {
     this.relayEmoted(me, k);
   }
 
+  /**
+   * Put somebody in something and tell everybody, host included.
+   *
+   * Clamped here rather than trusted, because a client is the one thing on the
+   * far side of this that nobody controls, and the limits exist precisely so
+   * that what one player chooses cannot change the game for everybody else.
+   * A head twice the size is a bigger target and is visible over the wall its
+   * owner is hiding behind.
+   */
+  private dressPeer(id: number, appearance: Appearance): void {
+    const safe = clampAppearance(appearance);
+    this.worn.set(id, safe);
+    this.broadcast({ t: 'wearing', id, a: safe });
+    this.ctx.wearing?.(id, safe);
+  }
+
+  /** The host's own outfit, which travels by exactly the same path. */
+  wear(appearance: Appearance): void {
+    this.dressPeer(this.ctx.actors.local.id, appearance);
+  }
+
   private broadcast(message: HostMessage): void {
     for (const peer of this.peers.values()) peer.transport.send(message);
   }
@@ -807,6 +874,7 @@ export class NetHost {
     this.headings.delete(id);
     this.signalBudget.forget(id);
     this.ctx.actors.removeRemote(id);
+    this.worn.delete(id);
     this.broadcast({ t: 'bye', id });
     this.message = 'somebody left';
   }
@@ -1076,6 +1144,14 @@ export class NetClient {
         this.ctx.signalled?.(message.from, message.s);
         break;
 
+      case 'wearing':
+        // Clamped again on arrival, even though the host clamped it before
+        // sending. The host is another browser: it is the authority on the
+        // simulation and it is not thereby a trusted source of bounded numbers,
+        // and this is the cheapest possible place to say so.
+        this.ctx.wearing?.(message.id, clampAppearance(message.a));
+        break;
+
       case 'bye':
         this.forget(message.id);
         break;
@@ -1090,6 +1166,11 @@ export class NetClient {
     this.samples.delete(id);
     this.headings.delete(id);
     this.wetness.delete(id);
+    // Including what they were wearing. Ids are not reused inside one session,
+    // so this cannot currently show up — but every other per-peer thing above
+    // is dropped here, and a wardrobe entry that outlives its owner is exactly
+    // the shape of ghost this list exists to prevent.
+    this.ctx.wearing?.(id, null);
     this.ctx.actors.removeRemote(id);
   }
 
@@ -1253,6 +1334,11 @@ export class NetClient {
    * was refused would have to un-draw a staircase, and the frame where it
    * existed is the frame somebody screenshots.
    */
+  /** Tell the host what I look like. */
+  wear(appearance: Appearance): void {
+    this.transport.send({ t: 'wear', a: clampAppearance(appearance) });
+  }
+
   stampBlueprint(records: readonly PlacementRecord[]): void {
     this.transport.send({ t: 'stamp', rs: records.map((r) => ({ ...r })) });
   }

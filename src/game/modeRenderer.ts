@@ -12,7 +12,7 @@ import { chamferedBox } from '../render/geometry.ts';
 import { MAX_BALLOONS, BALLOON_RADIUS } from './projectiles.ts';
 import type { ProjectileSystem } from './projectiles.ts';
 import type { GameMode, Marker } from './gameMode.ts';
-import { CharacterBatch, type CharacterPose } from '../render/character.ts';
+import { CharacterBatch, lookFor, type CharacterPose } from '../render/character.ts';
 import { shirtColor } from './shirts.ts';
 import type { Actor } from './actor.ts';
 
@@ -546,7 +546,22 @@ export class ModeRenderer {
       pose.speed = Math.hypot(body.vx ?? 0, body.vz ?? 0);
       pose.onGround = body.onGround !== false;
       pose.stunned = who.stunned === true;
-      shirtColor(this.shirt, who.team, mode?.wetnessOf?.(who.id) ?? 0, pose.stunned);
+      // Your shirt is yours until a round starts, and then it is your team's.
+      //
+      // The two team palettes are what make a fight legible — `shirts.ts` says
+      // it outright, and the moment allies existed one palette meant every kid
+      // on the lawn looked identical and the flag game became guesswork. A
+      // locker cannot be allowed to take that away, because the cost is paid by
+      // everybody else in the round rather than by the person who chose it.
+      //
+      // So the choice shows where there is nothing to confuse it with: free
+      // build, and the yard you are standing in while you pick it. Everything
+      // else somebody chose — face, hair, trousers, shoes, shaping, the marks —
+      // travels into the round untouched.
+      const own = mode === null ? lookFor(who.id).shirt : null;
+      shirtColor(
+        this.shirt, who.team, mode?.wetnessOf?.(who.id) ?? 0, pose.stunned, own,
+      );
 
       // A full batch is a real answer rather than an error: a mode may spawn
       // more than the pool holds, and drawing as many as fit beats growing a

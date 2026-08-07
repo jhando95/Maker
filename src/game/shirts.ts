@@ -59,11 +59,19 @@ const STUNNED_AMOUNT = 0.72;
  */
 export function shirtColor(
   out: THREE.Color, team: Team, wetness = 0, stunned = false,
+  own: THREE.Color | null = null,
 ): THREE.Color {
   const shirt = SHIRTS[team];
-  out.copy(shirt.dry);
+  // `own` is what somebody picked in the locker, and it is only ever passed
+  // where no side is being told from another — free build, and the yard you
+  // stand in while choosing. It still soaks and still washes out when you are
+  // out of it, because those two cues are about the round rather than about the
+  // shirt, and a chosen colour that ignored them would be a player who cannot
+  // be read at all.
+  out.copy(own ?? shirt.dry);
   // Darkens as it soaks, which is how the player reads who is nearly finished
-  // and picks a target.
+  // and picks a target. Toward the team's own soaked tone even for a chosen
+  // colour: what the cue has to say is "nearly finished", not "which violet".
   out.lerp(shirt.soaked, wetBlend(wetness));
   if (stunned) out.lerp(STUNNED_WASH, STUNNED_AMOUNT);
   return out;

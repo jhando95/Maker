@@ -230,6 +230,12 @@ jobs:
       - name: Voice scenario
         run: node tools/shoot.mjs --scenario scenarios/voice.mjs --auto-quality --out /tmp/ci-voice.png
 
+      # The locker, whose preview *is* the game: the character behind the card is
+      # the real one, so "did the picture change" and "did the player change" are
+      # the same question and only a browser can answer either.
+      - name: Locker scenario
+        run: node tools/shoot.mjs --scenario scenarios/locker.mjs --auto-quality --out /tmp/ci-locker.png
+
       # The whole of the lobby, end to end against a real server: two browser
       # contexts, two friend codes, a party, a queue, and a round running in the
       # room it was matched into. It is also the only thing that exercises the
@@ -301,6 +307,7 @@ jobs:
             /tmp/ci-comms.png
             /tmp/ci-voice.png
             /tmp/ci-blueprint.png
+            /tmp/ci-locker.png
             /tmp/ci-lobby-friends.png
           if-no-files-found: ignore
 

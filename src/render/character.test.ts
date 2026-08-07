@@ -24,7 +24,7 @@ describe('how a kid looks', () => {
   it('gives different people different heads', () => {
     const looks = Array.from({ length: 24 }, (_, i) => lookFor(i));
     const signatures = new Set(
-      looks.map((l) => `${l.skin.getHexString()}/${l.hair.getHexString()}/${l.hairScaleY.toFixed(2)}`),
+      looks.map((l) => `${l.skin.getHexString()}/${l.hair.getHexString()}/${l.style.name}`),
     );
     // Not all 24 — a palette repeats — but a lawn full of people must not be a
     // lawn full of one person.
@@ -107,8 +107,11 @@ describe('the character rig', () => {
       (c): c is THREE.InstancedMesh => (c as THREE.InstancedMesh).isInstancedMesh === true,
     );
     const shells = meshes.filter((m) => m.material instanceof THREE.ShaderMaterial);
-    // Torso, head, hair, two arms, two legs, two shoes.
-    expect(shells.length).toBe(9);
+    // Torso, head, hair, the bunch, two arms, two legs, two shoes. The bunch is
+    // the only face-or-hair part that carries ink, and it earns it by being on
+    // the silhouette — a shape on the silhouette without ink is the one thing
+    // this world does not contain.
+    expect(shells.length).toBe(10);
     for (const shell of shells) {
       expect(shell.material).toHaveProperty('uniforms');
       expect((shell.material as THREE.ShaderMaterial).side).toBe(THREE.BackSide);

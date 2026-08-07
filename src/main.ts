@@ -29,7 +29,9 @@ import { BUTTON, commandToIntent, makeCommand } from './core/command.ts';
 
 import { ProjectileSystem } from './game/projectiles.ts';
 import { ModeRenderer } from './game/modeRenderer.ts';
-import { CharacterBatch } from './render/character.ts';
+import { CharacterBatch, dress, undressAll, wearing } from './render/character.ts';
+import { LockerStore, MAX_PRESETS } from './app/lockerStore.ts';
+import { clampAppearance, defaultAppearance, type Appearance } from './game/appearance.ts';
 import { NetHost, NetClient, type SessionContext } from './net/session.ts';
 import { SocketTransport, loopbackPair, type Transport } from './net/transport.ts';
 import { RelayHostLink, relayUrl } from './net/relayLink.ts';
@@ -362,7 +364,10 @@ const localActor: Actor = {
    * set it and the frame that draws it.
    */
   get heading(): number {
-    return camera.yaw;
+    // Pinned in the locker, so the player faces the camera that is otherwise
+    // always behind them — and so that turning shows a different side rather
+    // than the same one from a different place. See `setLockerView`.
+    return lockerFacing ?? camera.yaw;
   },
 };
 const actors = new ActorRoster(localActor);
@@ -628,7 +633,93 @@ const sessionContext: SessionContext = {
   setRound: (round) => adoptRound(round),
   heard: (event) => receive(event),
   signalled: (from, signal) => void voice.receive(from, signal),
+  wearing: (id, appearance) => dress(id, appearance),
 };
+
+/**
+ * What this player looks like, and getting everyone else to agree.
+ *
+ * Null means "I have never opened the locker", which is not the same as any
+ * particular outfit: a player who has chosen nothing should look like the
+ * seeded kid their id produces, and that varies. Handing out a fixed default
+ * here would make every first-time player identical.
+ *
+ * `applyLook` has to be called at three moments and not only when the locker
+ * closes, because the local id is not a constant — it is 0 alone and whatever
+ * the host assigned in somebody else's yard. So: when the outfit changes, when
+ * a session is joined, and when one is left.
+ */
+const locker = new LockerStore();
+let myAppearance: Appearance | null = locker.worn();
+
+function applyLook(): void {
+  dress(actors.local.id, myAppearance);
+  // The wire only when there is one. `wear` on a client sends; on a host it
+  // broadcasts and remembers, so a guest who joins later is told.
+  net?.wear(myAppearance ?? wearing(actors.local.id));
+}
+
+function wearAppearance(appearance: Appearance | null): void {
+  myAppearance = appearance === null ? null : locker.wear(appearance);
+  applyLook();
+}
+
+/**
+ * The locker's view of the player.
+ *
+ * The preview is the real character standing in the real yard, drawn by the
+ * same rig in the same light, so all this has to do is put the camera in front
+ * of them. Third person already stands behind and looks at the player, and the
+ * local actor's drawn facing is normally the camera's own yaw — so pinning that
+ * facing to a fixed angle is the whole of it.
+ *
+ * **The facing is pinned, not offset**, and that distinction is the difference
+ * between a turntable and a thing that cannot be turned at all. Carried as an
+ * offset from the camera, the character rotates *with* the camera and always
+ * presents the same side: the first version orbited beautifully and the back
+ * was unreachable, which for a screen with paint on the back is most of the
+ * point missing.
+ */
+let lockerFacing: number | null = null;
+
+/**
+ * Where there is room to be looked at.
+ *
+ * The locker is opened from the pause screen as often as from the title, and
+ * where somebody was standing when they paused is very often inside the thing
+ * they were building. The boom collides, so it does not end up inside a wall —
+ * it ends up a foot from the player's nose instead, which is a preview of a
+ * chin. Eight rays and the roomiest one costs nothing and happens once.
+ */
+function clearestYaw(): number {
+  const state = player.sample(1);
+  const eyeY = state.y + state.eyeHeight;
+  let best = camera.yaw;
+  let bestRoom = -1;
+  for (let i = 0; i < 8; i++) {
+    const yaw = (i / 8) * Math.PI * 2;
+    // The boom leaves the eye backwards along the facing and a little upward.
+    const dx = Math.sin(yaw);
+    const dz = Math.cos(yaw);
+    const len = Math.hypot(dx, 0.16, dz);
+    const hit = world.raycast(
+      state.x, eyeY, state.z, dx / len, 0.16 / len, dz / len, 5,
+    );
+    const room = hit === null ? 5 : hit.distance;
+    if (room > bestRoom) {
+      bestRoom = room;
+      best = yaw;
+    }
+  }
+  return best;
+}
+
+function setLockerView(active: boolean): void {
+  if (active) camera.yaw = clearestYaw();
+  // Pinned to face whatever the camera ended up behind.
+  lockerFacing = active ? camera.yaw + Math.PI : null;
+  camera.frame(active);
+}
 
 /**
  * Where everybody's voice comes from, and what is in the way.
@@ -1025,6 +1116,9 @@ function startHostingHeadless(): NetHost {
   const host = new NetHost(sessionContext);
   net = host;
   netMessage = 'hosting';
+  // Tell the session what the host is wearing, so a guest is told at the
+  // handshake rather than never — nobody sends a `wear` on the host's behalf.
+  applyLook();
   applyPause();
   return host;
 }
@@ -1047,6 +1141,10 @@ function leaveSession(): void {
   // everyone who was in it standing on the lawn forever.
   actors.identifyLocal(LOCAL_ACTOR_ID);
   actors.refresh(mode?.bots ?? []);
+  // The local id just moved back to 0, and an outfit is worn by an id. Without
+  // this, leaving somebody else's yard leaves you dressed as whoever id 0 is.
+  undressAll();
+  applyLook();
   // Alone again, so a menu means what it used to mean.
   applyPause();
 }
@@ -1226,6 +1324,41 @@ const menu = new Menu(app, settings, {
     input.resetBindings();
     clearBindings();
   },
+
+  // ── The locker ─────────────────────────────────────────────────────────────
+  //
+  // The screen edits a copy and hands it back whole on every change; nothing
+  // here holds a half-built appearance. That is what lets the preview be the
+  // real character rather than a model of one — there is only ever one answer
+  // to "what is this player wearing", and it is the one on the lawn.
+  locker: () => ({
+    // The starting point when nobody has chosen is the seeded kid this player's
+    // id produces, so opening the locker begins from the person they have been
+    // looking at rather than from a blank mannequin.
+    appearance: myAppearance ?? wearing(actors.local.id),
+    presets: locker.list().map((p) => ({ name: p.name })),
+    full: locker.count >= MAX_PRESETS,
+  }),
+  onLockerChange: (appearance) => wearAppearance(clampAppearance(appearance)),
+  onLockerView: (active) => setLockerView(active),
+  onLockerTurn: (delta) => { lockerFacing = (lockerFacing ?? 0) + delta; },
+  // Somewhere to start from, for anybody who does not want to make forty
+  // decisions. Drawn from the same generator that dresses every bot, seeded off
+  // the clock rather than an id — this is the one place in the game where a
+  // different answer every time is the point.
+  onLockerRandom: () => wearAppearance(defaultAppearance(Math.floor(Math.random() * 1e6))),
+  onLockerReset: () => {
+    locker.undress();
+    wearAppearance(null);
+  },
+  onLockerSave: (name) => locker.keep(name, myAppearance ?? wearing(actors.local.id)),
+  onLockerWear: (name) => {
+    const preset = locker.get(name);
+    if (preset === null) return false;
+    wearAppearance(preset);
+    return true;
+  },
+  onLockerDelete: (name) => locker.remove(name),
 });
 
 function enterPlay(): void {

@@ -35,11 +35,12 @@
 
 import type { PackedCommand } from '../core/command.ts';
 import type { PlacementRecord } from '../build/buildSystem.ts';
+import type { Appearance } from '../game/appearance.ts';
 import type { EmoteKind, PingKind } from '../game/comms.ts';
 import type { Team } from '../game/actor.ts';
 
 /** Bumped whenever a message shape changes. Mismatched peers are turned away. */
-export const PROTOCOL_VERSION = 5;
+export const PROTOCOL_VERSION = 6;
 
 /**
  * One step of a WebRTC handshake, on its way between two players.
@@ -240,7 +241,21 @@ export type ClientMessage =
    * whole yard as somebody else and negotiate a call in their name — the same
    * rule, and the same reason, as a client not naming its own chat recipients.
    */
-  | { t: 'signal'; to: number; s: RtcSignal };
+  | { t: 'signal'; to: number; s: RtcSignal }
+  /**
+   * What I look like.
+   *
+   * Sent whole rather than as a diff, and re-sent whenever it changes, because
+   * it is two hundred bytes and happens when somebody closes a menu. The host
+   * clamps it — `clampAppearance` is the only door into the type — so a client
+   * that asks for a head four times the size gets the largest head the locker
+   * allows, which is the same one everybody else can have.
+   *
+   * There is no `from` on it, for the same reason chat and voice have none: the
+   * host stamps the sender from the connection it arrived on, so nobody can
+   * dress somebody else.
+   */
+  | { t: 'wear'; a: Appearance };
 
 /** Everything a host can say. */
 export type HostMessage =
@@ -324,6 +339,17 @@ export type HostMessage =
    * Neither end gets to assert both.
    */
   | { t: 'signalled'; from: number; s: RtcSignal }
+  /**
+   * What somebody looks like.
+   *
+   * Broadcast rather than addressed, unlike chat: an outfit is not private and
+   * everybody has to draw everybody. Sent on join in both directions — the
+   * newcomer is told about the people already here, and they are told about the
+   * newcomer — because appearance is the one piece of presentation that a late
+   * arrival cannot derive for themselves. That is the whole cost of a locker:
+   * it gives up the property that an actor id was enough.
+   */
+  | { t: 'wearing'; id: number; a: Appearance }
   | { t: 'bye'; id: number };
 
 export type NetMessage = ClientMessage | HostMessage;

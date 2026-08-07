@@ -46,6 +46,15 @@ npm run dev      # http://localhost:5173
 | `Esc` | pause |
 | `` ` `` | debug overlay |
 
+**Settings → Locker** is where you decide what you look like: skin, eyes, brows
+and mouth, eight haircuts in twelve colours, shirt, trousers and shoes, head
+size and build on sliders that stay inside the model, and a mark painted on your
+chest, back or either sleeve. You are the preview — the kid standing on the lawn
+behind the card is the real one, and everything is worn the moment you pick it.
+Keep up to twelve outfits and put one back on in a click. In a game with teams
+you wear your team's shirt so everybody can tell who is who; the rest is yours
+all round.
+
 **Every control has two keys and both are yours.** Settings → Controls lists all
 thirty-seven of them in six groups; click either key to change it, `Backspace`
 to leave a control on one key, `Esc` to back out. Binding a key something else

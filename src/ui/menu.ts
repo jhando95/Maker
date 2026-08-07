@@ -15,10 +15,15 @@ import { formatCode, MAX_NAME } from '../app/identity.ts';
 import type { BuildSlot } from '../app/buildStore.ts';
 import { installTheme } from './theme.ts';
 import { describeKey } from '../core/input.ts';
+import {
+  BROWS, CLOTH_COLOURS, EYE_COLOURS, HAIR_COLOURS, HAIR_STYLES, MARK_SHAPES,
+  MARK_SLOTS, MOUTHS, SKIN_TONES, blankMark,
+  type Appearance, type Mark, type MarkSlot,
+} from '../game/appearance.ts';
 
 export type Screen =
   | 'none' | 'title' | 'settings' | 'builds' | 'pause' | 'result' | 'controls' | 'lobby'
-  | 'together';
+  | 'together' | 'locker';
 
 const STYLE = `
 .mk-menu {
@@ -260,6 +265,61 @@ const STYLE = `
   color: var(--ink); opacity: 0.7;
 }
 .mk-hint.said { opacity: 1; font-weight: 700; }
+
+/*
+ * The locker gets out of its own way.
+ *
+ * The preview is not a scene rendered into a panel — it is the player, standing
+ * in the yard behind the menu, drawn by the same rig as everybody else. That is
+ * worth more than any inset viewport could be: what you are looking at is
+ * literally what other people will see, in the light they will see it in. It
+ * only needs the card to move aside and the dimming to lift.
+ */
+.mk-menu.mk-locker {
+  justify-content: flex-start; padding-left: 4vw;
+  background: linear-gradient(90deg, rgba(20,16,14,0.62) 0%, rgba(20,16,14,0.36) 42%, rgba(20,16,14,0) 62%);
+}
+.mk-menu.mk-locker .mk-card { width: min(430px, 44vw); max-height: 88vh; }
+
+.mk-tabs { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 12px; }
+.mk-tabs button {
+  flex: 1 1 auto; padding: 7px 10px;
+  font: inherit; font-size: 12.5px; font-weight: 800;
+  border: 2px solid var(--ink); border-radius: 8px; cursor: pointer;
+  background: #e6d3ae; color: var(--ink);
+}
+.mk-tabs button.on { background: var(--ink); color: #f3e6c8; }
+
+.mk-swatches { display: flex; flex-wrap: wrap; gap: 7px; margin: 2px 0 12px; }
+.mk-swatches button {
+  width: 30px; height: 30px; padding: 0; cursor: pointer;
+  border: 2px solid var(--ink); border-radius: 8px;
+}
+.mk-swatches button.on { outline: 3px solid #f4a259; outline-offset: 2px; }
+
+.mk-chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 2px 0 12px; }
+.mk-chips button {
+  padding: 6px 11px; font: inherit; font-size: 12.5px; font-weight: 700;
+  border: 2px solid var(--ink); border-radius: 999px; cursor: pointer;
+  background: #e6d3ae; color: var(--ink);
+}
+.mk-chips button.on { background: var(--ink); color: #f3e6c8; }
+
+.mk-label {
+  margin: 10px 0 3px; font-size: 12px; font-weight: 800;
+  letter-spacing: 0.07em; text-transform: uppercase; opacity: 0.66;
+}
+.mk-preset {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 0; border-bottom: 2px solid rgba(43,32,28,0.12);
+}
+.mk-preset .who { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; font-weight: 700; }
+.mk-preset button {
+  padding: 5px 10px; font: inherit; font-size: 12px; font-weight: 700;
+  border: 2px solid var(--ink); border-radius: 8px; cursor: pointer;
+  background: #e6d3ae; color: var(--ink);
+}
 .mk-bind button.listening { background: #f4a259; color: #3a2c2a; }
 .mk-name-input {
   width: 100%; box-sizing: border-box; margin-bottom: 10px;
@@ -281,8 +341,37 @@ export interface BindingGroup {
   rows: ReadonlyArray<BindingRow>;
 }
 
+/** The locker, as the screen needs to see it. */
+export interface LockerView {
+  /** What is being edited. Already clamped; the screen never has to check. */
+  appearance: Appearance;
+  presets: ReadonlyArray<{ name: string }>;
+  /** Full, so the Save button can say so rather than silently doing nothing. */
+  full: boolean;
+}
+
 export interface MenuCallbacks {
   listBindings(): BindingGroup[];
+  /**
+   * The locker.
+   *
+   * A getter rather than state the menu holds, for the same reason the lobby is
+   * one: what somebody is wearing lives in the game, is applied the instant it
+   * changes, and a copy in the screen would be a second thing to keep in step.
+   */
+  locker(): LockerView;
+  /** Wear this now. Every control calls it on every change — see `renderLocker`. */
+  onLockerChange(appearance: Appearance): void;
+  /** Frame the player, or put the camera back. */
+  onLockerView(active: boolean): void;
+  /** Turn on the spot, in radians. */
+  onLockerTurn(delta: number): void;
+  onLockerRandom(): void;
+  /** Back to the look an actor id produces — the "I have not chosen" state. */
+  onLockerReset(): void;
+  onLockerSave(name: string): boolean;
+  onLockerWear(name: string): boolean;
+  onLockerDelete(name: string): boolean;
   /**
    * Put `code` in one of `action`'s slots.
    *
@@ -426,9 +515,14 @@ export class Menu {
   }
 
   show(screen: Screen, result?: ResultInfo): void {
+    const wasLocker = this.screen === 'locker';
     this.screen = screen;
     if (result !== undefined) this.result = result;
     this.root.classList.toggle('mk-off', screen === 'none');
+    this.root.classList.toggle('mk-locker', screen === 'locker');
+    // The preview is the player standing in the yard behind this card, so
+    // opening and closing the locker is a camera move rather than a scene.
+    if ((screen === 'locker') !== wasLocker) this.callbacks.onLockerView(screen === 'locker');
     if (screen === 'none') {
       this.card.innerHTML = '';
       return;
@@ -448,6 +542,7 @@ export class Menu {
       case 'controls':
         this.show('settings');
         break;
+      case 'locker':
       case 'settings':
       case 'builds':
         this.show(this.returnTo);
@@ -469,6 +564,7 @@ export class Menu {
       case 'pause': this.renderPause(); break;
       case 'result': this.renderResult(); break;
       case 'controls': this.renderControls(); break;
+      case 'locker': this.renderLocker(); break;
       case 'none': break;
     }
   }
@@ -489,14 +585,17 @@ export class Menu {
    * before, which meant editing the address and then opening any other screen
    * silently put it back to the default.
    */
+  private readonly presetName = Menu.field('', 'outfit name', 'mk-name-input', 'Name this outfit');
   private readonly relay = Menu.field('ws://localhost:8787', 'relay address');
   private readonly room = Menu.field('yard', 'room name', 'mk-input-short');
 
-  private static field(value: string, label: string, extra = ''): HTMLInputElement {
+  private static field(
+    value: string, label: string, extra = '', placeholder = value,
+  ): HTMLInputElement {
     const el = document.createElement('input');
     el.type = 'text';
     el.className = `mk-input ${extra}`.trim();
-    el.placeholder = value;
+    el.placeholder = placeholder;
     el.value = value;
     el.setAttribute('aria-label', label);
     return el;
@@ -585,6 +684,7 @@ export class Menu {
     this.card.appendChild(row);
     for (const [label, go] of [
       ['Free Build', () => this.callbacks.onPlaySandbox()],
+      ['Locker', () => { this.returnTo = 'title'; this.show('locker'); }],
       ['Saved Builds', () => { this.returnTo = 'title'; this.show('builds'); }],
       ['Settings', () => { this.returnTo = 'title'; this.show('settings'); }],
     ] as Array<[string, () => void]>) {
@@ -905,6 +1005,10 @@ export class Menu {
       this.returnTo = 'pause';
       this.show('settings');
     }, 'mk-secondary');
+    this.button('Locker', () => {
+      this.returnTo = 'pause';
+      this.show('locker');
+    }, 'mk-secondary');
     this.button('Saved Builds', () => {
       this.returnTo = 'pause';
       this.show('builds');
@@ -1089,6 +1193,257 @@ export class Menu {
       this.callbacks.resetBindings();
       this.render();
     }, 'mk-secondary');
+  }
+
+  // ── The locker ──────────────────────────────────────────────────────────────
+
+  /** Which tab is open. Kept across renders, because every control re-renders. */
+  private lockerTab = 0;
+  /** Which mark is being painted. */
+  private lockerSlot: MarkSlot = 'chest';
+
+  /**
+   * Everything you can choose about yourself.
+   *
+   * Every control applies **immediately** rather than on an OK button, and that
+   * is the design rather than a shortcut: the preview is the player standing in
+   * the yard behind this card, drawn by the same rig, in the same light, at the
+   * distance other people will see them from. A change you have to confirm
+   * before you can see it is a change you are guessing at.
+   *
+   * The whole screen re-renders on every change, which for forty-odd small
+   * elements is nothing and removes the entire class of bug where a control
+   * shows one thing and the character wears another.
+   */
+  private renderLocker(): void {
+    const view = this.callbacks.locker();
+    const a = view.appearance;
+    const edit = (change: Partial<Appearance>): void => {
+      this.callbacks.onLockerChange({ ...a, ...change });
+      this.render();
+    };
+
+    this.heading('Locker');
+
+    const hint = document.createElement('p');
+    hint.className = 'mk-hint';
+    hint.textContent = 'That is you, out on the lawn. Everything here is worn the moment you pick it.';
+    this.card.appendChild(hint);
+
+    // Turning on the spot, because half of an outfit is on the back and this is
+    // the only screen where anybody will ever look at it.
+    const spin = document.createElement('div');
+    spin.className = 'mk-chips';
+    for (const [label, delta] of [['↶ Turn', -0.6], ['Turn ↷', 0.6]] as const) {
+      const b = document.createElement('button');
+      b.textContent = label;
+      b.addEventListener('click', (e) => { e.stopPropagation(); this.callbacks.onLockerTurn(delta); });
+      spin.appendChild(b);
+    }
+    this.card.appendChild(spin);
+
+    const tabs = ['Face', 'Hair', 'Clothes', 'Shape', 'Paint', 'Outfits'];
+    const bar = document.createElement('div');
+    bar.className = 'mk-tabs';
+    tabs.forEach((name, i) => {
+      const b = document.createElement('button');
+      b.textContent = name;
+      if (i === this.lockerTab) b.classList.add('on');
+      b.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this.lockerTab = i;
+        this.render();
+      });
+      bar.appendChild(b);
+    });
+    this.card.appendChild(bar);
+
+    switch (tabs[this.lockerTab]) {
+      case 'Face':
+        this.swatches('Skin', SKIN_TONES, a.skin, (i) => edit({ skin: i }));
+        this.swatches('Eyes', EYE_COLOURS, a.eyes, (i) => edit({ eyes: i }));
+        this.chips('Brows', BROWS.map((b) => b.name), a.brows, (i) => edit({ brows: i }));
+        this.chips('Mouth', MOUTHS.map((m) => m.name), a.mouth, (i) => edit({ mouth: i }));
+        break;
+
+      case 'Hair':
+        this.chips('Style', HAIR_STYLES.map((h) => h.name), a.hairStyle,
+          (i) => edit({ hairStyle: i }));
+        this.swatches('Colour', HAIR_COLOURS, a.hair, (i) => edit({ hair: i }));
+        break;
+
+      case 'Clothes': {
+        this.swatches('Shirt', CLOTH_COLOURS, a.shirt, (i) => edit({ shirt: i }));
+        this.swatches('Trousers', CLOTH_COLOURS, a.trousers, (i) => edit({ trousers: i }));
+        this.swatches('Shoes', CLOTH_COLOURS, a.shoes, (i) => edit({ shoes: i }));
+        // The one honest thing to say about a shirt in a game with sides.
+        const note = document.createElement('p');
+        note.className = 'mk-hint';
+        note.textContent = 'In a game with teams you wear your team\u2019s shirt instead, so'
+          + ' everybody can tell who is who. The rest of this is yours all round.';
+        this.card.appendChild(note);
+        break;
+      }
+
+      case 'Shape': {
+        this.range('Head size', a.headSize, (v) => edit({ headSize: v }));
+        this.range('Build', a.build, (v) => edit({ build: v }));
+        // Said out loud, because somebody looking for a height slider deserves
+        // to know it is missing on purpose rather than not built yet.
+        const note = document.createElement('p');
+        note.className = 'mk-hint';
+        note.textContent = 'Both slide inside a fixed range, and there is no height:'
+          + ' everybody has to be the same size to be hit, hidden and climbed over'
+          + ' by the same rules.';
+        this.card.appendChild(note);
+        break;
+      }
+
+      case 'Paint': {
+        this.chips(
+          'Where', ['Chest', 'Back', 'Left arm', 'Right arm'],
+          MARK_SLOTS.indexOf(this.lockerSlot),
+          (i) => { this.lockerSlot = MARK_SLOTS[i]!; this.render(); },
+        );
+        const mark = a.marks[this.lockerSlot];
+        const setMark = (change: Partial<Mark>): void => {
+          edit({ marks: { ...a.marks, [this.lockerSlot]: { ...mark, ...change } } });
+        };
+        this.chips(
+          'Shape',
+          MARK_SHAPES.map((m) => (m === 'none' ? 'None' : m[0]!.toUpperCase() + m.slice(1))),
+          mark.shape, (i) => setMark({ shape: i }),
+        );
+        if (mark.shape !== 0) {
+          this.swatches('Colour', CLOTH_COLOURS, mark.colour, (i) => setMark({ colour: i }));
+          this.range('Size', mark.size, (v) => setMark({ size: v }));
+          this.range('Angle', mark.turn, (v) => setMark({ turn: v }));
+        }
+        this.button('Clear this one', () => {
+          edit({ marks: { ...a.marks, [this.lockerSlot]: blankMark() } });
+        }, 'mk-secondary');
+        break;
+      }
+
+      case 'Outfits': {
+        // One field, held across renders, because every control on this screen
+        // re-renders the card and a fresh input would lose what was typed.
+        this.card.appendChild(this.presetName);
+        this.button(view.full ? 'Locker full' : 'Save outfit', () => {
+          if (this.callbacks.onLockerSave(this.presetName.value)) {
+            this.presetName.value = '';
+            this.render();
+          }
+        });
+        if (view.presets.length === 0) {
+          const empty = document.createElement('p');
+          empty.className = 'mk-hint';
+          empty.textContent = 'Nothing saved yet. Keep an outfit here and you can put it'
+            + ' back on in one click.';
+          this.card.appendChild(empty);
+        }
+        for (const preset of view.presets) {
+          const row = document.createElement('div');
+          row.className = 'mk-preset';
+          const who = document.createElement('span');
+          who.className = 'who';
+          who.textContent = preset.name;
+          row.appendChild(who);
+          for (const [label, act] of [
+            ['Wear', () => this.callbacks.onLockerWear(preset.name)],
+            ['Delete', () => this.callbacks.onLockerDelete(preset.name)],
+          ] as Array<[string, () => boolean]>) {
+            const b = document.createElement('button');
+            b.textContent = label;
+            b.addEventListener('click', (e) => { e.stopPropagation(); act(); this.render(); });
+            row.appendChild(b);
+          }
+          this.card.appendChild(row);
+        }
+        break;
+      }
+
+      default:
+        break;
+    }
+
+    const spacer = document.createElement('div');
+    spacer.style.height = '10px';
+    this.card.appendChild(spacer);
+
+    this.button('Surprise me', () => { this.callbacks.onLockerRandom(); this.render(); }, 'mk-secondary');
+    this.button('Start over', () => { this.callbacks.onLockerReset(); this.render(); }, 'mk-secondary');
+    this.button('Done', () => this.show(this.returnTo));
+  }
+
+  /** A row of colour chips, one of them ringed. */
+  private swatches(
+    label: string, colours: readonly number[], selected: number, pick: (i: number) => void,
+  ): void {
+    this.label(label);
+    const row = document.createElement('div');
+    row.className = 'mk-swatches';
+    colours.forEach((hex, i) => {
+      const b = document.createElement('button');
+      b.style.background = `#${hex.toString(16).padStart(6, '0')}`;
+      b.setAttribute('aria-label', `${label} ${i + 1}`);
+      if (i === selected) b.classList.add('on');
+      b.addEventListener('click', (e) => { e.stopPropagation(); pick(i); });
+      row.appendChild(b);
+    });
+    this.card.appendChild(row);
+  }
+
+  /** A row of named chips, one of them filled. */
+  private chips(
+    label: string, names: readonly string[], selected: number, pick: (i: number) => void,
+  ): void {
+    this.label(label);
+    const row = document.createElement('div');
+    row.className = 'mk-chips';
+    names.forEach((name, i) => {
+      const b = document.createElement('button');
+      b.textContent = name;
+      if (i === selected) b.classList.add('on');
+      b.addEventListener('click', (e) => { e.stopPropagation(); pick(i); });
+      row.appendChild(b);
+    });
+    this.card.appendChild(row);
+  }
+
+  /**
+   * A 0-to-1 slider that is not bound to a setting.
+   *
+   * `slider` writes straight into the settings store, which is right for
+   * everything on the settings screen and wrong for everything here: an
+   * appearance is one record that travels, not nineteen independent fields.
+   */
+  private range(label: string, value: number, onChange: (v: number) => void): void {
+    const row = document.createElement('div');
+    row.className = 'mk-row';
+    const l = document.createElement('label');
+    l.textContent = label;
+    row.appendChild(l);
+
+    const input = document.createElement('input');
+    input.type = 'range';
+    input.min = '0';
+    input.max = '1';
+    input.step = '0.02';
+    input.value = String(value);
+    input.setAttribute('aria-label', label);
+    // `input` rather than `change`, so the character moves under the thumb
+    // rather than when it is let go.
+    input.addEventListener('input', () => onChange(Number(input.value)));
+    row.appendChild(input);
+    this.card.appendChild(row);
+  }
+
+  private label(text: string): void {
+    const el = document.createElement('div');
+    el.className = 'mk-label';
+    el.textContent = text;
+    this.card.appendChild(el);
   }
 
   private listening: (() => void) | null = null;

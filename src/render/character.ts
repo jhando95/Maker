@@ -37,15 +37,21 @@
  *
  * ## Why instanced, and what that costs
  *
- * Twenty-two instanced meshes, nine of which are outline shells, each one draw
- * call however many people are in the world — with no allocation when a wave
- * arrives and no shader compiled mid-round, the two things that produce a
- * visible hitch at exactly the wrong moment. The neck and the mouth are the two
- * that were added last and they are the whole of the increase: twenty draws
- * became twenty-two, and one kid went from 1,064 triangles to 1,152.
+ * A pool of thirty-eight instanced meshes, ten of which are outline shells, each
+ * one draw call however many people are in the world — with no allocation when a
+ * wave arrives and no shader compiled mid-round, the two things that produce a
+ * visible hitch at exactly the wrong moment.
  *
- * All of it is free when the lawn is empty, because `finish` lowers `count` to
- * zero rather than parking unused slots out of sight.
+ * **The pool is not the cost.** Twelve of those thirty-eight are painted
+ * shapes, and a shape nobody on the field is wearing has a count of zero and
+ * draws nothing — which is the whole reason a palette of twelve is affordable
+ * to offer. An undecorated kid is 27 draws and 1,840 triangles; one with a
+ * ponytail and all four marks painted is 31 and 1,892. The whole cast, empty
+ * lawn to full, is free at zero because `finish` lowers `count` rather than
+ * parking unused slots out of sight.
+ *
+ * Measured on the yard with three kids in it: 237 draw calls became 244 when
+ * the face grew a sclera, an iris, a pupil and a pair of brows.
  *
  * The cost is that a part can only be posed by a matrix and tinted by one
  * colour. So there are no bendable knees and no per-vertex anything: a limb is a
@@ -56,8 +62,15 @@
 import * as THREE from 'three';
 import { createToonMaterial, createOutlineMaterial } from './toonMaterial.ts';
 import { chamferedBox, blob } from './geometry.ts';
+import { markGeometries } from './markShapes.ts';
 import { Rng } from '../core/rng.ts';
 import { CAP_HEIGHT, CAP_RADIUS } from '../physics/constants.ts';
+import {
+  BROWS, BROWS_NONE, CLOTH_COLOURS, EYE_COLOURS, HAIR_COLOURS, HAIR_STYLES,
+  MARK_SHAPES, MARK_SLOTS, MOUTHS, SKIN_TONES,
+  buildOf, clampAppearance, defaultAppearance, headScaleOf, markSizeOf,
+  type Appearance, type HairStyle, type Mark, type MarkShape,
+} from '../game/appearance.ts';
 
 /**
  * Where a kid's joints are, as fractions of the collision capsule.
@@ -96,6 +109,17 @@ const SHOULDER_Y = TORSO_TOP - 0.05;
 
 const TORSO_W = CAP_RADIUS * 1.68;
 const TORSO_D = CAP_RADIUS * 1.1;
+/** Half an arm, across. Marks on a sleeve are placed against this. */
+const ARM_R = 0.0675;
+/**
+ * How far a painted mark floats off the surface it is painted on.
+ *
+ * Not zero, because a flat polygon coplanar with a chamfered box z-fights, and
+ * z-fighting on a chest at four metres is the most visible artefact this
+ * renderer can produce. Not much more than zero either, or the mark visibly
+ * hovers when seen from the side.
+ */
+const MARK_LIFT = 0.008;
 
 /**
  * A head about a quarter of the body.
@@ -175,7 +199,58 @@ const EYE_R = 0.046;
  * face wants, and it is what keeps the profile clean no matter how proud the
  * centre sits.
  */
-const EYE_FLATTEN = 0.34;
+const EYE_FLATTEN = 0.26;
+
+/**
+ * An eye in three parts, which is what makes it look like an eye.
+ *
+ * One dark disc is a dot, and a face made of dots is a doll — which is exactly
+ * what these were. What reads as human is the *white*, because a sclera is the
+ * only part of a face that is nearly the brightest thing on it, and because a
+ * dark pupil inside a light field is the thing an eye is. The iris between them
+ * carries the only piece of colour anybody chooses about their own face.
+ *
+ * Three stacked discs rather than one textured one: this renderer has no UVs on
+ * its character geometry and no texture pipeline, on purpose, and three flat
+ * shapes at 0.6% of a frame is a much better trade than acquiring one.
+ */
+const IRIS_R = EYE_R * 0.62;
+const PUPIL_R = EYE_R * 0.3;
+/**
+ * How far each layer stands in front of the one behind it.
+ *
+ * **Derived rather than chosen**, and the difference is a face that works. The
+ * three discs are squashed spheres, so the front of each one is its centre plus
+ * its own half-depth — and a smaller disc has a *smaller* half-depth. Picking
+ * the offsets by eye put the iris six millimetres forward of a sclera whose
+ * surface was already fifteen in front of its own centre, so the iris sat
+ * exactly level with the white and the two z-fought: the eyes came out as
+ * plain white ovals with no iris and no pupil in them at all, which is a doll
+ * again by a different route.
+ *
+ * So each lift is "clear the front of the layer behind, then a step". The step
+ * is the only free number here, and it is small enough not to read as a bead
+ * and large enough that a depth buffer can tell the layers apart.
+ */
+const EYE_STEP = 0.0035;
+const halfDepth = (radius: number): number => radius * EYE_FLATTEN;
+const IRIS_OUT = halfDepth(EYE_R) - halfDepth(IRIS_R) + EYE_STEP;
+const PUPIL_OUT = IRIS_OUT + halfDepth(IRIS_R) - halfDepth(PUPIL_R) + EYE_STEP;
+/** Whites, not white: a pure white sclera on a toon ramp is a hole in the face. */
+const SCLERA = 0xf2ece2;
+const PUPIL = 0x140f0d;
+
+/**
+ * Brows, which are the difference between a face and a mask.
+ *
+ * They do more for "this is a person" than the eyes underneath them, and they
+ * are the only part of a face that carries a mood without animating. A bar
+ * each, tilted by the chosen style.
+ */
+const BROW_AIM = { x: 0.35, y: 0.2, z: -1 };
+const BROW_W = 0.072;
+const BROW_H = 0.02;
+const BROW_D = 0.03;
 /** A mouth, which there was not one of. Two dots is a doll, not a kid. */
 const MOUTH_AIM = { x: 0, y: -0.44, z: -1 };
 const MOUTH_W = 0.092;
@@ -214,29 +289,12 @@ const IDLE_LIFT = 0.009;
 const IDLE_SWAY = 0.035;
 const TAU = Math.PI * 2;
 
-/**
- * Skin and hair, chosen by actor id.
- *
- * A short list rather than a continuous range: at three bands of toon shading,
- * two tones a few per cent apart are the same tone, and a palette that reads as
- * distinct at forty metres is the only kind worth having.
+/*
+ * The palettes, the contrast rule that keeps hair off skin, and the seeded
+ * default all moved to `appearance.ts` when appearance stopped being a function
+ * of an actor id. They are facts about what a player may choose, and this file
+ * is only the thing that draws the choice.
  */
-const SKIN_TONES = [0xf3cfa8, 0xe0a878, 0xb87a4e, 0x8a5636, 0xf7ddc0] as const;
-const HAIR_COLOURS = [0x3a2a1c, 0x7a4a24, 0xd9a441, 0x1d1a19, 0xa0522d, 0xc76b3a, 0x5d4037] as const;
-
-/**
- * Rough perceived brightness, for keeping hair off skin.
- *
- * The palettes are both warm browns, so picking from each independently
- * eventually lands mid-brown hair on mid-brown skin and the head becomes one
- * featureless lump — which is exactly what the first kid drawn looked like.
- */
-function luma(hex: number): number {
-  return (0.2126 * ((hex >> 16) & 255) + 0.7152 * ((hex >> 8) & 255) + 0.0722 * (hex & 255)) / 255;
-}
-/** Enough of a gap that a hairline is a line rather than a suggestion. */
-const HAIR_SKIN_CONTRAST = 0.24;
-
 /** Everything the batch needs to draw one person. */
 export interface CharacterPose {
   /** Stable identity: picks skin, hair and build, and keys the stride. */
@@ -262,19 +320,27 @@ interface Part {
 }
 
 /**
- * How a kid is put together, seeded from their id.
+ * How a kid is put together, ready to draw.
  *
- * Derived rather than stored per actor, so a remote player who joins halfway
- * through looks the same to everyone without anybody having to send what they
- * look like.
+ * The render-side half of an `Appearance`: the same choices with the colours
+ * turned into `THREE.Color`s and the sliders turned into the multipliers the
+ * matrices want. Split from the data because an `Appearance` has to survive a
+ * socket and localStorage, and a `THREE.Color` survives neither.
+ *
+ * Cached and keyed by actor id rather than rebuilt, because the alternative is
+ * allocating six colours per kid per frame.
  */
 export interface Look {
+  readonly appearance: Appearance;
   skin: THREE.Color;
   hair: THREE.Color;
-  /** Hair box dimensions, so a mop and a crew cut are different silhouettes. */
-  hairScaleY: number;
-  hairScaleXZ: number;
-  /** Head size, the cheapest way to make two kids obviously different people. */
+  eyes: THREE.Color;
+  shirt: THREE.Color;
+  trousers: THREE.Color;
+  shoes: THREE.Color;
+  style: HairStyle;
+  brows: number;
+  mouth: number;
   headScale: number;
   /**
    * How stocky, across the shoulders and through the chest.
@@ -283,7 +349,8 @@ export interface Look {
    * a line of them read as one child recoloured. Width is the safe axis to vary
    * and height is not: the joints are tied to `CAP_HEIGHT` precisely so the
    * drawing and the thing that collides cannot disagree, and a kid drawn taller
-   * than their own capsule has feet that float.
+   * than their own capsule has feet that float. There is deliberately no height
+   * slider in the locker, for exactly that reason.
    */
   build: number;
   /** Where in a breath they are, so a group of them does not inhale together. */
@@ -291,34 +358,65 @@ export interface Look {
 }
 
 const lookCache = new Map<number, Look>();
+/**
+ * What people have actually chosen, as opposed to what their id says.
+ *
+ * Empty for everybody who has never opened a locker — which is every bot, and
+ * every player until they do — so the lawn stays exactly as varied as it was
+ * before any of this existed, and nothing had to be sent for that to be true.
+ */
+const wardrobe = new Map<number, Appearance>();
+
+const colour = (hex: number): THREE.Color =>
+  new THREE.Color().setHex(hex, THREE.SRGBColorSpace);
+
+/**
+ * Put somebody in what they chose, or back in what their id says.
+ *
+ * The cached `Look` is dropped rather than mutated, because a `Look` is handed
+ * out by reference and something may be holding one — a colour that changes
+ * underneath its holder is the kind of bug that surfaces three frames later
+ * somewhere else entirely.
+ */
+export function dress(id: number, appearance: Appearance | null): void {
+  if (appearance === null) wardrobe.delete(id);
+  else wardrobe.set(id, clampAppearance(appearance));
+  lookCache.delete(id);
+}
+
+/** What somebody is wearing, chosen or seeded. */
+export function wearing(id: number): Appearance {
+  return wardrobe.get(id) ?? defaultAppearance(id);
+}
+
+/** Forget every chosen appearance. Leaving a session, or a test starting over. */
+export function undressAll(): void {
+  wardrobe.clear();
+  lookCache.clear();
+}
 
 export function lookFor(id: number): Look {
   const cached = lookCache.get(id);
   if (cached !== undefined) return cached;
 
-  // Seeded by id, so the same person looks the same on every machine that ever
-  // draws them — which is a networking requirement, not a nicety.
-  const rng = new Rng(`kid-${id}`);
-  const pick = <T>(list: readonly T[]): T => list[Math.floor(rng.next() * list.length)]!;
-
-  const skin = pick(SKIN_TONES);
-  // Hair is chosen from what actually contrasts with the skin already picked,
-  // rather than from the whole palette and hoping. The filter can never be empty
-  // — the darkest and lightest entries are far apart — but the fallback is there
-  // because a palette edit should not be able to crash a character.
-  const readable = HAIR_COLOURS.filter(
-    (h) => Math.abs(luma(h) - luma(skin)) >= HAIR_SKIN_CONTRAST,
-  );
+  const appearance = wearing(id);
   const look: Look = {
-    skin: new THREE.Color().setHex(skin, THREE.SRGBColorSpace),
-    hair: new THREE.Color().setHex(
-      readable.length > 0 ? pick(readable) : HAIR_COLOURS[0], THREE.SRGBColorSpace,
-    ),
-    hairScaleY: 0.55 + rng.next() * 1.15,
-    hairScaleXZ: 0.92 + rng.next() * 0.2,
-    headScale: 0.92 + rng.next() * 0.18,
-    build: 0.9 + rng.next() * 0.24,
-    idlePhase: rng.next() * TAU,
+    appearance,
+    skin: colour(SKIN_TONES[appearance.skin] ?? SKIN_TONES[0]),
+    hair: colour(HAIR_COLOURS[appearance.hair] ?? HAIR_COLOURS[0]),
+    eyes: colour(EYE_COLOURS[appearance.eyes] ?? EYE_COLOURS[0]),
+    shirt: colour(CLOTH_COLOURS[appearance.shirt] ?? CLOTH_COLOURS[0]),
+    trousers: colour(CLOTH_COLOURS[appearance.trousers] ?? CLOTH_COLOURS[0]),
+    shoes: colour(CLOTH_COLOURS[appearance.shoes] ?? CLOTH_COLOURS[0]),
+    style: HAIR_STYLES[appearance.hairStyle] ?? HAIR_STYLES[1]!,
+    brows: appearance.brows,
+    mouth: appearance.mouth,
+    headScale: headScaleOf(appearance),
+    build: buildOf(appearance),
+    // Not part of the appearance: nobody chooses where in a breath they are,
+    // and two people who picked the same outfit should still not inhale
+    // together. Seeded by id, which is the one thing that is always different.
+    idlePhase: new Rng(`breath-${id}`).next() * TAU,
   };
   lookCache.set(id, look);
   return look;
@@ -355,10 +453,28 @@ export class CharacterBatch {
   private readonly arms: Part[] = [];
   private readonly legs: Part[] = [];
   private readonly shoes: Part[] = [];
+  private readonly bunch: Part;
+  /**
+   * One mesh per paintable shape, each holding every mark of that shape being
+   * worn by anybody on screen.
+   *
+   * Per shape rather than per body slot, because instances share a geometry:
+   * a slot that could hold any shape would need a mesh per shape anyway. This
+   * way a shape nobody has chosen has a count of zero and costs nothing, and
+   * the usual case — a lawn where two or three marks are in use — is two or
+   * three draw calls rather than twelve.
+   */
+  private readonly marks = new Map<MarkShape, THREE.InstancedMesh>();
+  /** How many instances of each shape have been written this frame. */
+  private readonly markCount = new Map<MarkShape, number>();
   private readonly neck: THREE.InstancedMesh;
   private readonly mouth: THREE.InstancedMesh;
   private readonly hands: THREE.InstancedMesh;
+  /** Sclera, iris and pupil — three stacked discs, two of each per person. */
   private readonly eyes: THREE.InstancedMesh;
+  private readonly irises: THREE.InstancedMesh;
+  private readonly pupils: THREE.InstancedMesh;
+  private readonly brows: THREE.InstancedMesh;
 
   private readonly outlineMaterials: THREE.ShaderMaterial[] = [];
   private readonly parts: Part[] = [];
@@ -390,6 +506,15 @@ export class CharacterBatch {
   /** Scratch for placing things in the head's frame. Hoisted; this runs per kid per frame. */
   private readonly offset = new THREE.Vector3();
   private readonly head3 = new THREE.Vector3();
+  /** A second rotation, for the face parts that turn within the head's frame. */
+  private readonly browQuat = new THREE.Quaternion();
+  private readonly markSpin = new THREE.Quaternion();
+  /** The torso and arms as they were actually posed, for hanging paint off. */
+  private readonly torsoAt = new THREE.Vector3();
+  private readonly torsoTurn = new THREE.Quaternion();
+  private readonly armAt = new THREE.Vector3();
+  private readonly armTurn = new THREE.Quaternion();
+  private readonly markColour = new THREE.Color();
 
 
   private drawn = 0;
@@ -437,25 +562,53 @@ export class CharacterBatch {
       'neck', chamferedBox(NECK_R * 2, 0.1, NECK_R * 2, 0.02), 0xffffff,
     );
 
-    // Hands, eyes and the mouth carry no outline. All are small enough that a
-    // shell would be most of the shape, and all sit against something already
-    // outlined.
+    // The face and the hands carry no outline. All of it is small enough that a
+    // shell would be most of the shape, and all of it sits against something
+    // already outlined.
     //
-    // The eye is a sphere squashed along the face's normal rather than a ball.
-    // A ball on a ball reads as a bead stuck to the head from any angle that is
-    // not straight on, which is what the old one did.
-    const eye = new THREE.SphereGeometry(EYE_R, 8, 6);
-    eye.scale(1, 1, EYE_FLATTEN);
-    // Two slots per person, hence the doubled pool — `pairCapacity` rather than
-    // `capacity * 2`, which is what the helper was written for and was not
+    // Each eye layer is a sphere squashed along the face's normal rather than a
+    // ball. A ball on a ball reads as a bead stuck to the head from any angle
+    // that is not straight on, which is what the first one did.
+    const disc = (radius: number): THREE.BufferGeometry => {
+      const g = new THREE.SphereGeometry(radius, 10, 6);
+      g.scale(1, 1, EYE_FLATTEN);
+      return g;
+    };
+    // Two slots per person, hence the doubled pools — `pairCapacity` rather
+    // than `capacity * 2`, which is what the helper was written for and was not
     // being used by the one place that had to agree with it.
     this.hands = this.makeMesh(
       'hands', blob(0.072, 0, 0.14, () => rng.next()), 0xffffff, pairCapacity(capacity),
     );
-    this.eyes = this.makeMesh('eyes', eye, 0x241c18, pairCapacity(capacity));
+    this.eyes = this.makeMesh('eyes', disc(EYE_R), SCLERA, pairCapacity(capacity));
+    this.irises = this.makeMesh('irises', disc(IRIS_R), 0xffffff, pairCapacity(capacity));
+    this.pupils = this.makeMesh('pupils', disc(PUPIL_R), PUPIL, pairCapacity(capacity));
+    this.brows = this.makeMesh(
+      'brows', chamferedBox(BROW_W, BROW_H, BROW_D, 0.006), 0xffffff, pairCapacity(capacity),
+    );
     this.mouth = this.makeMesh(
       'mouth', chamferedBox(MOUTH_W, MOUTH_H, MOUTH_D, 0.008), MOUTH_INK,
     );
+    // A bunch of hair behind the head — a ponytail, a puff — for the styles
+    // that have one. Outlined, because unlike the rest of the face it is on the
+    // silhouette, and a shape on the silhouette without ink is the one thing
+    // this world does not have.
+    this.bunch = this.makePart(
+      'bunch', blob(0.1, 1, 0.11, () => rng.next()), 0xffffff, true,
+    );
+
+    // Paint. Four slots a person, so the pool is four deep — but a shape that
+    // nobody is wearing draws nothing, which is what makes twelve of these
+    // affordable.
+    for (const [shape, geometry] of markGeometries()) {
+      const mesh = this.makeMesh(
+        `mark-${shape}`, geometry, 0xffffff, capacity * MARK_SLOTS.length,
+      );
+      // Both sides: a mark on a back is seen from behind, and one on an arm is
+      // seen from whichever way that arm is swinging.
+      (mesh.material as THREE.MeshToonMaterial).side = THREE.DoubleSide;
+      this.marks.set(shape, mesh);
+    }
 
     this.hideAll();
   }
@@ -519,6 +672,7 @@ export class CharacterBatch {
   begin(): void {
     this.drawn = 0;
     this.frame++;
+    this.markCount.clear();
   }
 
   /**
@@ -607,6 +761,13 @@ export class CharacterBatch {
     this.scratchScale.set(look.build, 1, look.build);
     this.setPart(this.torso, index, this.pos, this.quat, this.scratchScale);
     this.torso.mesh.setColorAt(index, p.shirt);
+    // Kept, because the paint hangs off the chest and the chest is *here* —
+    // not at the feet. The torso pivots about the hip when it leans, so a mark
+    // placed at a fixed distance from the ground ends up inside the shirt the
+    // moment somebody tips forward. Which is what the first version did, and it
+    // showed up as a back that could not be painted at all.
+    this.torsoAt.copy(this.pos);
+    this.torsoTurn.copy(this.quat);
 
     // ── Head, hair, face, neck ────────────────────────────────────────────────
     //
@@ -633,39 +794,96 @@ export class CharacterBatch {
     this.head3.set(headX, headY, headZ);
 
     // Sits on the crown and slightly back, so a fringe never reaches the eyes.
-    this.pos.copy(this.attach(0, r * 0.34, r * 0.12));
+    // The style is five numbers over the one slab rather than five geometries:
+    // at this scale a cartoon haircut is carried almost entirely by how tall it
+    // is, how far down the back it comes, and whether there is something behind
+    // the head — and a mesh per style would be a draw call per style.
+    const style = look.style;
+    this.pos.copy(this.attach(0, r * style.lift, r * style.back));
     this.scratchScale.set(
-      look.hairScaleXZ * look.headScale,
-      look.hairScaleY * look.headScale,
-      look.hairScaleXZ * look.headScale,
+      style.wide * look.headScale, style.tall * look.headScale, style.deep * look.headScale,
     );
     this.setPart(this.hair, index, this.pos, this.quat, this.scratchScale);
     this.hair.mesh.setColorAt(index, look.hair);
 
-    // Two eyes and a mouth, on the front of the head. A few hundred bytes of
-    // geometry that do more work than everything else here: a capsule has no
-    // front, and a kid walking at you and one walking away used to be the same
-    // silhouette.
+    // The bunch, for the styles that have one. Zero-scaled for the ones that do
+    // not, rather than skipped: an instance below `count` is drawn whatever is
+    // in it, so "do not draw this one" has to be a matrix that produces no
+    // pixels. A degenerate scale is the cheapest one there is.
+    this.pos.copy(this.attach(0, r * 0.02, r * (0.86 + style.bunch * 0.42)));
+    const bunchScale = style.bunch * look.headScale;
+    this.scratchScale.set(bunchScale, bunchScale * 1.25, bunchScale);
+    this.setPart(this.bunch, index, this.pos, this.quat, this.scratchScale);
+    this.bunch.mesh.setColorAt(index, look.hair);
+
+    // ── The face ──────────────────────────────────────────────────────────────
+    //
+    // Three discs an eye. One dark dot each is what these were, and a face made
+    // of dots is a doll: what reads as human is the *white*, because a sclera is
+    // very nearly the brightest thing on a face, and a dark pupil inside a light
+    // field is the thing an eye actually is. The iris between them carries the
+    // only colour anybody chooses about their own face.
+    //
+    // Each layer stands a hair further out than the one behind it. Coplanar
+    // discs on a curved skull z-fight, and z-fighting on a face at four metres
+    // is the most visible artefact this renderer can produce.
+    const brow = BROWS[look.brows] ?? BROWS[0]!;
+    const drawBrows = look.brows !== BROWS_NONE;
     for (let e = 0; e < 2; e++) {
-      this.seat(EYE_AIM.x * (e === 0 ? -1 : 1), EYE_AIM.y, EYE_AIM.z, r);
+      const side = e === 0 ? -1 : 1;
+      const slot = index * 2 + e;
+
+      this.seat(EYE_AIM.x * side, EYE_AIM.y, EYE_AIM.z, r);
       this.matrix.compose(this.pos, this.quat, this.scratchScale.setScalar(look.headScale));
-      this.eyes.setMatrixAt(index * 2 + e, this.matrix);
+      this.eyes.setMatrixAt(slot, this.matrix);
+
+      this.seat(EYE_AIM.x * side, EYE_AIM.y, EYE_AIM.z, r + IRIS_OUT * look.headScale);
+      this.matrix.compose(this.pos, this.quat, this.scratchScale.setScalar(look.headScale));
+      this.irises.setMatrixAt(slot, this.matrix);
+      this.irises.setColorAt(slot, look.eyes);
+
+      this.seat(EYE_AIM.x * side, EYE_AIM.y, EYE_AIM.z, r + PUPIL_OUT * look.headScale);
+      this.matrix.compose(this.pos, this.quat, this.scratchScale.setScalar(look.headScale));
+      this.pupils.setMatrixAt(slot, this.matrix);
+
+      // The brows do more for "this is a person" than the eyes under them, and
+      // they are the only part of a face that carries a mood without animating.
+      // Tilted by the chosen style, mirrored, so a raised inner edge on one is a
+      // raised inner edge on both rather than one up and one down.
+      this.seat(BROW_AIM.x * side, BROW_AIM.y + brow.lift, BROW_AIM.z, r);
+      this.euler.set(0, 0, brow.tilt * side, 'XYZ');
+      this.browQuat.setFromEuler(this.euler);
+      this.browQuat.premultiply(this.quat);
+      this.matrix.compose(
+        this.pos, this.browQuat,
+        this.scratchScale.setScalar(drawBrows ? look.headScale : 0),
+      );
+      this.brows.setMatrixAt(slot, this.matrix);
+      this.brows.setColorAt(slot, look.hair);
     }
 
     // A mouth, which there was not one of. Two dots on a blank face is a doll;
     // the third mark is what makes it a kid, and it is one more box.
     //
-    // Stunned, it goes round and open — the only expression in the game, and it
-    // costs a different scale rather than different geometry. Being out of the
-    // fight already shows in the shirt, and a shirt is a thing you read at forty
-    // metres while a face is a thing you read at four.
+    // Stunned, it goes round and open — the one expression the game animates,
+    // and it costs a different scale rather than different geometry. Being out
+    // of the fight already shows in the shirt, and a shirt is a thing you read
+    // at forty metres while a face is a thing you read at four.
+    const shape = MOUTHS[look.mouth] ?? MOUTHS[0]!;
     this.seat(MOUTH_AIM.x, MOUTH_AIM.y, MOUTH_AIM.z, r);
     this.scratchScale.set(
-      look.headScale * (p.stunned === true ? 0.5 : 1),
-      look.headScale * (p.stunned === true ? 2.6 : 1),
+      look.headScale * (p.stunned === true ? 0.5 : shape.wide),
+      look.headScale * (p.stunned === true ? 2.6 : shape.tall),
       look.headScale,
     );
-    this.matrix.compose(this.pos, this.quat, this.scratchScale);
+    // A grin and a frown are the same bar rolled about the face's own normal at
+    // one end — which is not a curve, and is the whole of what a curve buys at
+    // this size. A second segment would be a second draw call for a shape three
+    // pixels tall at the distance anybody sees it.
+    this.euler.set(0, 0, p.stunned === true ? 0 : shape.curve * 0.55, 'XYZ');
+    this.browQuat.setFromEuler(this.euler);
+    this.browQuat.premultiply(this.quat);
+    this.matrix.compose(this.pos, this.browQuat, this.scratchScale);
     this.mouth.setMatrixAt(index, this.matrix);
 
     // The neck, bridging collar to jaw. Placed halfway between the two so it
@@ -703,9 +921,9 @@ export class CharacterBatch {
     this.poseLimb(this.arms[1]!, index, shoulderX, shoulderY, shoulderZ,
       cos, sin, shoulderOut, facing, armSwingR, p.shirt);
     this.poseLimb(this.legs[0]!, index, p.x, p.y + HIP_Y, p.z,
-      cos, sin, -HIP_X, facing, legSwingL, null);
+      cos, sin, -HIP_X, facing, legSwingL, look.trousers);
     this.poseLimb(this.legs[1]!, index, p.x, p.y + HIP_Y, p.z,
-      cos, sin, HIP_X, facing, legSwingR, null);
+      cos, sin, HIP_X, facing, legSwingR, look.trousers);
 
     // Hands and shoes hang off the end of the limb they belong to, which means
     // swinging them by the same angle about the same joint rather than guessing
@@ -715,11 +933,84 @@ export class CharacterBatch {
     this.tipOf(this.hands, index * 2 + 1, shoulderX, shoulderY, shoulderZ,
       cos, sin, shoulderOut, facing, armSwingR, ARM_LEN, look.skin);
     this.tipOfPart(this.shoes[0]!, index, p.x, p.y + HIP_Y, p.z,
-      cos, sin, -HIP_X, facing, legSwingL, LEG_LEN);
+      cos, sin, -HIP_X, facing, legSwingL, LEG_LEN, look.shoes);
     this.tipOfPart(this.shoes[1]!, index, p.x, p.y + HIP_Y, p.z,
-      cos, sin, HIP_X, facing, legSwingR, LEG_LEN);
+      cos, sin, HIP_X, facing, legSwingR, LEG_LEN, look.shoes);
+
+    // ── Paint ─────────────────────────────────────────────────────────────────
+    //
+    // Every mark is placed **in the frame of the part it is painted on**, which
+    // is the same rule the face follows and for the same reason. Placed in world
+    // space against the feet instead, a mark is right only while its wearer is
+    // standing perfectly upright: the torso pivots about the hip as it leans and
+    // the arms swing about the shoulder, so a chest mark at a fixed height drifts
+    // out of the shirt at the front and *into* it at the back.
+    const worn = look.appearance.marks;
+
+    // Chest and back: out along the torso's own ±Z by half its depth. The back
+    // one is turned to face the other way, or it would be seen mirrored — and,
+    // being a flat polygon, would also be lit from the wrong side.
+    const chestOut = (TORSO_D / 2) * look.build + MARK_LIFT;
+    this.placeMark(worn.chest, 0, 0, -chestOut, this.torsoAt, this.torsoTurn, 0, 0);
+    this.placeMark(worn.back, 0, 0, chestOut, this.torsoAt, this.torsoTurn, Math.PI, 0);
+
+    // Sleeves: out on the arm's own side, a little under half way down it, and
+    // facing outward rather than forward — a mark on the front of a sleeve is
+    // edge-on from every angle anybody actually plays at.
+    const sleeveOut = ARM_R + MARK_LIFT;
+    for (const [side, mark, swing] of [
+      [-1, worn.leftArm, armSwingL], [1, worn.rightArm, armSwingR],
+    ] as const) {
+      this.armAt.set(shoulderX + shoulderOut * side * cos, shoulderY, shoulderZ - shoulderOut * side * sin);
+      this.euler.set(swing, facing, 0, 'YXZ');
+      this.armTurn.setFromEuler(this.euler);
+      this.placeMark(
+        mark, sleeveOut * side, -ARM_LEN * 0.42, 0,
+        this.armAt, this.armTurn, (Math.PI / 2) * side, 0.62,
+      );
+    }
 
     return true;
+  }
+
+  /**
+   * Write one mark, if there is one.
+   *
+   * Packed into the front of its shape's buffer rather than indexed by wearer,
+   * so a lawn where one kid in six has painted something draws one instance
+   * rather than a pool full of empties. That is the same rule `finish` follows
+   * for the bodies, and it is the reason twelve shapes is affordable at all.
+   */
+  private placeMark(
+    mark: Mark,
+    lx: number, ly: number, lz: number,
+    base: THREE.Vector3, frame: THREE.Quaternion,
+    turnAbout: number, shrink: number,
+  ): void {
+    const shape = MARK_SHAPES[mark.shape];
+    if (shape === undefined || shape === 'none') return;
+    const mesh = this.marks.get(shape);
+    if (mesh === undefined) return;
+    const slot = this.markCount.get(shape) ?? 0;
+    if (slot >= mesh.instanceMatrix.count) return;
+
+    // The offset is in the part's frame, so it has to be turned by that frame
+    // before it means anything in the world — the same step the face takes.
+    this.pos.copy(this.offset.set(lx, ly, lz).applyQuaternion(frame).add(base));
+    // Two rotations: which way the mark faces on the body, then how far the
+    // player has spun it about its own middle.
+    this.euler.set(0, turnAbout, mark.turn * Math.PI * 2, 'YZX');
+    this.markSpin.setFromEuler(this.euler);
+    this.markSpin.premultiply(frame);
+    this.matrix.compose(
+      this.pos, this.markSpin,
+      this.scratchScale.setScalar(markSizeOf(mark) * (1 - shrink * 0.55)),
+    );
+    mesh.setMatrixAt(slot, this.matrix);
+    mesh.setColorAt(slot, this.markColour.setHex(
+      CLOTH_COLOURS[mark.colour] ?? CLOTH_COLOURS[0], THREE.SRGBColorSpace,
+    ));
+    this.markCount.set(shape, slot + 1);
   }
 
   /**
@@ -813,11 +1104,13 @@ export class CharacterBatch {
     x: number, y: number, z: number,
     cos: number, sin: number,
     localX: number, facing: number, swing: number, len: number,
+    tint: THREE.Color | null = null,
   ): void {
     this.tipPosition(x, y, z, cos, sin, localX, swing, len);
     this.euler.set(swing, facing, 0, 'YXZ');
     this.quat.setFromEuler(this.euler);
     this.setPart(part, index, this.pos, this.quat, this.one);
+    if (tint !== null) part.mesh.setColorAt(index, tint);
   }
 
   /** Write one instance to a part and its shell in the same breath. */
@@ -865,10 +1158,19 @@ export class CharacterBatch {
     }
     // Two of these per person — a left and a right — so the pair meshes run at
     // twice the count rather than at it.
-    for (const pair of [this.hands, this.eyes]) {
+    for (const pair of [this.hands, this.eyes, this.irises, this.pupils, this.brows]) {
       pair.count = pairCapacity(this.drawn);
       pair.instanceMatrix.needsUpdate = true;
       if (pair.instanceColor !== null) pair.instanceColor.needsUpdate = true;
+    }
+
+    // Marks are packed rather than indexed, so the count is however many were
+    // actually written — usually zero for most shapes, which is what makes a
+    // palette of twelve cost nothing to offer.
+    for (const [shape, mesh] of this.marks) {
+      mesh.count = this.markCount.get(shape) ?? 0;
+      mesh.instanceMatrix.needsUpdate = true;
+      if (mesh.instanceColor !== null) mesh.instanceColor.needsUpdate = true;
     }
 
     this.forgetTheAbsent();

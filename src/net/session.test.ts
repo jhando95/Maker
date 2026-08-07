@@ -6,6 +6,9 @@ import { PartRenderer } from '../render/partRenderer.ts';
 import { BuildSystem } from '../build/buildSystem.ts';
 import { PLAY_HALF } from '../world/bounds.ts';
 import { NEAR_RADIUS } from '../game/comms.ts';
+import {
+  BUILD_MIN, HEAD_MAX, buildOf, clampAppearance, headScaleOf, type Appearance,
+} from '../game/appearance.ts';
 import { CharacterController } from '../player/controller.ts';
 import { ActorRoster, LOCAL_ACTOR_ID, type Actor } from '../game/actor.ts';
 import { BUTTON, commandToIntent, makeCommand, type Command } from '../core/command.ts';
@@ -1039,6 +1042,187 @@ describe('talking to each other', () => {
     r.a.emote('wave');
     r.tick(4);
     expect(r.heard.b).toHaveLength(0);
+  });
+});
+
+describe('what everybody is wearing', () => {
+  /**
+   * A host, two guests, and every outfit each machine was told about.
+   *
+   * Its own room helper for the same reason the voice one is: what this records
+   * is `wearing`, which is a fact that stays true, and folding it in with the
+   * channel that carries things appearing for four seconds would be the first
+   * step toward an outfit being treated as an event.
+   */
+  function dressers(): {
+    host: NetHost; a: NetClient; b: NetClient;
+    aId: number; bId: number;
+    /** A's socket, for sending things a well-behaved client would not. */
+    aSocket: Transport;
+    got: Record<string, Array<{ id: number; a: Appearance | null }>>;
+    tick(n: number): void;
+  } {
+    const got: Record<string, Array<{ id: number; a: Appearance | null }>> = {
+      host: [], a: [], b: [],
+    };
+    const make = (key: string): Machine => {
+      const m = makeMachine();
+      m.wearing = (id, appearance) => got[key]!.push({ id, a: appearance });
+      return m;
+    };
+    const host = new NetHost(make('host'));
+    const pa = loopbackPair();
+    const pb = loopbackPair();
+    const a = new NetClient(make('a'), pa.client, 'ali');
+    const b = new NetClient(make('b'), pb.client, 'bo');
+    host.accept(pa.host);
+    host.accept(pb.host);
+    const tick = (n: number): void => {
+      for (let i = 0; i < n; i++) {
+        host.beforeTick();
+        a.beforeTick();
+        b.beforeTick();
+        host.afterTick(DT);
+        a.afterTick(DT, makeCommand(sharedTick));
+        b.afterTick(DT, makeCommand(sharedTick++));
+      }
+    };
+    tick(4);
+    // Read back rather than assumed: ids go in the order the *hellos* land, not
+    // the order the transports were accepted. Assuming it cost eight failing
+    // tests once already, in the voice room below.
+    return {
+      host, a, b, aId: a.status.localId, bId: b.status.localId,
+      aSocket: pa.client, got, tick,
+    };
+  }
+
+  const outfit = (skin: number): Appearance => clampAppearance({ skin, hairStyle: 3 });
+
+  it('tells everybody what one guest put on', () => {
+    // The whole point. An appearance is the one piece of presentation a late
+    // arrival cannot derive for itself, which is exactly what a locker gives up
+    // in exchange for letting somebody choose.
+    const r = dressers();
+    r.a.wear(outfit(3));
+    r.tick(4);
+    expect(r.got.b.filter((w) => w.id === r.aId)).toHaveLength(1);
+    expect(r.got.b.at(-1)!.a!.skin).toBe(3);
+    // And back to the sender, so a guest sees themselves in what the host
+    // agreed to rather than in what they asked for.
+    expect(r.got.a.some((w) => w.id === r.aId && w.a?.skin === 3)).toBe(true);
+  });
+
+  it('will not let anybody arrive larger than the locker allows', () => {
+    // Sent straight down the socket rather than through `NetClient.wear`, and
+    // that is the whole point of the test. The client clamps too, so a polite
+    // guest can never produce this — and a test that goes through the polite
+    // path proves the client's clamp twice and the host's not at all.
+    //
+    // The thing being defended against is a modified client, and what it buys
+    // is not cosmetic: a head four times the size is a bigger target and is
+    // visible over the wall its owner is hiding behind, and the cost is paid
+    // entirely by the people who did not choose it.
+    const r = dressers();
+    r.aSocket.send({
+      t: 'wear',
+      a: { ...outfit(1), headSize: 900, build: -900 } as Appearance,
+    });
+    r.tick(4);
+
+    // Read off the *host*, which is the machine under test. Reading it off the
+    // other guest proves nothing: the receiving client clamps on arrival too,
+    // so it would pass with the host's own clamp deleted — which is exactly
+    // what happened when this was written the obvious way.
+    const asHostSeesIt = r.got.host.at(-1)!.a!;
+    expect(asHostSeesIt.skin).toBe(1);
+    expect(headScaleOf(asHostSeesIt)).toBeLessThanOrEqual(HEAD_MAX);
+    expect(buildOf(asHostSeesIt)).toBeGreaterThanOrEqual(BUILD_MIN);
+
+    // And the far guest, which is the belt to that pair of braces.
+    const asPeerSeesIt = r.got.b.at(-1)!.a!;
+    expect(headScaleOf(asPeerSeesIt)).toBeLessThanOrEqual(HEAD_MAX);
+    expect(buildOf(asPeerSeesIt)).toBeGreaterThanOrEqual(BUILD_MIN);
+  });
+
+  it('stamps the wearer itself rather than believing the message', () => {
+    // There is no `from` on a `wear`, for the same reason chat and voice have
+    // none: a client that could name its own sender could dress somebody else.
+    const r = dressers();
+    r.a.wear(outfit(4));
+    r.tick(4);
+    for (const told of r.got.b) expect(told.id).not.toBe(r.bId);
+    expect(r.got.b.some((w) => w.id === r.aId)).toBe(true);
+  });
+
+  it('tells a newcomer what the people already here are wearing', () => {
+    // The half that is easy to forget, and it only shows up with three people
+    // in the yard: without it a locker works perfectly for whoever hosted, and
+    // everybody who joined after you is a stranger in default clothes.
+    const got: Array<{ id: number; a: Appearance | null }> = [];
+    const host = new NetHost(makeMachine());
+    const pa = loopbackPair();
+    const early = new NetClient(makeMachine(), pa.client, 'ali');
+    host.accept(pa.host);
+    const run = (n: number, extra?: NetClient): void => {
+      for (let i = 0; i < n; i++) {
+        host.beforeTick();
+        early.beforeTick();
+        extra?.beforeTick();
+        host.afterTick(DT);
+        early.afterTick(DT, makeCommand(sharedTick));
+        extra?.afterTick(DT, makeCommand(sharedTick++));
+      }
+    };
+    run(4);
+    early.wear(outfit(2));
+    run(4);
+
+    const late = makeMachine();
+    late.wearing = (id, appearance) => got.push({ id, a: appearance });
+    const pb = loopbackPair();
+    const guest = new NetClient(late, pb.client, 'bo');
+    host.accept(pb.host);
+    run(6, guest);
+
+    expect(
+      got.some((w) => w.id === early.status.localId && w.a?.skin === 2),
+      'a late arrival should be told what everybody already here is wearing',
+    ).toBe(true);
+  });
+
+  it('tells everybody to forget an outfit when its owner leaves', () => {
+    // Null rather than a default, which is a distinction the renderer already
+    // draws: an id nobody has dressed falls back to the seeded look, and that
+    // is exactly what somebody who has gone should cost.
+    const r = dressers();
+    r.a.wear(outfit(4));
+    r.tick(4);
+    r.a.close();
+    r.tick(6);
+    expect(r.got.b.some((w) => w.id === r.aId && w.a === null)).toBe(true);
+  });
+
+  it('forgets somebody who left, so their outfit is not handed to the next guest', () => {
+    const r = dressers();
+    r.a.wear(outfit(4));
+    r.tick(4);
+    r.a.close();
+    r.tick(4);
+
+    const got: Array<{ id: number; a: Appearance | null }> = [];
+    const late = makeMachine();
+    late.wearing = (id, appearance) => got.push({ id, a: appearance });
+    const pc = loopbackPair();
+    const guest = new NetClient(late, pc.client, 'cai');
+    r.host.accept(pc.host);
+    for (let i = 0; i < 6; i++) {
+      r.host.beforeTick();
+      guest.beforeTick();
+      r.host.afterTick(DT);
+      guest.afterTick(DT, makeCommand(sharedTick++));
+    }
+    expect(got.some((w) => w.id === r.aId)).toBe(false);
   });
 });
 
