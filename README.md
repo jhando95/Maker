@@ -556,6 +556,14 @@ checked against positions and tone spreads rather than pixels. A browser
 assertion that cannot fail is worse than no assertion, and the way to find out
 is to take the fix back out and watch.
 
+## What the tests could not see
+
+Checks on this project that **passed for the wrong reason**, and red builds that
+turned out to be the check's fault rather than the game's, are written up in
+[`docs/verification.md`](docs/verification.md). A test that cannot fail is worse
+than none, and the only way that stays true is if the ones caught doing it are
+written down where the next person will read them.
+
 ## Design notes
 
 **One module governs everything.** The grid step, the stair rise, and the ladder
