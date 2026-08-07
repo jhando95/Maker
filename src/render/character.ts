@@ -45,10 +45,20 @@
  * **The pool is not the cost.** Twelve of those thirty-eight are painted
  * shapes, and a shape nobody on the field is wearing has a count of zero and
  * draws nothing — which is the whole reason a palette of twelve is affordable
- * to offer. An undecorated kid is 27 draws and 1,840 triangles; one with a
- * ponytail and all four marks painted is 31 and 1,892. The whole cast, empty
- * lawn to full, is free at zero because `finish` lowers `count` rather than
- * parking unused slots out of sight.
+ * to offer. Hair and its bunch are packed the same way, so what a kid costs
+ * depends on what they are wearing: **25 draws and 1,680 triangles** with an
+ * ordinary haircut, 23 and 1,592 shaved, 27 and 1,840 with a ponytail, and four
+ * more draws with all four marks painted. The whole cast, empty lawn to full,
+ * is free at zero because `finish` lowers `count` rather than parking unused
+ * slots out of sight.
+ *
+ * That last rule is the one this file has now got wrong twice. The first time
+ * it was every unused slot in the pool, parked below the world and still sent
+ * through the vertex shader; the second was the ponytail, zero-scaled for the
+ * five styles out of eight that have no bunch, with a comment explaining that
+ * a degenerate matrix was the only way to skip an instance. It is not, and the
+ * marks two hundred lines below were already doing it properly: **pack, and
+ * lower the count.**
  *
  * Measured on the yard with three kids in it: 237 draw calls became 244 when
  * the face grew a sclera, an iris, a pupil and a pair of brows.
@@ -467,6 +477,25 @@ export class CharacterBatch {
   private readonly marks = new Map<MarkShape, THREE.InstancedMesh>();
   /** How many instances of each shape have been written this frame. */
   private readonly markCount = new Map<MarkShape, number>();
+  /**
+   * Hair and its bunch are packed like the marks, not indexed like the body.
+   *
+   * Five of the eight styles have no bunch and one has no hair at all, and the
+   * first version of this wrote a zero-scaled instance for them with a comment
+   * saying that was the only option — an instance below `count` is drawn
+   * whatever is in it, so "skip this one" has to be a matrix that produces no
+   * pixels.
+   *
+   * The premise is right and the conclusion is not, and this file already knew
+   * that: it is the same mistake `finish` was fixed for once before, when every
+   * unused slot in the pool was parked below the world and still submitted.
+   * `count` is a number handed to the draw call. Writing only the kids who have
+   * hair, into the front of the buffer, means a lawn of shaved heads costs
+   * nothing for hair rather than costing two draw calls and their triangles for
+   * every kid on it.
+   */
+  private hairDrawn = 0;
+  private bunchDrawn = 0;
   private readonly neck: THREE.InstancedMesh;
   private readonly mouth: THREE.InstancedMesh;
   private readonly hands: THREE.InstancedMesh;
@@ -673,6 +702,8 @@ export class CharacterBatch {
     this.drawn = 0;
     this.frame++;
     this.markCount.clear();
+    this.hairDrawn = 0;
+    this.bunchDrawn = 0;
   }
 
   /**
@@ -799,22 +830,28 @@ export class CharacterBatch {
     // is, how far down the back it comes, and whether there is something behind
     // the head — and a mesh per style would be a draw call per style.
     const style = look.style;
-    this.pos.copy(this.attach(0, r * style.lift, r * style.back));
-    this.scratchScale.set(
-      style.wide * look.headScale, style.tall * look.headScale, style.deep * look.headScale,
-    );
-    this.setPart(this.hair, index, this.pos, this.quat, this.scratchScale);
-    this.hair.mesh.setColorAt(index, look.hair);
+    if (style.tall > 0) {
+      const slot = this.hairDrawn++;
+      this.pos.copy(this.attach(0, r * style.lift, r * style.back));
+      this.scratchScale.set(
+        style.wide * look.headScale, style.tall * look.headScale, style.deep * look.headScale,
+      );
+      this.setPart(this.hair, slot, this.pos, this.quat, this.scratchScale);
+      this.hair.mesh.setColorAt(slot, look.hair);
+    }
 
-    // The bunch, for the styles that have one. Zero-scaled for the ones that do
-    // not, rather than skipped: an instance below `count` is drawn whatever is
-    // in it, so "do not draw this one" has to be a matrix that produces no
-    // pixels. A degenerate scale is the cheapest one there is.
-    this.pos.copy(this.attach(0, r * 0.02, r * (0.86 + style.bunch * 0.42)));
-    const bunchScale = style.bunch * look.headScale;
-    this.scratchScale.set(bunchScale, bunchScale * 1.25, bunchScale);
-    this.setPart(this.bunch, index, this.pos, this.quat, this.scratchScale);
-    this.bunch.mesh.setColorAt(index, look.hair);
+    // The bunch — a ponytail, a puff — for the three styles that have one. Not
+    // written at all for the five that do not, which is the difference between
+    // a mesh that costs nothing on a lawn of crops and one that costs two draw
+    // calls per kid to produce no pixels.
+    if (style.bunch > 0) {
+      const slot = this.bunchDrawn++;
+      this.pos.copy(this.attach(0, r * 0.02, r * (0.86 + style.bunch * 0.42)));
+      const bunchScale = style.bunch * look.headScale;
+      this.scratchScale.set(bunchScale, bunchScale * 1.25, bunchScale);
+      this.setPart(this.bunch, slot, this.pos, this.quat, this.scratchScale);
+      this.bunch.mesh.setColorAt(slot, look.hair);
+    }
 
     // ── The face ──────────────────────────────────────────────────────────────
     //
@@ -1162,6 +1199,17 @@ export class CharacterBatch {
       pair.count = pairCapacity(this.drawn);
       pair.instanceMatrix.needsUpdate = true;
       if (pair.instanceColor !== null) pair.instanceColor.needsUpdate = true;
+    }
+
+    // Hair and its bunch are packed, so their counts are what was written rather
+    // than how many people are on the lawn. Set after the loop above, which has
+    // just given every part the full count — they are still in `parts` so that
+    // toggling the ink reaches their shells.
+    for (const [part, count] of [
+      [this.hair, this.hairDrawn], [this.bunch, this.bunchDrawn],
+    ] as const) {
+      part.mesh.count = count;
+      if (part.outline !== null) part.outline.count = count;
     }
 
     // Marks are packed rather than indexed, so the count is however many were

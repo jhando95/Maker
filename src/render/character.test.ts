@@ -1,6 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import * as THREE from 'three';
-import { CharacterBatch, lookFor, HIP_Y, TORSO_TOP, HEAD_Y, HEAD_R } from './character.ts';
+import {
+  CharacterBatch, lookFor, dress, undressAll, HIP_Y, TORSO_TOP, HEAD_Y, HEAD_R,
+} from './character.ts';
+import { defaultAppearance, HAIR_STYLES } from '../game/appearance.ts';
 import { shirtColor, SHIRTS } from '../game/shirts.ts';
 import { CAP_HEIGHT } from '../physics/constants.ts';
 import { SOAKED } from '../game/wetness.ts';
@@ -392,6 +395,49 @@ describe('the character rig', () => {
       'a line of kids should not be one kid recoloured').toBeGreaterThan(8);
     expect(heights, 'nobody may be drawn taller or shorter than their capsule')
       .toEqual(new Set([1]));
+  });
+
+  it('does not draw a ponytail on somebody who has not got one', () => {
+    // The mistake this file has now made twice. `count` is a number handed to
+    // the draw call, so an instance below it is drawn whatever is in it — and
+    // the first version of the bunch answered that by writing a zero-scaled
+    // matrix for the five styles out of eight that have none, which hides it
+    // and still pays for it. Packing is the answer, and the painted marks in
+    // the same class were already doing it.
+    const batch = new CharacterBatch(8);
+    const shirt = new THREE.Color(0xffffff);
+    const plain = defaultAppearance(1);
+    const draw = (ids: number[]): { hair: number; bunch: number } => {
+      batch.begin();
+      for (const id of ids) {
+        batch.pose(1 / 60, { id, x: 0, y: 0, z: 0, facing: 0, speed: 0, onGround: true, shirt });
+      }
+      batch.finish();
+      return {
+        hair: (batch.group.getObjectByName('hair') as THREE.InstancedMesh).count,
+        bunch: (batch.group.getObjectByName('bunch') as THREE.InstancedMesh).count,
+      };
+    };
+
+    const styles = HAIR_STYLES.map((s, i) => ({ ...s, index: i }));
+    const bald = styles.find((s) => s.tall === 0)!.index;
+    const cropped = styles.find((s) => s.tall > 0 && s.bunch === 0)!.index;
+    const tied = styles.find((s) => s.bunch > 0)!.index;
+
+    dress(1, { ...plain, hairStyle: bald });
+    dress(2, { ...plain, hairStyle: cropped });
+    dress(3, { ...plain, hairStyle: tied });
+    try {
+      expect(draw([1]), 'a shaved head needs no hair and no bunch')
+        .toEqual({ hair: 0, bunch: 0 });
+      expect(draw([2]), 'a crop is hair and no bunch').toEqual({ hair: 1, bunch: 0 });
+      expect(draw([3]), 'a ponytail is both').toEqual({ hair: 1, bunch: 1 });
+      // And packed rather than indexed: three kids, one of whom has a bunch,
+      // must submit one bunch — not three, and not the third slot of three.
+      expect(draw([1, 2, 3])).toEqual({ hair: 2, bunch: 1 });
+    } finally {
+      undressAll();
+    }
   });
 
   it('forgets a kid who is no longer being drawn', () => {

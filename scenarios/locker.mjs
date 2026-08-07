@@ -150,23 +150,46 @@ export default async function (page) {
   assert(browsOn.scale > 0.5, 'and picking one should put them back');
 
   // ── Hair is a silhouette, not just a colour ─────────────────────────────────
+  //
+  // Read as a count rather than as a scale, and the difference is the point.
+  // Hair and its bunch are *packed*: a kid who has none writes no instance at
+  // all, so slot zero belongs to whoever was written into it first. Asserting
+  // on the scale in a fixed slot was asserting on state this scenario had not
+  // established — the slot still held the previous style, and both readings came
+  // back 0.994 the moment the packing landed.
   await openTab(page, 'Hair');
   await frames(page, 2);
   await pickChip(page, 'style', 'Mop');
   await frames(page, 3);
   const mop = await instance(page, 'hair');
+  assert(mop.count > 0, 'a mop should draw some hair');
+  assert(mop.scale > 0.5, `and a mop should be a big one, it was ${mop.scale.toFixed(3)}`);
+
   await pickChip(page, 'style', 'Shaved');
   await frames(page, 3);
   const shaved = await instance(page, 'hair');
   assert(
-    shaved.scale < mop.scale * 0.2,
-    `a shaved head should not be wearing a mop — ${shaved.scale.toFixed(3)} against`
-      + ` ${mop.scale.toFixed(3)}`,
+    shaved.count < mop.count,
+    `a shaved head should not be wearing a mop — ${shaved.count} hair instances against`
+      + ` ${mop.count}`,
   );
+
+  // The bunch, likewise: a ponytail draws one and a crop draws none, and "none"
+  // has to mean the mesh submits nothing rather than submitting something the
+  // size of nothing. That was the bug — five of the eight styles have no bunch
+  // and every one of them was paying two draw calls to render no pixels.
   await pickChip(page, 'style', 'Ponytail');
   await frames(page, 3);
-  const bunch = await instance(page, 'bunch');
-  assert(bunch.scale > 0.01, 'a ponytail needs the bunch behind the head to be drawn');
+  const tied = await instance(page, 'bunch');
+  assert(tied.count > 0, 'a ponytail needs the bunch behind the head to be drawn');
+  assert(tied.scale > 0.01, 'and it needs a size');
+  await pickChip(page, 'style', 'Crop');
+  await frames(page, 3);
+  const cropped = await instance(page, 'bunch');
+  assert(
+    cropped.count === 0,
+    `a crop should submit no bunch at all, it submitted ${cropped.count}`,
+  );
 
   // ── Shaping stays inside the model ──────────────────────────────────────────
   //
