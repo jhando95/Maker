@@ -1540,6 +1540,12 @@ function drainEvents(): void {
       case 'stashHit':
         audio.play('invalid', { volume: 0.8, pitch: 0.6 });
         break;
+      case 'partPulled':
+        // The same clatter a player's own collapse makes, from where it
+        // happened. A fort coming apart behind you should sound exactly like a
+        // fort coming apart, whoever pulled the plank.
+        sounds.collapsed(e.x, e.y, e.z, camera, player, e.brought);
+        break;
       case 'roundWon':
         audio.play('roundWin', { volume: 0.7 });
         break;

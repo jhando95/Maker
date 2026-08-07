@@ -28,6 +28,15 @@ that would be standing on nothing goes on pulsing rather than sitting still,
 which is a warning rather than a refusal, because finding out whether it holds
 is the game.
 
+**And the kids will take it apart.** A raider that has spent long enough getting
+no closer to what it came for puts both hands on whatever is in the way and
+hauls, and after a couple of seconds it comes off — along with everything it was
+holding up. It picks the most load-bearing thing within reach rather than the
+nearest, which is what makes a fort a structure rather than a pile of hit
+points: a wall with a door is still beaten by the door, and a sealed one is
+beaten by finding its legs. Fort Defense is now a game about where the wood
+goes.
+
 **The afternoon gets late while you play.** The sun drops and swings west across
 a round, the shadows stretch, the sky drains to a warm horizon under a deep blue,
 and by the end of a full-length round it is dusk — the street lights warm up over

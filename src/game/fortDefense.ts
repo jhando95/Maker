@@ -308,6 +308,30 @@ export class FortDefenseMode implements GameMode {
       );
       bot.update(dt, ctx.projectiles, canSee, this.nav);
 
+      // A kid who has run out of ways round starts hauling on whatever is in
+      // the way, and after a couple of seconds it comes off — along with
+      // whatever it was holding up. Done here rather than inside the bot
+      // because this is the object the host runs: one authority over the shape
+      // of the world, and one place the removal is announced from.
+      if (bot.pullDone) {
+        const pulled = bot.pulling;
+        if (pulled !== null) {
+          const box = ctx.world.store.readAabb(pulled.part);
+          const down = ctx.build.demolish(pulled.part);
+          if (down.length > 0) {
+            ctx.worldChanged();
+            ctx.emit({
+              type: 'partPulled',
+              x: (box.minX + box.maxX) / 2,
+              y: (box.minY + box.maxY) / 2,
+              z: (box.minZ + box.maxZ) / 2,
+              brought: down.length,
+            });
+          }
+        }
+        bot.clearPull();
+      }
+
       // Reached the stash: take a balloon and leave.
       const d = Math.hypot(bot.x - this.stash.x, bot.z - this.stash.z);
       if (d <= STASH_RADIUS) {

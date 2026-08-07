@@ -51,6 +51,14 @@ is a habit.
   is a containment test now, with the lowest id winning a tie so two parts
   sharing a point cannot make the answer depend on the order a spatial hash
   walks its cells.
+- **"The map is not a bot's to demolish" was proving a rule it never reached.**
+  The test put no wall round the stash at all, so the kids walked to it happily
+  and never reached for anything — it passed with the fixture guard deleted. It
+  seals the stash with *map geometry* now, so the kids are as thwarted as in the
+  test above and have been at it just as long. Worth adding that the outcome is
+  guaranteed twice over: `demolish` refuses fixtures outright and is the
+  authority, and the check in the bot exists so a kid does not spend two and a
+  half seconds hauling on a fence for the rest of the round.
 - **Three checks in a row about the build preview, all passing on a preview
   that was not there.** The collapse scenario asks whether the ghost warns you
   that a placement will not hold, and it ran behind the title menu — which
@@ -170,6 +178,21 @@ that had not been established** — a frame budget standing in for the game's ow
 clock. The honest read is that `scenarios/voice.mjs` is the most expensive check
 here and has been the least trustworthy; it earns its place because nothing else
 can prove one browser can hear another.
+
+## When the measurement changed the design
+
+Not a failure, but the same discipline pointing the other way, and worth one
+entry. Bots were given demolition by hanging it off the state they already
+reach when every diversion is blocked — a kid pressed against a wall with no
+way round. The reasoning was good and the measurement disagreed: against a real
+ring wall that branch fired **zero times in sixty seconds**, because the
+diversion probes reach two radians either side and from outside a round fort
+those always find open lawn. The kid circles it forever, perfectly content.
+
+So the trigger became *cannot get closer* rather than *cannot move*, which is
+what "the fort is working" actually means — circling a wall holds the distance
+to what is inside it exactly constant, and a way in reduces it. An open fort is
+still beaten by walking through the gap, and there is now a test that says so.
 
 ## Every bug that was planted on purpose
 

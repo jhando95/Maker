@@ -74,7 +74,16 @@ export type GameEvent =
   | { type: 'flagTaken'; x: number; y: number; z: number; byPlayer: boolean }
   | { type: 'flagDropped'; x: number; y: number; z: number }
   | { type: 'flagReturned'; x: number; y: number; z: number }
-  | { type: 'captured'; byPlayer: boolean };
+  | { type: 'captured'; byPlayer: boolean }
+  /**
+   * A kid pulled a plank out of something you built, and `brought` came down
+   * with it.
+   *
+   * Carries the count because one plank and eleven are the same event with
+   * very different consequences, and the difference is the whole point of
+   * having a support rule: presentation decides how alarmed to sound.
+   */
+  | { type: 'partPulled'; x: number; y: number; z: number; brought: number };
 
 /**
  * An objective the renderer should draw.
