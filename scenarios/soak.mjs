@@ -83,6 +83,28 @@ export default async function (page) {
 
   console.log(`[soak] ${show('cold', await read(page))}`);
 
+  // ── What the boot-time compile bought ──────────────────────────────────────
+  //
+  // WebGL compiles a program the first time a material is drawn, so without a
+  // warm-up the program count climbs through the first rounds — and every one
+  // of those is a frame the driver spent compiling rather than drawing. The
+  // warm-up has to reach the hidden objects to do anything at all, because the
+  // flags, the crates, the balloons, the lamp glow and the tag shapes are all
+  // built at boot and hidden until something makes them matter, and a compile
+  // walks the scene the way a render does.
+  const warm = await page.evaluate(() => window.__maker.warmup());
+  console.log(`[soak] warm-up: ${warm.before} -> ${warm.after} programs,`
+    + ` ${warm.revealed} hidden objects shown to reach them`);
+  assert(
+    warm.revealed > 0,
+    'the warm-up found nothing hidden, which means it compiled only what was already'
+    + ' on screen — the two things that were never going to hitch',
+  );
+  assert(
+    warm.after > warm.before,
+    `the warm-up compiled nothing: ${warm.before} -> ${warm.after} programs`,
+  );
+
   // The warm-up. Two cycles rather than one, because a cache with a capacity of
   // one entry fills on the first and evicts on the second, and calling the
   // second one a leak is how a soak test earns a reputation for crying wolf.
@@ -105,6 +127,27 @@ export default async function (page) {
   for (let i = 2 + HALF; i < 2 + HALF * 2; i++) await cycle(page, i);
   const after = await read(page);
   console.log(`[soak] ${show(`after ${HALF * 2}`, after)}`);
+
+  // Programs are held to a stricter rule than the rest, and it is the warm-up's
+  // claim rather than the soak's: an upload is not a compile, so the others are
+  // allowed a cache-filling half and this is not.
+  //
+  // The bound is one rather than zero, and that is a measurement rather than a
+  // margin. Before the warm-up, two programs compiled mid-session — one when
+  // Tag first ran and one on the first spray. The warm-up removed the spray
+  // one. The survivor is a `depth` program, so a shadow, and its cache key
+  // differs from one already compiled by two boolean feature bits; four
+  // separate probes failed to say which object needs it, and every pooled
+  // marker, every character mesh and every hidden group is demonstrably
+  // reached. It is written down as unexplained rather than dressed up, and the
+  // bound is here as a ratchet: it cannot go back to two.
+  const KNOWN_LATE = 1;
+  assert(
+    mid.programs - base.programs <= KNOWN_LATE,
+    `rounds compiled ${mid.programs - base.programs} new programs after the boot-time`
+    + ` warm-up (${base.programs} -> ${mid.programs}), and at most ${KNOWN_LATE} is`
+    + ` accounted for — a program compiled mid-round is a hitch on whatever drew it`,
+  );
 
   for (const key of ['geometries', 'textures', 'programs', 'nodes']) {
     const first = mid[key] - base[key];

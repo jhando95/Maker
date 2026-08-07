@@ -81,6 +81,7 @@ import { PerformanceGovernor } from './app/performanceGovernor.ts';
 import { FrameStats } from './app/frameStats.ts';
 import { FrameProfile, type SectionTime } from './app/frameProfile.ts';
 import { GpuTimer, type TimerGl } from './render/gpuTimer.ts';
+import { warmUp, type Compiler, type Hideable } from './render/warmup.ts';
 
 /** How far off the window edge an off-screen objective chevron sits. */
 const PIN_EDGE_MARGIN = 54;
@@ -2567,6 +2568,21 @@ crash.onCrash = () => {
   if (document.pointerLockElement) document.exitPointerLock();
 };
 
+/**
+ * Compile every material before the first frame anybody sees.
+ *
+ * WebGL compiles a program the first time a material is *drawn*, and `soak.mjs`
+ * watches that happen: the program count climbs through its first rounds and
+ * then stops. Each of those is a frame the driver spent compiling — the hitch a
+ * player gets the first time a flag appears, the first time somebody sprays a
+ * shape nobody has sprayed, the first time it gets dark. Here, on the title
+ * screen, that stall is invisible.
+ *
+ * Before `loop.start()` rather than after, because after is a frame that has
+ * already been drawn and a hitch that has already happened.
+ */
+const warmed = warmUp(renderer as unknown as Compiler, scene as unknown as Hideable, camera.camera);
+
 loop.start();
 
 // Boot into the title screen through the same path everything else uses, so the
@@ -3069,6 +3085,8 @@ window.__maker = {
       nodes,
     };
   },
+  /** What the boot-time compile had to do, so a scenario can hold it to it. */
+  warmup: () => ({ ...warmed, programs: renderer.info.programs?.length ?? 0 }),
   inputDevice: () => input.lastDevice,
   /** Half the width of the world, so a scenario cannot drift from the constant. */
   playHalf: () => PLAY_HALF,

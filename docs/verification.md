@@ -311,6 +311,55 @@ small leak forever. A cache flattens; a leak keeps its slope. So the assertion
 is that the *second* half grows by nothing at all, and the first half exists
 only to give the caches somewhere to go.
 
+## The warm-up, three wrong hypotheses and one bad plant
+
+`renderer.compile` before the loop starts, so the driver compiles every shader
+on the title screen instead of the first time a flag appears. The measured
+effect is real: geometries uploaded at boot go **174 to 204**, the soak's
+first-half geometry growth goes from +5 to **flat**, and the program compiled on
+the first spray is gone. Getting there took four browser probes and most of them
+were wrong, which is the part worth keeping.
+
+**Right:** `compile` walks the scene the way a render does and never descends
+into `visible === false` — and hidden is the state of every flag, crate,
+balloon, lamp glow and tag shape in this game, all built at boot. Handed the
+scene as it stands it warms the lawn and the fence, reports success, and leaves
+every hitch exactly where it was. Forcing visibility found **70 hidden
+objects**.
+
+**Right, and only found by measuring:** that still left one program compiling
+when Tag started, and its cache key begins `depth` — a *shadow* program.
+`compile` warms the pass that draws to the screen; a shadow map is a second pass
+with its own material per caster, and the only way to compile a pass is to run
+it. So the warm-up now renders one frame with everything visible, and
+invalidates the shadow map on the way out because the map it just drew contains
+a shadow for every hidden object in the world.
+
+**Wrong, and kept anyway:** the next guess was that instanced meshes at `count`
+zero are skipped like hidden ones, so the whole cast was going uncompiled. The
+first half of that is true — it is the rule this project has written up twice
+already — and lifting the counts is now part of the warm-up and tested. It
+changed no number here, because those programs were already compiled by meshes
+sharing a key. It is in because it is correct, not because it fixed anything.
+
+**Still unexplained.** One `depth` program is compiled when Tag first runs. Its
+key differs from an already-compiled one by two boolean feature bits. Four
+probes failed to name the object: every pooled marker, every character mesh and
+every hidden group is demonstrably reached by the warm-up. The soak asserts a
+bound of one rather than zero, as a ratchet — it cannot go back to the two it
+was — and this paragraph is here instead of a tidier claim.
+
+**And a plant that missed for its own reasons.** Nine were planted on the
+warm-up and eight failed immediately. The ninth — leaving the shadow map
+standing — passed twice, and both causes were mine rather than the test's.
+First the fake renderer never cleared `needsUpdate` the way three does after
+drawing a map, so the flag was left true by the *earlier* assignment and the
+assertion could not fail. Then, with that fixed, the plant itself was wrong: it
+inserted a dead line and left the real assignment further down untouched. Once
+the plant actually removed the assignment it failed at once. A plant that
+survives is a claim about the test *or* about the plant, and it is worth knowing
+which before rewriting either.
+
 ## Every bug that was planted on purpose
 
 Each of these was introduced deliberately, to watch one assertion fail, and then
@@ -361,3 +410,10 @@ negative result trusted; a result read without asking whether it is ready — th
 one that would stall the whole pipeline; a second query opened while one is
 active; a tainted result recorded anyway; and a timer that claims to work on a
 machine with no extension.
+
+And on the boot-time warm-up, nine: a restore that does nothing; a restore that
+switches everything on instead of putting back what was off; counts never
+lifted; counts never put back; no frame drawn at all; the shadow map not asked
+for before the frame that compiles its programs; the shadow map left standing
+afterwards; a driver that throws left uncleaned-up; and a traversal that stops
+at a hidden branch instead of descending into it.
