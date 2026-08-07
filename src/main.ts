@@ -3049,6 +3049,26 @@ window.__maker = {
     const el = hud.root.querySelector('.maker-stats');
     return el && !el.classList.contains('maker-hidden') ? (el.textContent ?? '') : null;
   },
+  /**
+   * What the renderer is holding on to.
+   *
+   * The counts three.js keeps, plus the size of the scene graph, because those
+   * are two different leaks and only one of them shows up in `info.memory`: a
+   * batch that adds a mesh on every rebuild and never removes the old one grows
+   * the graph without allocating a single new buffer, and a batch that disposes
+   * its mesh but leaves the node attached does the reverse. A soak that watched
+   * one of them would miss half the ways this can go wrong.
+   */
+  renderMemory: () => {
+    let nodes = 0;
+    scene.traverse(() => { nodes++; });
+    return {
+      geometries: renderer.info.memory.geometries,
+      textures: renderer.info.memory.textures,
+      programs: renderer.info.programs?.length ?? 0,
+      nodes,
+    };
+  },
   inputDevice: () => input.lastDevice,
   /** Half the width of the world, so a scenario cannot drift from the constant. */
   playHalf: () => PLAY_HALF,

@@ -277,6 +277,40 @@ an inference. It also confirms, rather than merely suspects, that every
 performance figure this repository has taken from CI is a figure about a
 software rasteriser.
 
+## The soak, and the two plants it took to make it mean anything
+
+`scenarios/soak.mjs` runs twenty-four identical rounds of building, painting,
+demolishing, nightfall and a mode change, and asks whether the renderer is
+holding anything afterwards. It passes, and the first two attempts to prove it
+could fail are the interesting part.
+
+**The first plant survived.** Removing `bucket.mesh.geometry.dispose()` from
+`PartRenderer` changed nothing, because that line is inside `dispose()` — the
+whole-renderer teardown, which a session never calls. The soak had never been
+near it. That is the entire argument for planting: the test looked like it
+covered the build path and did not.
+
+**The second plant survived too.** `TagDecals.dispose()` and
+`NightLights.dispose()` are the same shape — teardown-only. Following that
+thread is what turned up why nothing leaks here, which is a design fact rather
+than luck: **every render batch in this project allocates at construction and
+mutates counts afterwards.** A round never builds a mesh. It is the same rule
+that makes `count` the way things are hidden, arrived at for a different reason.
+
+**The third plant caught it**, and it is the regression that design exists to
+prevent: `TagDecals.set` rebuilding a geometry per change instead of writing
+counts, which is exactly what a tidying refactor would produce. Geometries went
+174 → 223 → 267, which the log reports as "+49 then +44 over 12 identical cycles
+each".
+
+That number is also the argument for the two-halves shape. Real growth over the
+first twelve cycles is +5 — modes and tag shapes being drawn for the first time,
+since `info.memory.geometries` counts an upload rather than a construction — and
+a threshold loose enough to allow it is a threshold that would have allowed a
+small leak forever. A cache flattens; a leak keeps its slope. So the assertion
+is that the *second* half grows by nothing at all, and the first half exists
+only to give the caches somewhere to go.
+
 ## Every bug that was planted on purpose
 
 Each of these was introduced deliberately, to watch one assertion fail, and then

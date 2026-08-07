@@ -216,6 +216,18 @@ jobs:
       - name: Frame-profile scenario
         run: node tools/shoot.mjs --scenario scenarios/profile.mjs --auto-quality --out /tmp/ci-profile.png
 
+      # Whether a long session grows. Every other check here asks whether
+      # something works; this asks whether doing it two dozen times costs more
+      # than doing it twice, which is the one question no unit test can reach —
+      # a leak is invisible in the code that causes it and in a thirty-second
+      # playtest, and it arrives as "the game gets worse the longer you play"
+      # three weeks later. Two halves rather than a threshold, because a cache
+      # filling and a leak of the same size look identical as a total and only
+      # one of them flattens. Costs about three minutes, which is the price of
+      # a class of bug this project could not otherwise see at all.
+      - name: Soak scenario
+        run: node tools/shoot.mjs --scenario scenarios/soak.mjs --auto-quality --out /tmp/ci-soak.png
+
       # The edge of the world, and the only way to find out where it is: walk
       # at it. All three holes this closes were found by driving the real player
       # around and none of them was visible to a unit test — an infinite ground
