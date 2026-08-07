@@ -23,7 +23,7 @@ import { Lumber, costOf } from './lumber.ts';
 import type { PartId } from '../physics/types.ts';
 import { boxInBounds } from '../world/bounds.ts';
 import { MAX_BLUEPRINT_PARTS } from './blueprint.ts';
-import { collapseAfter, type Box, type Structure } from './support.ts';
+import { collapseAfter, wouldStand, type Box, type Structure } from './support.ts';
 
 export { worldAabb } from './partKit.ts';
 
@@ -46,6 +46,15 @@ export const GHOST_INVALID = 0xff6b6b;
 
 /** Beyond this the ghost teleports instead of easing — damping reads as lag. */
 const GHOST_TELEPORT_DISTANCE = 0.6;
+
+/**
+ * How fast an unsupported preview pulses, in radians a second.
+ *
+ * About one and a third cycles a second. Slower reads as a fade somebody might
+ * not notice; faster reads as a fault in the renderer rather than as a warning
+ * about the plank.
+ */
+const GHOST_PULSE_RATE = 8.4;
 
 /**
  * Caps on one repeat chain.
@@ -108,6 +117,8 @@ export class BuildSystem {
   private readonly ghostPos = new THREE.Vector3();
   private readonly ghostQuat = new THREE.Quaternion();
   private ghostInitialized = false;
+  /** Seconds, for the unsupported preview's pulse. */
+  private ghostPhase = 0;
 
   /** Undo stack of part ids, most recent last. */
   private readonly history: PartId[] = [];
@@ -475,6 +486,9 @@ export class BuildSystem {
     if (candidate === null) {
       this.ghostMesh.visible = false;
       this.ghostEdges.visible = false;
+      // Nothing to place is not the same as something that will fall.
+      this.previewSupported = true;
+      this.previewPlaceable = false;
       return;
     }
     this.ghostMesh.visible = true;
@@ -510,10 +524,75 @@ export class BuildSystem {
     const placeable = candidate.valid && this.canAffordSelected;
     const tint = placeable ? this.ghostValidColor : this.ghostInvalidColor;
     this.ghostMaterial.color.setHex(tint);
-    this.ghostMaterial.opacity = placeable ? 0.34 : 0.24;
     // The outline carries the colour now, so the fill can be fainter — enough
     // to say which side is solid without hiding what is behind it.
     this.ghostEdgeMaterial.color.setHex(tint);
+
+    // Legal, affordable, and standing on nothing.
+    //
+    // The third state the ghost needed, and the reason it needs one: taking a
+    // leg out can no longer strand a part, because whatever it was holding
+    // comes down with it — but *placing* still can, and a plank hung in open
+    // air stays there. Warned rather than refused, because "find out if it
+    // holds" is the game and a rule that never lets you try is not that.
+    //
+    // Said with a **pulse rather than a third colour**. Two hues are already
+    // spoken for and one of the two palettes is the colourblind pair, where a
+    // third would have to sit between blue and orange. Motion is a channel
+    // nobody is missing, and it reads as "careful" rather than as "stop",
+    // which is exactly the difference between this state and an illegal one.
+    this.ghostPhase += dt;
+    // Worked out once, here, and read from a field afterwards — the HUD and the
+    // preview have to be answering about the same box, and a getter that
+    // recomputed would also pay for the query twice a frame.
+    this.previewPlaceable = placeable;
+    this.previewSupported = placeable
+      ? wouldStand(this.structure, worldAabb(this.recordFor(candidate)))
+      : true;
+    const floating = placeable && !this.previewSupported;
+    const pulse = floating
+      ? 0.35 + 0.65 * (0.5 + 0.5 * Math.sin(this.ghostPhase * GHOST_PULSE_RATE))
+      : 1;
+    this.ghostMaterial.opacity = (placeable ? 0.34 : 0.24) * pulse;
+    this.ghostEdgeMaterial.opacity = 0.95 * pulse;
+  }
+
+  private previewSupported = true;
+  private previewPlaceable = false;
+
+  /**
+   * Is there something under the crosshair that a click would place?
+   *
+   * The precondition for reading `previewStands` at all. Without it "would this
+   * hold" reads as *yes* when the ghost is not on screen, which is true and
+   * useless — and would let a check about support pass with no preview in the
+   * world at all.
+   */
+  get previewActive(): boolean {
+    return this.previewPlaceable;
+  }
+
+  /**
+   * Would the part under the crosshair be held up by anything?
+   *
+   * True when there is nothing placeable under the crosshair, so a caller
+   * reading this alone never reports a warning about a preview that is not on
+   * screen or could not go down anyway.
+   */
+  get previewStands(): boolean {
+    return this.previewSupported;
+  }
+
+  /**
+   * How solid the preview is being drawn right now.
+   *
+   * Exposed so a scenario can watch the pulse move without differencing
+   * screenshots — the warning is *motion*, and a number that changes over time
+   * is a far better witness to motion than two pictures with a whole yard
+   * between them.
+   */
+  get ghostOpacity(): number {
+    return this.ghostMaterial.opacity;
   }
 
   /**
@@ -526,7 +605,18 @@ export class BuildSystem {
   place(): PlacementRecord | null {
     const candidate = this.lastResult?.candidate;
     if (candidate === undefined || candidate === null || !candidate.valid) return null;
+    return this.recordFor(candidate);
+  }
 
+  /**
+   * The record a candidate would become.
+   *
+   * Shared with the ghost's support check rather than written twice, because
+   * the two must describe the same box: a preview that says "this will hold"
+   * about a slightly different placement than the one the click makes is worse
+   * than no preview.
+   */
+  private recordFor(candidate: Candidate): PlacementRecord {
     return {
       kind: this.selectedKind,
       colorway: this.selectedColorway,

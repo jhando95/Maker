@@ -23,7 +23,10 @@ plank nailed to the side of a post is held by that post, and half of what people
 build here is cantilevered off something. A collapse has its own sound, lower
 and louder the more of it fell, and it carries twice as far as a plank going
 up — in a mode where two people are dismantling each other's forts, it is the
-only warning the other one gets.
+only warning the other one gets. And the preview tells you first: a placement
+that would be standing on nothing goes on pulsing rather than sitting still,
+which is a warning rather than a refusal, because finding out whether it holds
+is the game.
 
 **The afternoon gets late while you play.** The sun drops and swings west across
 a round, the shadows stretch, the sky drains to a warm horizon under a deep blue,

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  TOUCH, anchored, collapseAfter, joinedTo, onGround, unsupported,
+  TOUCH, anchored, collapseAfter, joinedTo, onGround, unsupported, wouldStand,
   type Box, type Structure,
 } from './support.ts';
 
@@ -242,4 +242,65 @@ describe('the local flood against the whole-world sweep', () => {
       });
     }
   }
+});
+
+describe('before the wood is spent', () => {
+  const at = (x: number, y: number, z: number): Box =>
+    ({ minX: x - 0.5, maxX: x + 0.5, minY: y - 0.1, maxY: y + 0.1, minZ: z - 0.1, maxZ: z + 0.1 });
+
+  it('says yes to a part on the lawn', () => {
+    expect(wouldStand(world([]), at(0, 0.1, 0))).toBe(true);
+  });
+
+  it('says no to one in mid-air with nothing near it', () => {
+    expect(wouldStand(world([{ id: 0, x: 9, y: 0.1, z: 9 }]), at(0, 4, 0))).toBe(false);
+  });
+
+  it('says yes to one nailed to the map, however high', () => {
+    const s = world([{ id: 0, x: 0, y: 4, z: 0, fixed: true, w: 2, h: 4, d: 2 }]);
+    expect(wouldStand(s, at(1.5, 4, 0))).toBe(true);
+  });
+
+  it('says yes to one nailed to a tower that reaches the ground', () => {
+    const s = world(tower());
+    expect(wouldStand(s, at(0, 1.05, 0))).toBe(true);
+  });
+
+  it('says NO to one nailed to something that is itself floating', () => {
+    // The reason this floods instead of looking at its neighbours. The warning
+    // is a warning rather than a refusal, so a player who ignores it leaves a
+    // floating part behind — and the next part nailed to that one would be
+    // called supported by something that is not.
+    const s = world([{ id: 0, x: 0, y: 4, z: 0 }]);
+    expect(wouldStand(s, at(0.9, 4, 0))).toBe(false);
+  });
+
+  it('follows a floating run all the way back to the ground before deciding', () => {
+    const s = world([
+      { id: 0, x: 0, y: 0.1, z: 0 },
+      { id: 1, x: 0.9, y: 0.3, z: 0 },
+      { id: 2, x: 1.8, y: 0.5, z: 0 },
+    ]);
+    expect(wouldStand(s, at(2.7, 0.7, 0))).toBe(true);
+  });
+
+  it('changes its mind when the thing that was holding it up goes', () => {
+    // The claim that the answer is about the world rather than about the box.
+    // One post on the lawn and a shelf against its top: the shelf stands, and
+    // the moment the post is taken away the same shelf does not.
+    const s = world([{ id: 0, x: 0, y: 0.75, z: 0, w: 0.2, h: 1.5, d: 0.2 }]);
+    const shelf = at(0.5, 1.4, 0);
+    expect(wouldStand(s, shelf)).toBe(true);
+    s.drop(0);
+    expect(wouldStand(s, shelf)).toBe(false);
+  });
+
+  it('is the same question `collapseAfter` answers, from the other side', () => {
+    // Place a part where a box would *not* stand, and taking it away again has
+    // to strand nothing — there was nothing holding it and nothing hanging off
+    // it. Place one where a box would stand, and it joins something that does.
+    const floating = world([{ id: 0, x: 0, y: 4, z: 0 }]);
+    expect(wouldStand(floating, at(0.9, 4, 0))).toBe(false);
+    expect(collapseAfter(floating, at(0.9, 4, 0))).toEqual([0]);
+  });
 });

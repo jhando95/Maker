@@ -51,6 +51,20 @@ is a habit.
   is a containment test now, with the lowest id winning a tie so two parts
   sharing a point cannot make the answer depend on the order a spatial hash
   walks its cells.
+- **Three checks in a row about the build preview, all passing on a preview
+  that was not there.** The collapse scenario asks whether the ghost warns you
+  that a placement will not hold, and it ran behind the title menu — which
+  pauses the loop, so `build.update` never ran, so there was no candidate, so
+  "would this hold" answered *yes, nothing is wrong* every time. The stamping
+  and demolishing either side of it go through debug hooks and work paused,
+  which is exactly why it was invisible. `buildPreview()` now reports whether
+  there **is** a preview and **where** it landed, and the scenario asserts both
+  before asking anything about support: without the position, a ray that sails
+  under a plank three metres up and hits the lawn answers the question about
+  the wrong placement. Two more of the same family on the way in — aiming
+  before the teleported body had finished falling, so the ray was computed from
+  an eye 60cm above the one that fired it; and reading the preview in the same
+  `evaluate` that moved the camera, before a frame had run.
 - **The back-door light check was asserting on somebody else's house.** Written
   as "a light behind the house at door height" and nothing else, it passed with
   the back-door light deleted: a neighbour's front window forty-two metres east

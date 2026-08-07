@@ -46,8 +46,21 @@ const TOWER = [
 
 const parts = (page) => page.evaluate(() => window.__maker.stats().parts);
 
+/** Wait for real frames rather than for a clock. */
+const frames = (page, count) => page.evaluate((n) => new Promise((resolve) => {
+  let seen = 0;
+  const step = () => { if (++seen >= n) resolve(); else requestAnimationFrame(step); };
+  requestAnimationFrame(step);
+}), count);
+
 export default async function (page) {
+  // Into the world rather than behind the title menu, because the menu pauses
+  // the loop — and a paused loop never runs `build.update`, so there is no
+  // preview to ask about and every question about one answers "nothing is
+  // wrong". The stamping and demolishing below go through debug hooks and work
+  // either way, which is exactly why this was easy to miss.
   await page.evaluate(() => {
+    window.__maker.hideOverlay();
     window.__maker.setHudVisible(false);
     window.__maker.lookAt(Math.PI, -0.2);
   });
@@ -158,8 +171,91 @@ export default async function (page) {
     `and once the last leg goes the beam goes with it, ${lastLeg.length} came down`,
   );
 
+  // ── And it says so before the wood is spent ────────────────────────────────
+  //
+  // The ghost's third state. Removal can no longer strand a part — whatever it
+  // was holding comes down with it — but *placing* still can, and a plank hung
+  // in open air stays there. Warned rather than refused, because "find out if
+  // it holds" is the game and a rule that never lets you try is not that.
+  //
+  // The reachable case is not "aim at the sky": the snapper hides the ghost
+  // when the ray meets nothing, so a single placement is always against
+  // something. It is **a stamp**, which anchors on one surface and can leave
+  // its far end in the air — and then anything nailed to that far end. So the
+  // set-up here is the one a player actually reaches: a floating plank, and a
+  // second one aimed at it.
+  const HANG = { x: AT.x + 5, y: 3.2, z: AT.z };
+  const hung = await page.evaluate((h) => window.__maker.blueprints.stampThese([
+    { kind: 0, colorway: 0, x: h.x, y: h.y, z: h.z, qx: 0, qy: 0, qz: 0, qw: 1 },
+  ]), HANG);
+  assert(hung, 'a plank should be placeable in mid-air, because nothing refuses it');
+
+  // Stand first, *then* aim. `lookAtPoint` works out a direction from where the
+  // eye is at the moment it is called, and a body that has just been teleported
+  // is still falling — aiming before it lands points the ray sixty centimetres
+  // under the target, which at three metres is a clean miss of a plank five
+  // centimetres thick.
+  await page.evaluate((h) => window.__maker.teleport(h.x, 0.6, h.z + 0.6), HANG);
+  await page.waitForFunction(() => window.__maker.stats().player.onGround === true,
+    null, { timeout: 8000 });
+  await page.evaluate((h) => window.__maker.lookAtPoint(h.x, h.y, h.z), HANG);
+  await frames(page, 3);
+
+  const onHung = await page.evaluate(() => window.__maker.buildPreview());
+  // The precondition, stated. Without it "would this hold" reads as yes when
+  // there is no ghost on screen at all, which is true and useless.
+  assert(onHung.aiming, 'there should be a preview on the floating plank to ask about');
+  // *Where* it landed, not just that it landed. Standing almost underneath and
+  // aiming up leaves the lawn out of the ray entirely, and without this the
+  // check below could be answered by a plank lying on the grass.
+  assert(
+    onHung.at !== null && Math.abs(onHung.at.y - HANG.y) < 0.3,
+    `the preview should be against the floating plank, and it is at`
+    + ` ${JSON.stringify(onHung.at)}`,
+  );
+  assert(
+    onHung.stands === false,
+    'and a plank nailed to a floating plank is not held up by anything',
+  );
+
+  // The pulse is the cue, so it has to actually move.
+  const watch = () => page.evaluate(() => new Promise((resolve) => {
+    const seen = [];
+    const step = () => {
+      seen.push(window.__maker.buildPreview().opacity);
+      if (seen.length >= 14) resolve(seen);
+      else requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
+  }));
+  const moving = await watch();
+  const spread = Math.max(...moving) - Math.min(...moving);
+  assert(
+    spread > 0.05,
+    `an unsupported preview should pulse, and this one moved ${spread.toFixed(3)}`,
+  );
+
+  // And hold still when there is nothing to warn about, or it is not a cue,
+  // it is a flicker.
+  await page.evaluate((h) => {
+    window.__maker.lookAtPoint(h.x, 0, h.z);
+  }, HANG);
+  await frames(page, 4);
+  const onLawn = await page.evaluate(() => window.__maker.buildPreview());
+  assert(onLawn.aiming, 'there should be a preview on the lawn to ask about');
+  assert(onLawn.stands === true, 'a plank aimed at the lawn is held up by the lawn');
+
+  const steady = await watch();
+  const drift = Math.max(...steady) - Math.min(...steady);
+  assert(
+    drift < 0.01,
+    `a supported preview should hold still, and this one moved ${drift.toFixed(3)}`,
+  );
+
   console.log('[collapse] verified: a three-part tower stands and carries a player'
     + ` at ${up.y.toFixed(2)}m, its top comes off on its own, its leg takes all of it`
     + ` down, the player lands back on the lawn at ${after.y.toFixed(2)}m, and a beam`
-    + ' with two legs under it survives losing one of them');
+    + ' with two legs under it survives losing one of them, and the preview says'
+    + ` which is which before the wood is spent — pulsing ${spread.toFixed(2)} over open`
+    + ` air and holding to ${drift.toFixed(3)} on the lawn`);
 }

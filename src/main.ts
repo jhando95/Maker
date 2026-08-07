@@ -2656,6 +2656,25 @@ window.__maker = {
    * in a parked shot that is never quite still.
    */
   setBuildPreview: (on: boolean) => build.setPreviewVisible(on),
+  /**
+   * Whether the part under the crosshair would be held up by anything, and how
+   * solid its preview is being drawn — the two halves of the warning. The
+   * opacity is there so a scenario can watch the pulse move without
+   * differencing screenshots, which this project has now learned twice is a
+   * question about the whole yard rather than about one preview.
+   */
+  buildPreview: () => {
+    // Where it is, as well as what it is. A check that asks "would this hold"
+    // without asking "and where did the crosshair actually land" is a check
+    // that can pass because the ray sailed under its target and hit the lawn.
+    const at = build.place();
+    return {
+      aiming: build.previewActive,
+      stands: build.previewStands,
+      opacity: build.ghostOpacity,
+      at: at === null ? null : { x: at.x, y: at.y, z: at.z },
+    };
+  },
   setLamps: (level: number) => {
     nightLights.setLevel(level);
     return { level: nightLights.level, drawn: nightLights.drawn };

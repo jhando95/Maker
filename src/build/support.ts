@@ -185,6 +185,50 @@ export function collapseAfter(s: Structure, box: Box): number[] {
 }
 
 /**
+ * Would a part filling this box be held up by anything?
+ *
+ * The question the ghost asks every frame, and the mirror of `collapseAfter`:
+ * one asks what is stranded when a box empties, this asks whether a box would
+ * be stranded if it filled.
+ *
+ * It floods rather than only looking at the immediate neighbours, and that is
+ * not caution. It would be enough if every live part were known to be standing
+ * — but the warning this powers is a *warning* rather than a refusal, so a
+ * player who ignores it leaves a floating part behind, and the next part nailed
+ * to that one would otherwise be called supported by something that is not.
+ *
+ * Cheap in the cases that happen: a placement on the lawn answers on the first
+ * line, one against a wall answers after a single broadphase query, and one in
+ * open air answers with an empty neighbour list. Only a large floating cluster
+ * costs a walk, and a large floating cluster is something a player built on
+ * purpose after being told twice.
+ */
+export function wouldStand(s: Structure, box: Box): boolean {
+  if (onGround(s, box)) return true;
+
+  const seen = new Set<number>();
+  const queue: number[] = [];
+  for (const id of joinedTo(s, box)) {
+    if (s.fixed(id)) return true;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    queue.push(id);
+  }
+
+  for (let head = 0; head < queue.length; head++) {
+    const id = queue[head]!;
+    if (anchored(s, id)) return true;
+    for (const next of joinedTo(s, s.box(id), id)) {
+      if (s.fixed(next)) return true;
+      if (seen.has(next)) continue;
+      seen.add(next);
+      queue.push(next);
+    }
+  }
+  return false;
+}
+
+/**
  * Everything in the world that is not holding itself up.
  *
  * The whole-world sweep `collapseAfter` exists to avoid. Kept because it is the

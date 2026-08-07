@@ -129,6 +129,65 @@ describe('BuildSystem placement', () => {
     expect(renderer.instanceCount).toBe(0);
   });
 
+  describe('and says so before the wood is spent', () => {
+    const kind = getPartKind(0);
+    const half = kind.thickness / 2;
+    /** One plank, exactly where asked, with no aiming in it. */
+    const plankAt = (x: number, y: number, z: number): number =>
+      build.stamp([{ kind: 0, colorway: 0, x, y, z, qx: 0, qy: 0, qz: 0, qw: 1 }])[0]!;
+
+    it('calls a placement on the lawn supported', () => {
+      aim(build, [0, 1.5, 3], [0, -0.55, -1]);
+      expect(build.place()).not.toBeNull();
+      expect(build.previewStands).toBe(true);
+    });
+
+    it('calls one hung in open air unsupported', () => {
+      // Four hundred metres up, aimed at the horizon: the snapper puts a
+      // candidate at arm's length with nothing anywhere near it.
+      aim(build, [0, 400, 0], [0, 0, -1]);
+      const record = build.place();
+      expect(record).not.toBeNull();
+      expect(record!.y).toBeGreaterThan(390);
+      expect(build.previewStands).toBe(false);
+    });
+
+    it('takes support from a plank standing on the lawn', () => {
+      plankAt(0, half, 3);
+      aim(build, [0, 1.5, 3.9], [0, -1.45, -0.9]);
+      expect(build.place()).not.toBeNull();
+      expect(build.previewStands).toBe(true);
+    });
+
+    it('will not take support from a plank that is floating itself', () => {
+      // The whole reason the check floods rather than looking at what it
+      // touches. This is the second storey of a mistake: a player ignored the
+      // warning once, and the part they nail to that one is no better off.
+      plankAt(0, 10, 3);
+      aim(build, [0, 10 + 1.5, 3.9], [0, -1.45, -0.9]);
+      const record = build.place();
+      expect(record).not.toBeNull();
+      expect(record!.y).toBeGreaterThan(9);
+      expect(build.previewStands).toBe(false);
+    });
+
+    it('changes its mind when what was holding it up is taken away', () => {
+      // Same aim, same crosshair, different world.
+      const id = plankAt(0, half, 3);
+      aim(build, [0, 1.5, 3.9], [0, -1.45, -0.9]);
+      expect(build.previewStands).toBe(true);
+
+      build.demolish(id);
+      aim(build, [0, 1.5, 3.9], [0, -1.45, -0.9]);
+      // Now it lands on the lawn instead, which is still supported — so the
+      // claim has to be about a placement the ground cannot rescue.
+      const onLawn = build.place();
+      expect(onLawn).not.toBeNull();
+      expect(onLawn!.y).toBeLessThan(half + 0.05);
+      expect(build.previewStands).toBe(true);
+    });
+  });
+
   describe('and everything it was holding up', () => {
     // The rule the title screen has promised since the first commit — *build it
     // yourself, then find out if it holds* — checked against the real
