@@ -33,6 +33,24 @@ const frames = (page, count) =>
     count,
   );
 
+/**
+ * Wait for the game to be in a state, never for a number of frames.
+ *
+ * Switching between first and third person is *eased* — `showsPlayer` is
+ * `modeBlend > 0.2` and the blend takes a while to cross it, a while whose
+ * length is a function of the frame time. So "three frames after asking for
+ * first person" is not "in first person", it is a bet on how fast the machine
+ * is, and the bet came due on a CI runner: the local player was still in the
+ * roster, four kids were drawn, and an assertion that three mouths should be
+ * on screen failed saying `4 of 3`.
+ *
+ * Same root cause as every scenario failure on this project — asserting on
+ * state that had not been established — and the same fix as the last three.
+ */
+const until = (page, fn, what, timeout = 20000) =>
+  page.waitForFunction(fn, undefined, { timeout, polling: 'raf' })
+    .catch(() => { throw new Error(`kids scenario: ${what}`); });
+
 const TMP = process.env.RUNNER_TEMP ?? '/tmp';
 
 export default async function (page) {
@@ -63,12 +81,15 @@ export default async function (page) {
   // The local player is one of the kids the moment the camera can see them.
   // This is the claim the whole rig exists for, and it used to be false: the
   // player was a blue capsule with a yellow ball on top, drawn by other code.
-  const third = await page.evaluate(() => {
-    window.__maker.setCameraMode('third');
-    return null;
-  });
-  void third;
-  await frames(page, 3);
+  await page.evaluate(() => { window.__maker.setCameraMode('third'); });
+  await until(
+    page,
+    () => window.__maker.drawnActorIds().includes(0),
+    'the local player never joined the roster in third person',
+  );
+  // One more frame, so `charactersPosed` is a count of the frame that drew them
+  // rather than of the one before it.
+  await frames(page, 1);
   const withPlayer = await page.evaluate(() => ({
     ids: window.__maker.drawnActorIds(),
     posed: window.__maker.charactersPosed(),
@@ -83,7 +104,12 @@ export default async function (page) {
   );
 
   await page.evaluate(() => window.__maker.setCameraMode('first'));
-  await frames(page, 3);
+  await until(
+    page,
+    () => !window.__maker.drawnActorIds().includes(0),
+    'the local player never left the roster in first person',
+  );
+  await frames(page, 1);
 
   // ── They have faces, and the faces point somewhere ─────────────────────────
   //
