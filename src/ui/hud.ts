@@ -396,6 +396,15 @@ function escapeHtml(raw: string): string {
 }
 
 export interface HudState {
+  /**
+   * The blueprint in the player's hands, or null for a single part.
+   *
+   * On the chip rather than in a corner of its own, because the chip is the one
+   * place a player already looks to answer "what am I holding" — and while a
+   * blueprint is held, the part chip would be answering a question nobody is
+   * asking.
+   */
+  blueprint: { name: string; parts: number; cost: number } | null;
   selectedKind: number;
   colorway: number;
   validPlacement: boolean;
@@ -774,15 +783,23 @@ export class Hud {
     const cost = costOf(state.selectedKind);
 
     // Only rewritten when it would actually differ; this runs every frame.
-    const chipKey = `${state.selectedKind}:${state.colorway}:${metered ? cost : ''}`;
+    const bp = state.blueprint;
+    const chipKey = bp !== null
+      ? `bp:${bp.name}:${bp.parts}:${metered ? bp.cost : ''}`
+      : `${state.selectedKind}:${state.colorway}:${metered ? cost : ''}`;
     if (chipKey !== this.chipKey) {
       this.chipKey = chipKey;
-      this.chip.innerHTML =
-        `<span class="maker-swatch" style="background:#${swatch}"></span>` +
-        `<b>${PART_KINDS[state.selectedKind]!.name}</b>` +
-        `<span class="dims">${dims(state.selectedKind)}</span>` +
-        (metered ? `<span class="cost">${cost} wood</span>` : '') +
-        `<span class="hint">Tab</span>`;
+      this.chip.innerHTML = bp !== null
+        ? `<span class="maker-swatch" style="background:#8fe3a0"></span>`
+          + `<b>${escapeHtml(bp.name)}</b>`
+          + `<span class="dims">${bp.parts} parts</span>`
+          + (metered ? `<span class="cost">${bp.cost} wood</span>` : '')
+          + `<span class="hint">M</span>`
+        : `<span class="maker-swatch" style="background:#${swatch}"></span>`
+          + `<b>${PART_KINDS[state.selectedKind]!.name}</b>`
+          + `<span class="dims">${dims(state.selectedKind)}</span>`
+          + (metered ? `<span class="cost">${cost} wood</span>` : '')
+          + `<span class="hint">Tab</span>`;
     }
   }
 

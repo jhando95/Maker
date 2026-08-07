@@ -56,6 +56,7 @@ import {
   type RtcSignal,
 } from './protocol.ts';
 import { SignalBudget } from '../voice/voiceRules.ts';
+import { MAX_BLUEPRINT_PARTS } from '../build/blueprint.ts';
 import { IDLE_INPUT, type ActorInput, type GameMode } from '../game/gameMode.ts';
 import type { ProjectileSystem } from '../game/projectiles.ts';
 import { applyItems } from '../game/itemField.ts';
@@ -420,6 +421,25 @@ export class NetHost {
         this.broadcast({ t: 'built', id, r: message.r });
         break;
       }
+      case 'stamp': {
+        // Every part within reach of the person asking, and the whole thing or
+        // none of it — the same two rules as a single placement, applied to a
+        // set. Checking only the anchor would let a guest hang a blueprint's
+        // far end anywhere the blueprint is long, which is a bigger hole than
+        // the one `withinReach` was added to close.
+        if (message.rs.length === 0 || message.rs.length > MAX_BLUEPRINT_PARTS) return;
+        for (const r of message.rs) if (!this.withinReach(peer, r, NetHost.BLUEPRINT_SPAN)) return;
+        const ids = this.ctx.build.stamp(message.rs);
+        if (ids.length === 0) return;
+        this.ctx.worldChanged();
+        // Broadcast one at a time, because that is the message a client already
+        // knows how to apply. The atomicity that matters is the host's decision,
+        // and it has been made by the time any of these go out.
+        for (let i = 0; i < ids.length; i++) {
+          this.broadcast({ t: 'built', id: ids[i]!, r: message.rs[i]! });
+        }
+        break;
+      }
       case 'unbuild': {
         if (!this.ctx.build.applyRemove(message.p)) return;
         this.ctx.worldChanged();
@@ -632,9 +652,22 @@ export class NetHost {
   private readonly signalBudget = new SignalBudget();
   private hostName = 'the host';
 
-  private withinReach(peer: Peer, record: PlacementRecord): boolean {
+  /**
+   * How far past arm's reach a stamped part may land.
+   *
+   * A blueprint is a thing with a size: the top of a staircase is legitimately
+   * several metres up and several along from the spot you put it down on, so
+   * the single-plank reach rule refuses every blueprint taller than a person.
+   * This is the allowance for that, and it is a real widening of what a guest
+   * can ask for — bounded, stated, and much smaller than the alternative of
+   * checking only the anchor, which would let a blueprint of any span put its
+   * far end anywhere at all.
+   */
+  private static readonly BLUEPRINT_SPAN = 12;
+
+  private withinReach(peer: Peer, record: PlacementRecord, extra = 0): boolean {
     const body = peer.actor.controller;
-    const limit = MAX_REACH + CAP_HEIGHT + NetHost.REACH_SLACK_MOVED;
+    const limit = MAX_REACH + CAP_HEIGHT + NetHost.REACH_SLACK_MOVED + extra;
     const dx = record.x - body.x;
     const dy = record.y - body.y;
     const dz = record.z - body.z;
@@ -1210,6 +1243,18 @@ export class NetClient {
 
   emote(k: EmoteKind): void {
     this.transport.send({ t: 'emote', k });
+  }
+
+  /**
+   * Ask the host to put a whole blueprint down.
+   *
+   * One message, and nothing is drawn locally until the host says so — the same
+   * discipline as a single placement. A guest that stamped optimistically and
+   * was refused would have to un-draw a staircase, and the frame where it
+   * existed is the frame somebody screenshots.
+   */
+  stampBlueprint(records: readonly PlacementRecord[]): void {
+    this.transport.send({ t: 'stamp', rs: records.map((r) => ({ ...r })) });
   }
 
   /**

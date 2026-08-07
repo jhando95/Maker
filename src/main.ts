@@ -40,6 +40,10 @@ import {
   CommsLog, EMOTE_LABELS, EMOTE_ORDER, type Channel, type EmoteKind, type PingKind,
 } from './game/comms.ts';
 import type { HeardEvent } from './net/session.ts';
+import { BlueprintStore } from './app/blueprintStore.ts';
+import {
+  blueprintCost, connectedFrom, normalize, stampAt, type Blueprint,
+} from './build/blueprint.ts';
 import { VoiceChat } from './voice/voiceChat.ts';
 import { transmitting } from './voice/voiceRules.ts';
 import { IdentityStore } from './app/identity.ts';
@@ -1469,6 +1473,119 @@ function doRepeat(): void {
   sounds.placed(placed.x, placed.y, placed.z, camera, player);
 }
 
+// ── Blueprints ───────────────────────────────────────────────────────────────
+//
+// A blueprint takes over the place button when one is selected. That is the
+// whole interaction and it is deliberate: a second placement key would mean two
+// ways to put something down, and the difference between them is already
+// visible in the preview.
+
+const blueprints = new BlueprintStore();
+let heldBlueprint: Blueprint | null = null;
+let blueprintTurns = 0;
+
+/** Step through none, then each blueprint, and round again. */
+function cycleBlueprint(delta: number): void {
+  const all = blueprints.all();
+  // `null` is a real entry in the ring rather than a separate off switch, so
+  // one key both chooses and puts the plank back in your hands.
+  const ring: Array<Blueprint | null> = [null, ...all];
+  const at = ring.findIndex((b) => b?.id === (heldBlueprint?.id ?? '__none'));
+  const from = heldBlueprint === null ? 0 : Math.max(at, 0);
+  const next = ((from + delta) % ring.length + ring.length) % ring.length;
+  heldBlueprint = ring[next] ?? null;
+  blueprintTurns = 0;
+  build.showStampPreview(null);
+  hud.notice(
+    heldBlueprint === null
+      ? 'plank'
+      : `${heldBlueprint.name} — ${blueprintCost(heldBlueprint.parts)} wood`,
+    1.6,
+  );
+}
+
+/** Where the held blueprint would land, or null when nothing is held. */
+function stampRecords(): PlacementRecord[] | null {
+  if (heldBlueprint === null) return null;
+  const snap = build.lastSnap;
+  const c = snap?.candidate;
+  if (c === null || c === undefined) return null;
+  return stampAt(
+    heldBlueprint.parts,
+    c.position.x, c.position.y, c.position.z,
+    blueprintTurns,
+  );
+}
+
+/**
+ * Save whatever you are looking at, and everything joined to it.
+ *
+ * A flood fill from the aimed part rather than a drag-selected box: no second
+ * control scheme, no mode to be in, and the answer is almost always the thing
+ * you meant — a staircase is connected and the lawn it stands on is not a part.
+ */
+function captureBlueprint(): boolean {
+  const seedId = build.lastSnap?.hitPart ?? -1;
+  if (seedId < 0 || !world.store.isAlive(seedId) || world.isFixture(seedId)) {
+    hud.notice('look at something you built', 2);
+    return false;
+  }
+  if (blueprints.full) {
+    hud.notice('no room for another blueprint', 2);
+    return false;
+  }
+
+  // The player's own parts only. The house is a fixture and saving it would
+  // hand somebody a blueprint of the map.
+  const ids: number[] = [];
+  const boxes = [];
+  for (const [id, record] of build.serializeWithIds()) {
+    if (world.isFixture(id)) continue;
+    ids.push(id);
+    boxes.push(world.store.readAabb(id));
+    void record;
+  }
+  const seed = ids.indexOf(seedId);
+  if (seed === -1) {
+    hud.notice('that is not yours to save', 2);
+    return false;
+  }
+
+  const byId = new Map(build.serializeWithIds());
+  const chosen = connectedFrom(seed, boxes)
+    .map((i) => byId.get(ids[i]!))
+    .filter((r): r is PlacementRecord => r !== undefined);
+  const saved = blueprints.save(`Build ${blueprints.count + 1}`, normalize(chosen));
+  if (saved === null) {
+    hud.notice('could not save that', 2);
+    return false;
+  }
+  heldBlueprint = saved;
+  blueprintTurns = 0;
+  hud.notice(`saved ${saved.name} — ${saved.parts.length} parts`, 2.4);
+  return true;
+}
+
+/** Put the held blueprint down, through the authority when there is one. */
+function stampWithFeedback(): boolean {
+  const records = stampRecords();
+  if (records === null) return false;
+  if (net instanceof NetClient) {
+    if (!build.canStamp(records)) return false;
+    net.stampBlueprint(records);
+    sounds.placed(records[0]!.x, records[0]!.y, records[0]!.z, camera, player);
+    return true;
+  }
+  const ids = build.stamp(records);
+  if (ids.length === 0) return false;
+  if (net instanceof NetHost) {
+    for (let i = 0; i < ids.length; i++) net.announcePlacement(ids[i]!, records[i]!);
+  }
+  worldChanged();
+  sounds.placed(records[0]!.x, records[0]!.y, records[0]!.z, camera, player);
+  return true;
+}
+
 /**
  * Place, and make a sound about it. Returns whether anything was placed.
  *
@@ -1731,13 +1848,32 @@ function simulate(dt: number): void {
   // preview showing where parts would go, are both lying during a wave.
   build.ghostGroup.visible = canBuild;
   if (canBuild) {
+    if (input.wasPressed('cycleBlueprint')) cycleBlueprint(input.isDown('sprint') ? -1 : 1);
+    if (input.wasPressed('saveBlueprint')) {
+      if (captureBlueprint()) sounds.pickPart();
+      else sounds.invalid();
+    }
+    // The blueprint turns on the same keys a single part does, so there is one
+    // rotate control rather than two that do the same thing to different things.
+    if (heldBlueprint !== null) {
+      if (input.wasPressed('rotateCW')) blueprintTurns++;
+      if (input.wasPressed('rotateCCW')) blueprintTurns--;
+    }
+    build.showStampPreview(stampRecords());
+
     if (input.wasPressed('placePart')) {
       placeHeldTicks = 0;
-      if (!tryPlaceWithFeedback()) sounds.invalid();
-    } else if (input.isDown('placePart')) {
+      const done = heldBlueprint !== null ? stampWithFeedback() : tryPlaceWithFeedback();
+      if (!done) sounds.invalid();
+    } else if (input.isDown('placePart') && heldBlueprint === null) {
+      // Held-to-repeat is for single parts only. A blueprint stamped eight
+      // times a second is a wall of staircases and an emptied lumber pile
+      // before anybody has let go of the button.
       placeHeldTicks++;
       if (placeHeldTicks % 10 === 0) tryPlaceWithFeedback();
     }
+  } else {
+    build.showStampPreview(null);
   }
 
   // ── Mode tick ──────────────────────────────────────────────────────────────
@@ -1901,6 +2037,11 @@ function draw(alpha: number, frameDt: number): void {
   renderer.render(scene, camera.camera);
 
   hud.update({
+    blueprint: heldBlueprint === null ? null : {
+      name: heldBlueprint.name,
+      parts: heldBlueprint.parts.length,
+      cost: blueprintCost(heldBlueprint.parts),
+    },
     selectedKind: build.selectedKind,
     colorway: build.selectedColorway,
     validPlacement,
@@ -2301,6 +2442,55 @@ window.__maker = {
       channel: hud.sayChannel,
     }),
     mute: (id: number) => comms.mute(id),
+  },
+  /**
+   * Blueprints, for the scenario.
+   *
+   * `preview()` reads the ghost meshes rather than recomputing the records,
+   * because the failure worth catching is a stamp that is computed correctly
+   * and drawn nowhere.
+   */
+  blueprints: {
+    list: () => blueprints.all().map((b) => ({
+      id: b.id, name: b.name, parts: b.parts.length,
+      cost: blueprintCost(b.parts), builtIn: b.builtIn === true,
+    })),
+    held: () => (heldBlueprint === null ? null : heldBlueprint.id),
+    select: (id: string | null) => {
+      heldBlueprint = id === null ? null : blueprints.get(id) ?? null;
+      blueprintTurns = 0;
+      build.showStampPreview(stampRecords());
+    },
+    turn: (delta: number) => {
+      blueprintTurns += delta;
+      build.showStampPreview(stampRecords());
+    },
+    preview: () => build.stampPreviewLength,
+    /** The part under the crosshair, which is what a capture seeds from. */
+    aimed: () => {
+      const id = build.lastSnap?.hitPart ?? -1;
+      return {
+        id,
+        alive: id >= 0 && world.store.isAlive(id),
+        fixture: id >= 0 && world.isFixture(id),
+        known: build.serializeWithIds().some(([pid]) => pid === id),
+      };
+    },
+    /**
+     * Which parts of the held blueprint could go down on their own.
+     *
+     * All-or-nothing is the right rule and a terrible diagnostic: a refused
+     * stamp says nothing about which part was in the way. This says.
+     */
+    blockers: () => (stampRecords() ?? []).map((r, i) => ({
+      i, ok: build.canStamp([r]), y: r.y, z: r.z,
+    })).filter((e) => !e.ok),
+    /** Where the held blueprint would land right now, absolute. */
+    records: () => stampRecords(),
+    capture: () => captureBlueprint(),
+    stamp: () => stampWithFeedback(),
+    saved: () => blueprints.saved().length,
+    forget: (id: string) => blueprints.remove(id),
   },
   /**
    * Voice, for the scenario that drives two real browsers at each other.

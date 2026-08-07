@@ -12,7 +12,9 @@
 
 import * as THREE from 'three';
 import { CollisionWorld } from '../physics/collisionWorld.ts';
-import { PART_KINDS, COLORWAYS, getPartKind, halfExtents, collisionProxy } from './partKit.ts';
+import {
+  PART_KINDS, COLORWAYS, getPartKind, halfExtents, collisionProxy, worldAabb,
+} from './partKit.ts';
 import { Snapper, type Candidate, type SnapResult, ROT_STEP_DEG } from './snapping.ts';
 import { PartRenderer } from '../render/partRenderer.ts';
 import { chamferedBox, wedge } from '../render/geometry.ts';
@@ -20,6 +22,9 @@ import { damp } from '../core/mathUtils.ts';
 import { Lumber, costOf } from './lumber.ts';
 import type { PartId } from '../physics/types.ts';
 import { boxInBounds } from '../world/bounds.ts';
+import { MAX_BLUEPRINT_PARTS } from './blueprint.ts';
+
+export { worldAabb } from './partKit.ts';
 
 /** A committed placement. This is the wire format and the save format. */
 export interface PlacementRecord {
@@ -221,6 +226,62 @@ export class BuildSystem {
       this.chainMeshes.push(mesh);
       this.ghostGroup.add(mesh);
     }
+
+    // The blueprint preview. One shared material rather than one each, unlike
+    // the chain above: the chain fades along its run to say "and it keeps
+    // going", and a blueprint does not keep going — it is a fixed set of parts
+    // that are all equally about to exist, so they are all equally solid.
+    this.stampMaterial = new THREE.MeshBasicMaterial({
+      color: GHOST_VALID,
+      transparent: true,
+      opacity: 0.42,
+      depthWrite: false,
+    });
+    for (let i = 0; i < MAX_BLUEPRINT_PARTS; i++) {
+      const mesh = new THREE.Mesh(this.ghostGeometries[0], this.stampMaterial);
+      mesh.frustumCulled = false;
+      mesh.visible = false;
+      this.stampMeshes.push(mesh);
+      this.ghostGroup.add(mesh);
+    }
+  }
+
+  private readonly stampMeshes: THREE.Mesh[] = [];
+  private readonly stampMaterial: THREE.MeshBasicMaterial;
+
+  /**
+   * Draw where a blueprint would land, or nothing.
+   *
+   * Tinted as a whole rather than per part, because the answer is about the
+   * whole: a blueprint half green and half red would say "this bit will go
+   * down", which is exactly what `stamp` refuses to do.
+   */
+  showStampPreview(records: readonly PlacementRecord[] | null): void {
+    if (records === null || records.length === 0) {
+      for (const mesh of this.stampMeshes) mesh.visible = false;
+      return;
+    }
+    const ok = this.canStamp(records);
+    this.stampMaterial.color.setHex(ok ? this.ghostValidColor : this.ghostInvalidColor);
+    for (let i = 0; i < this.stampMeshes.length; i++) {
+      const mesh = this.stampMeshes[i]!;
+      const r = records[i];
+      if (r === undefined) {
+        mesh.visible = false;
+        continue;
+      }
+      mesh.geometry = this.ghostGeometries[r.kind] ?? this.ghostGeometries[0]!;
+      mesh.position.set(r.x, r.y, r.z);
+      mesh.quaternion.set(r.qx, r.qy, r.qz, r.qw);
+      mesh.visible = true;
+    }
+  }
+
+  /** How many blueprint parts the preview is drawing, for scenarios. */
+  get stampPreviewLength(): number {
+    let n = 0;
+    for (const mesh of this.stampMeshes) if (mesh.visible) n++;
+    return n;
   }
 
   selectKind(index: number): void {
@@ -610,6 +671,54 @@ export class BuildSystem {
     return this.buy(record);
   }
 
+  /**
+   * Could this whole blueprint go down here?
+   *
+   * Every part checked against the world, and the total checked against the
+   * pile. Deliberately **not** using `canPlaceAt`'s `pending` list, which exists
+   * for projecting a repeat chain: the parts of a blueprint were placed legally
+   * beside each other in the first place, so they are flush rather than
+   * overlapping, and the 6mm shrink already covers that. Passing them as pending
+   * would make every blueprint collide with itself.
+   */
+  canStamp(records: readonly PlacementRecord[]): boolean {
+    if (records.length === 0) return false;
+    let cost = 0;
+    for (const r of records) {
+      if (!this.canPlaceAt(r)) return false;
+      cost += costOf(r.kind);
+    }
+    return this.stock.canAfford(cost);
+  }
+
+  /**
+   * Put a whole blueprint down, or none of it.
+   *
+   * All or nothing, and that is the decision worth defending. Placing whichever
+   * parts happen to fit gives a player half a staircase, charges them for half a
+   * staircase, and leaves them to work out which half is missing — while a
+   * refusal is one message and a step to the left. It also makes a stamp one
+   * action over the network rather than N races.
+   *
+   * @returns the id of every part placed, in the order given, or an empty
+   *   array. Ids rather than a count because the host has to tell everybody
+   *   else what went down, and it can only do that by naming the parts.
+   */
+  stamp(records: readonly PlacementRecord[]): PartId[] {
+    if (!this.canStamp(records)) return [];
+    const ids: PartId[] = [];
+    for (const r of records) {
+      if (!this.buy(r)) break;
+      ids.push(this.history[this.history.length - 1]!);
+    }
+    // No repeat chain off a stamp. `applyPlace` leaves the last two placements
+    // as the step to repeat, which for a blueprint is whatever arbitrary offset
+    // its last two parts happen to have — so the HUD would offer "hold G to
+    // repeat that step" for a step the player never took.
+    this.clearRepeat();
+    return ids;
+  }
+
   /** Place what the preview currently shows, if it is legal and affordable. */
   tryPlace(): boolean {
     const record = this.place();
@@ -892,27 +1001,3 @@ export class BuildSystem {
   }
 }
 
-/**
- * World-axis bounding box of a part at a given placement.
- *
- * A rotated box's world extent is the rotation matrix's absolute values applied
- * to its half-extents — the same arithmetic the collision world does when a part
- * is added, done here for parts that do not exist yet.
- */
-function worldAabb(record: PlacementRecord): {
-  minX: number; minY: number; minZ: number;
-  maxX: number; maxY: number; maxZ: number;
-} {
-  const h = halfExtents(getPartKind(record.kind));
-  const q = new THREE.Quaternion(record.qx, record.qy, record.qz, record.qw).normalize();
-  const e = new THREE.Matrix4().makeRotationFromQuaternion(q).elements;
-
-  const ex = Math.abs(e[0]!) * h.hx + Math.abs(e[4]!) * h.hy + Math.abs(e[8]!) * h.hz;
-  const ey = Math.abs(e[1]!) * h.hx + Math.abs(e[5]!) * h.hy + Math.abs(e[9]!) * h.hz;
-  const ez = Math.abs(e[2]!) * h.hx + Math.abs(e[6]!) * h.hy + Math.abs(e[10]!) * h.hz;
-
-  return {
-    minX: record.x - ex, minY: record.y - ey, minZ: record.z - ez,
-    maxX: record.x + ex, maxY: record.y + ey, maxZ: record.z + ez,
-  };
-}

@@ -207,6 +207,16 @@ jobs:
       # peer connection reports itself perfectly healthy while carrying silence,
       # and then reads the gain off the AudioParam the browser is really using.
       # Slower than the rest; it waits on ICE, on a snapshot, and on a gain ramp.
+      # Saving a structure and stamping it down again. The arithmetic is all
+      # unit-tested; what only a browser can answer is whether the pieces are
+      # joined up — that the flood fill runs against the real collision world
+      # rather than a list of boxes a test wrote, that a stamp goes through the
+      # same placement path a single plank does, and that the preview a player
+      # judges by is drawn from the same records that get placed. All three of
+      # those were wrong at some point while both sides of each seam were right.
+      - name: Blueprint scenario
+        run: node tools/shoot.mjs --scenario scenarios/blueprint.mjs --auto-quality --out /tmp/ci-blueprint.png
+
       - name: Voice scenario
         run: node tools/shoot.mjs --scenario scenarios/voice.mjs --auto-quality --out /tmp/ci-voice.png
 
@@ -280,6 +290,7 @@ jobs:
             /tmp/ci-frontend.png
             /tmp/ci-comms.png
             /tmp/ci-voice.png
+            /tmp/ci-blueprint.png
             /tmp/ci-lobby-friends.png
           if-no-files-found: ignore
 

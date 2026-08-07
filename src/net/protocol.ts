@@ -209,6 +209,17 @@ export type ClientMessage =
   /** "I would like to take that down." */
   | { t: 'unbuild'; p: number }
   /**
+   * "I would like to put this whole blueprint down."
+   *
+   * One message rather than N `build`s, because a blueprint is one action. Sent
+   * separately the host would validate each part on its own and place whichever
+   * fitted, which gives a guest half a staircase and charges them for half a
+   * staircase — and makes the outcome depend on the order packets happen to
+   * arrive in. The records are absolute, already stamped and rotated by the
+   * sender; the host re-checks every one of them and the total price.
+   */
+  | { t: 'stamp'; rs: PlacementRecord[] }
+  /**
    * "Say this, on this channel."
    *
    * A request, like a placement, and for the same reason: who is entitled to

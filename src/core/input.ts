@@ -61,6 +61,8 @@ export const ACTIONS = [
   'chatTeam',
   'emoteWheel',
   'pushToTalk',
+  'cycleBlueprint',
+  'saveBlueprint',
 
   'debugToggle',
   'debugFreeCam',
@@ -129,6 +131,11 @@ export const DEFAULT_BINDINGS: Record<string, Action> = {
   // crouch was already double-bound while push-to-talk had nothing. Both
   // actions still land on a key players expect to find them on.
   KeyC: 'pushToTalk',
+  // Blueprints. Both free, both away from the movement keys on purpose: one
+  // chooses what you are holding and the other saves what you built, and
+  // neither is pressed in the middle of anything.
+  KeyM: 'cycleBlueprint',
+  KeyN: 'saveBlueprint',
 
   Backquote: 'debugToggle',
   KeyP: 'debugFreeCam',
