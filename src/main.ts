@@ -2169,7 +2169,11 @@ function simulate(dt: number): void {
       if (down.length > 0) {
         if (net instanceof NetHost) for (const id of down) net.announceRemoval(id);
         worldChanged();
-        sounds.removed(px, py, pz, camera, player);
+        // A structure falling apart is a different event from a plank being
+        // taken down, and it has to sound like one — otherwise the only
+        // feedback for losing a tower is that it is not there any more.
+        if (down.length > 1) sounds.collapsed(px, py, pz, camera, player, down.length);
+        else sounds.removed(px, py, pz, camera, player);
       }
     }
   }

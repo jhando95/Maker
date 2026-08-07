@@ -19,6 +19,7 @@ export type SoundName =
   | 'snap'
   | 'invalid'
   | 'remove'
+  | 'collapse'
   | 'jump'
   | 'land'
   | 'throw'
@@ -462,6 +463,44 @@ export class AudioBus {
       case 'roundLose':
         this.arpeggio(t, [440, 392, 349.23, 261.63], 0.14, 0.24, options);
         break;
+
+      // A structure coming down: four or five wooden knocks falling over about
+      // a third of a second, each lower and softer than the last, over one dull
+      // thump for the mass of it.
+      //
+      // Composed here rather than by playing `remove` several times from the
+      // caller, and the reason is the voice cap: a thirty-part collapse firing
+      // thirty removals would spend every voice the bus has on one event and
+      // silence the footsteps, the water and everybody's chat along with it.
+      // One sound, however much came down.
+      case 'collapse': {
+        // Deterministic offsets rather than random ones. The recipe is played
+        // from the simulation's own removal path, and a sound is the one place
+        // in this codebase where `Math.random` is fine — but a fixed rhythm
+        // reads as *one thing falling apart* and a scattered one reads as
+        // several unrelated noises.
+        const knocks = [0, 0.075, 0.155, 0.25, 0.33];
+        for (let i = 0; i < knocks.length; i++) {
+          this.noiseBurst(t + knocks[i]!, {
+            duration: 0.09,
+            filter: 'bandpass',
+            freqStart: (620 - i * 70) * p,
+            freqEnd: (260 - i * 30) * p,
+            q: 2.4,
+            peak: 0.2 * (1 - i * 0.14),
+            attack: 0.002,
+          }, options);
+        }
+        this.tone(t, {
+          type: 'triangle',
+          freqStart: 110 * p,
+          freqEnd: 48 * p,
+          duration: 0.42,
+          peak: 0.16,
+          attack: 0.004,
+        }, options);
+        break;
+      }
 
       case 'uiClick':
         this.tone(t, {

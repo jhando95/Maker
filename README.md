@@ -20,7 +20,10 @@ it comes down. Take the leg out of somebody's tower and the tower goes with it,
 including the kid who was standing on top. Contact counts in any direction, not
 just downward, because this is a kid with a hammer rather than a bricklayer: a
 plank nailed to the side of a post is held by that post, and half of what people
-build here is cantilevered off something.
+build here is cantilevered off something. A collapse has its own sound, lower
+and louder the more of it fell, and it carries twice as far as a plank going
+up — in a mode where two people are dismantling each other's forts, it is the
+only warning the other one gets.
 
 **The afternoon gets late while you play.** The sun drops and swings west across
 a round, the shadows stretch, the sky drains to a warm horizon under a deep blue,

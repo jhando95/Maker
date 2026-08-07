@@ -122,6 +122,37 @@ export class GameSounds {
     });
   }
 
+  /**
+   * Something you built came down, and it was more than the part you took.
+   *
+   * Louder and lower the more of it fell, up to a point — the difference
+   * between a two-part topple and a whole tower is worth hearing, and a scale
+   * that kept going would make a big enough collapse the loudest thing in the
+   * game by a distance. Ten parts is where it stops growing, because past that
+   * it is already unmistakably a disaster.
+   */
+  collapsed(
+    x: number, y: number, z: number,
+    camera: CameraRig, player: CharacterController,
+    parts: number,
+  ): void {
+    const weight = Math.min(1, Math.max(0, (parts - 1) / 9));
+    const basis = camera.getMoveBasis();
+    this.bus.play('collapse', {
+      // Its own falloff, twice the range of a placement. A plank being nailed
+      // down forty metres away is somebody else's business; a tower coming down
+      // forty metres away is worth turning round for, and in a mode where two
+      // people are dismantling each other's forts it is the only warning the
+      // other one gets.
+      ...Bus.spatial(x, y, z, player.x, player.y + 1.5, player.z, basis.rx, basis.rz, 48),
+      volume: 0.7 + 0.3 * weight,
+      // Bigger things sound lower. A quarter of an octave across the range,
+      // which is enough to notice and not enough to sound like a different
+      // object.
+      pitch: 1.06 - 0.22 * weight,
+    });
+  }
+
   /** The build ghost latched onto a new snap target. */
   snapped(): void {
     this.bus.play('snap', { volume: 0.5 });
