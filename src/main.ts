@@ -2790,6 +2790,21 @@ window.__maker = {
     })).filter((e) => !e.ok),
     /** Where the held blueprint would land right now, absolute. */
     records: () => stampRecords(),
+    /**
+     * Stamp an exact list of records, with no aiming in it.
+     *
+     * `stamp()` re-aims, which is right for a player and wrong for a scenario
+     * asking whether a blueprint can be placed into the space it already
+     * occupies: the moment the first one exists, the ray lands on *it* and the
+     * second attempt is a different placement in a different spot. That made a
+     * check about all-or-nothing refusal depend on where a crosshair happened to
+     * land, and it is what turned red on CI.
+     */
+    stampThese: (records: PlacementRecord[]) => {
+      const ids = build.stamp(records);
+      if (ids.length > 0) worldChanged();
+      return ids.length > 0;
+    },
     capture: () => captureBlueprint(),
     stamp: () => stampWithFeedback(),
     saved: () => blueprints.saved().length,

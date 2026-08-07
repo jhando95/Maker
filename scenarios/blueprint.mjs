@@ -40,7 +40,14 @@ export default async function (page) {
     window.__maker.teleport(0, 0.6, 40);
     window.__maker.lookAt(0, -0.9);
   });
-  await frames(page, 4);
+  // Wait to be *standing*, not for four frames. The teleport puts the player
+  // 0.6m up and they fall from there, and every anchor here is a ray from that
+  // eye — so an aim taken mid-fall is an aim from a height nobody chose.
+  await page.waitForFunction(
+    () => window.__maker.stats().player.onGround === true,
+    undefined, { timeout: 20000, polling: 'raf' },
+  ).catch(() => { throw new Error('blueprint scenario: the player never landed'); });
+  await frames(page, 2);
 
   // ── The ones that ship with the game ───────────────────────────────────────
   const shipped = await page.evaluate(() => window.__maker.blueprints.list());
@@ -80,6 +87,12 @@ export default async function (page) {
     `and draw every one of them, ${preview.drawn} meshes for ${stairs.parts} parts`,
   );
 
+  // Kept, because the second attempt below is made of exactly these.
+  const placedAt = await page.evaluate(() => window.__maker.blueprints.records());
+  assert(
+    Array.isArray(placedAt) && placedAt.length === stairs.parts,
+    `the records to be placed should be the whole blueprint, saw ${placedAt?.length}`,
+  );
   const stamped = await page.evaluate(() => window.__maker.blueprints.stamp());
   assert(stamped, 'stamping on open lawn should work');
   const after = await parts(page);
@@ -91,12 +104,27 @@ export default async function (page) {
 
   // ── All of it, or none of it ───────────────────────────────────────────────
   //
-  // Stamping the same blueprint in the same place has to be refused outright,
-  // and — the part that matters — must not place the parts that happen to fit.
-  // Half a staircase, charged for in full, is the failure this rule exists for.
+  // Stamping a blueprint into the space it already occupies has to be refused
+  // outright, and — the part that matters — must not place the parts that
+  // happen to fit. Half a staircase, charged for in full, is the failure this
+  // rule exists for.
+  //
+  // The **same records**, not a second aim, and that is the whole point. This
+  // used to call `stamp()` twice and hope the second aim still collided with
+  // the first, which is not a thing the scenario controlled: the moment the
+  // staircase exists the ray lands on *it*, so the second attempt snaps a metre
+  // up onto a tread and is a different placement in a different place. Measured,
+  // the anchor moves from y 0.15 to y 1.125 the instant a single frame runs
+  // between the two calls, and the count of parts in the way falls from thirty
+  // to twelve — still refused, but by a margin that was never the claim and that
+  // a slower runner eventually spent. CI turned red on exactly that.
+  //
+  // Handing back the records the first stamp used removes the aiming from a
+  // question that was never about aiming. The aimed path is already proven —
+  // the first stamp is the one that used it.
   const blockedFrom = await parts(page);
-  const again = await page.evaluate(() => window.__maker.blueprints.stamp());
-  assert(!again, 'stamping into itself should be refused');
+  const again = await page.evaluate((rs) => window.__maker.blueprints.stampThese(rs), placedAt);
+  assert(!again, 'stamping into the space it already occupies should be refused');
   assert(
     (await parts(page)) === blockedFrom,
     'and must not leave the parts that happened to fit behind',
