@@ -13,6 +13,7 @@ import { clampDay, daylightAt, type DayTime, type Daylight } from './daylight.ts
 import { createToonMaterial } from '../render/toonMaterial.ts';
 import { chamferedBox, blob, addOutlineNormals } from '../render/geometry.ts';
 import { PropBatch, chunkInstanced } from '../render/propBatch.ts';
+import { NightLights } from '../render/nightLights.ts';
 import { neighborhoodSlabs, wearPoints, TREEHOUSE, type Slab } from './neighborhood.ts';
 import { buildGround, buildTufts, averageLawnColor, type Paved } from './ground.ts';
 
@@ -57,6 +58,14 @@ export interface SceneBuild {
   setDaylight(t: DayTime): boolean;
   /** Scenery batch, so the viewport-dependent outline width can be updated. */
   props: PropBatch;
+  /**
+   * The map's lamps and lit windows, driven by `setDaylight`.
+   *
+   * Handed out so a test can ask how many there are and whether any are being
+   * drawn — "the lights came on" is a claim, and a claim wants an assertion
+   * rather than a screenshot.
+   */
+  lights: NightLights;
   /**
    * The map's solid geometry, as plain numbers.
    *
@@ -175,11 +184,18 @@ export function createScene(seed: string | number = 'backyard-01'): SceneBuild {
   addTrees(scene, props, cache, rng.fork());
   scene.add(props.build());
 
+  // Read off the same list that was just drawn, so a lamp and its light cannot
+  // end up in different places. Off until the afternoon runs out, and off means
+  // a count of zero rather than a matrix scaled to nothing.
+  const lights = new NightLights(slabs);
+  scene.add(lights.mesh);
+
   return {
     scene,
     sun,
     props,
     slabs,
+    lights,
     setDaylight(t: DayTime): boolean {
       const want = clampDay(t);
       // Quantised, because this is called every frame and every change costs a
@@ -189,7 +205,9 @@ export function createScene(seed: string | number = 'backyard-01'): SceneBuild {
       const stepped = Math.round(want * 100) / 100;
       if (stepped === dayTime) return false;
       dayTime = stepped;
-      applyDaylight(scene, sun, fill, sky, daylightAt(stepped));
+      const light = daylightAt(stepped);
+      applyDaylight(scene, sun, fill, sky, light);
+      lights.setLevel(light.lampGlow);
       return true;
     },
     invalidateShadows() {

@@ -121,6 +121,11 @@ export function neighbourHouse(out: Slab[], n: NeighbourSpec): void {
     out.push({
       w: 1.2, h: 0.95, d: 0.14, x: wx, y: 2.1, z: wz, ry,
       color: 0x9fd8ee, outline: 0x3a2c2a, chamfer: 0.01, ghost: true,
+      // Ten windows across five houses, all facing the turning head. This is
+      // the cheapest thing in the game that says somebody lives here: a pane
+      // of daylight blue is scenery, and the same pane warmer than the sky
+      // behind it is a room with the light on and a person in it.
+      lit: { color: 0xffc266, bloom: 0.26 },
     });
   }
 

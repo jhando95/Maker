@@ -73,6 +73,29 @@ export function diffPixels(a, b, tolerance = 8) {
   return { diff, total: A.w * A.h };
 }
 
+/**
+ * How many pixels got brighter between two PNGs, and how many got darker.
+ *
+ * `diffPixels` answers "did the picture change", which is the right question
+ * for "does this pass render at all" and the wrong one for anything additive.
+ * A glow is light *added* to a frame: it can only ever push pixels up, so the
+ * count that went down is the assertion that the blend mode is what it claims
+ * to be. A glow drawn with normal blending, or with a sign error, changes just
+ * as many pixels — and half of them the wrong way.
+ */
+export function brighter(a, b, tolerance = 8) {
+  const A = decode(a), B = decode(b);
+  if (A.w !== B.w || A.h !== B.h) throw new Error('imgdiff: different sizes');
+  const luma = (px, i) => 0.2126 * px[i] + 0.7152 * px[i + 1] + 0.0722 * px[i + 2];
+  let up = 0, down = 0;
+  for (let i = 0; i < A.px.length; i += A.ch) {
+    const d = luma(A.px, i) - luma(B.px, i);
+    if (d > tolerance) up++;
+    else if (d < -tolerance) down++;
+  }
+  return { up, down, total: A.w * A.h };
+}
+
 // Also usable from the shell, which is how it started.
 if (process.argv[1]?.endsWith('imgdiff.mjs')) {
   const [a, b] = process.argv.slice(2);

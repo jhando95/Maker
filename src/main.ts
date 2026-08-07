@@ -180,7 +180,9 @@ renderer.shadowMap.needsUpdate = true;
 app.appendChild(renderer.domElement);
 
 // ── World ────────────────────────────────────────────────────────────────────
-const { scene, invalidateShadows, setDaylight, props: scenery, slabs } = createScene('backyard-01');
+const {
+  scene, invalidateShadows, setDaylight, props: scenery, slabs, lights: nightLights,
+} = createScene('backyard-01');
 const world = new CollisionWorld(1.0, 4096);
 // The map's solid geometry, from the same numbers the scenery was drawn with.
 // Installed before anything else touches the world so the starter structures
@@ -2616,7 +2618,27 @@ window.__maker = {
       skyHorizon: `#${(material.uniforms.horizonColor!.value as THREE.Color).getHexString()}`,
       fogNear: fog?.near ?? null,
       fogFar: fog?.far ?? null,
+      // The lamps, as three.js has them rather than as `daylightAt` computed
+      // them: how many the map put down, how far up they are, and — the one
+      // that matters — how many are actually in the draw call. "Off" that
+      // still draws is the bug this project has shipped twice.
+      lamps: nightLights.lightCount,
+      lampGlow: nightLights.level,
+      lampsDrawn: nightLights.drawn,
     };
+  },
+  /**
+   * Turn the lamps up or down without moving the time of day.
+   *
+   * The only way to photograph a glow on its own. Comparing dusk against noon
+   * changes the sky, the fog, the key, the fill and the shadows, and a lamp is
+   * a few hundred pixels somewhere in the middle of all that. Holding every one
+   * of those still and moving only the lamps means every pixel that differs
+   * between the two shots is a lamp, and no other reading is available.
+   */
+  setLamps: (level: number) => {
+    nightLights.setLevel(level);
+    return { level: nightLights.level, drawn: nightLights.drawn };
   },
   lavaState: () => {
     const lava = mode instanceof LavaMode ? mode : null;

@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
-  AFTERNOON, DUSK, GOLDEN, LAMP_TIME, MIN_SUN_ELEVATION,
-  clampDay, daylightAt, dayTimeForRound, mixHex, sunAt,
+  AFTERNOON, DUSK, GOLDEN, LAMP_TIME, LAMP_WARMUP, MIN_SUN_ELEVATION,
+  clampDay, daylightAt, dayTimeForRound, lampGlowAt, mixHex, sunAt,
 } from './daylight.ts';
 import { DEFAULT_BANDS } from '../render/toonMaterial.ts';
 
@@ -138,6 +138,49 @@ describe('the light itself', () => {
     expect(daylightAt(GOLDEN).lampsLit).toBe(false);
     expect(daylightAt(LAMP_TIME).lampsLit).toBe(true);
     expect(daylightAt(DUSK).lampsLit).toBe(true);
+  });
+
+  it('warms the lamps up rather than switching them on between two frames', () => {
+    // A light that appears in one frame is a bug that looks like a bug. A
+    // sodium lamp comes up dim and reaches full a few seconds later, which is
+    // both true and the cheapest way to make it not pop.
+    expect(lampGlowAt(LAMP_TIME - LAMP_WARMUP)).toBe(0);
+    const mid = lampGlowAt(LAMP_TIME - LAMP_WARMUP / 2);
+    expect(mid).toBeGreaterThan(0);
+    expect(mid).toBeLessThan(1);
+  });
+
+  it('finishes the warm-up exactly where the event is', () => {
+    // The ramp runs UP TO the named moment rather than away from it, so "the
+    // lamps come on at LAMP_TIME" and "the lamps are at full at LAMP_TIME" are
+    // the same sentence. Run it the other way and the constant means neither.
+    expect(lampGlowAt(LAMP_TIME)).toBe(1);
+    expect(lampGlowAt(DUSK)).toBe(1);
+    expect(daylightAt(LAMP_TIME).lampGlow).toBe(1);
+  });
+
+  it('leaves the lamps off for the whole afternoon they are not needed in', () => {
+    for (const t of [AFTERNOON, 0.2, 0.4, GOLDEN, 0.7]) {
+      expect(lampGlowAt(t), `a lamp is burning at ${t}`).toBe(0);
+      expect(daylightAt(t).lampGlow, `a lamp is burning at ${t}`).toBe(0);
+    }
+  });
+
+  it('never goes up before the sky has gone down enough to want it', () => {
+    // A lamp lit over a bright sky reads as a bug rather than as evening. As a
+    // share of the whole drop rather than as a flat number, because a flat one
+    // is a restatement of today's constants: measured against the range the sun
+    // actually travels, the claim survives retuning either end of it.
+    const day = daylightAt(AFTERNOON).sunIntensity;
+    const dusk = daylightAt(DUSK).sunIntensity;
+    const lit = daylightAt(LAMP_TIME - LAMP_WARMUP).sunIntensity;
+    expect((day - lit) / (day - dusk)).toBeGreaterThan(0.5);
+  });
+
+  it('clamps a strange clock rather than lighting a lamp at noon', () => {
+    expect(lampGlowAt(NaN)).toBe(0);
+    expect(lampGlowAt(-5)).toBe(0);
+    expect(lampGlowAt(50)).toBe(1);
   });
 
   it('spends most of its change in the second half', () => {

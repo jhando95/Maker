@@ -8,7 +8,7 @@
  * thing on it, could not be reached at all — and that is invisible to every
  * kind of test except one that measures the card against the window.
  */
-import { diffPixels } from '../tools/imgdiff.mjs';
+import { diffPixels, brighter } from '../tools/imgdiff.mjs';
 
 const assert = (c, m) => { if (!c) throw new Error(`frontend scenario: ${m}`); };
 
@@ -323,6 +323,87 @@ export default async function (page) {
     `an afternoon and a dusk should barely share a pixel — only ${day.diff} of ${day.total} differ`,
   );
 
+  // ── And the lamps come on ──────────────────────────────────────────────────
+  //
+  // Photographed on its own, which is the only way a glow can be. Comparing
+  // dusk against noon moves the sky, the fog, the key, the fill and every
+  // shadow in the yard, and a lamp is a few hundred pixels somewhere in the
+  // middle of that — a diff proves nothing about which of them changed. So the
+  // time of day is held exactly where it is and only the lamps move. Every
+  // pixel that differs between these two shots is a lamp, and there is no other
+  // reading available.
+  assert(
+    dusk.lamps >= 20,
+    `the map should put lights in it, saw ${dusk.lamps}`,
+  );
+  assert(
+    dusk.lampGlow === 1 && dusk.lampsDrawn === dusk.lamps,
+    `at dusk every lamp should be up and drawn: ${dusk.lampsDrawn} of ${dusk.lamps}`
+    + ` at ${dusk.lampGlow}`,
+  );
+  assert(
+    noon.lampGlow === 0 && noon.lampsDrawn === 0,
+    `and in the afternoon none of them should even be in the draw call, saw`
+    + ` ${noon.lampsDrawn} at ${noon.lampGlow}`,
+  );
+
+  // Aimed at a light by its coordinates rather than by a yaw worked out by
+  // hand — the first attempt pointed at a heading that turned out to contain no
+  // lamp at all, and measured the camera still easing into place instead.
+  await page.evaluate(() => {
+    window.__maker.teleport(-9.75, 0.6, -20);
+    window.__maker.lookAtPoint(-9.75, 5.05, -30);
+  });
+  // On the ground before anything is photographed. A teleported body is in
+  // mid-air above wherever it was put, and the placement ghost is drawn where
+  // the aim ray lands — so a camera still falling drags a green rectangle
+  // across the middle distance, which is a moving picture to difference.
+  await page.waitForFunction(() => window.__maker.stats().player.onGround === true,
+    null, { timeout: 5000 });
+  await new Promise((r) => setTimeout(r, 1200));
+  await page.screenshot({ path: `${TMP}/frontend-lamps-on.png` });
+
+  // Two shots of the same thing before anything is changed, because the
+  // measurement below is a difference and a difference is only about the lamps
+  // if nothing else in the picture is moving. Without this the check reads a
+  // camera that has not finished easing as a glow — which is exactly what it
+  // did, symmetrically, five thousand pixels up and five thousand down.
+  await new Promise((r) => setTimeout(r, 400));
+  await page.screenshot({ path: `${TMP}/frontend-lamps-still.png` });
+  const still = brighter(`${TMP}/frontend-lamps-on.png`, `${TMP}/frontend-lamps-still.png`);
+  const restless = still.up + still.down;
+  // The yard is never completely still — a few hundred pixels of it move on
+  // their own — so this is a cap on *how* unstill, set well under the ~9,800 a
+  // camera mid-ease produced. The signal below is then measured against this
+  // number rather than against a constant, so the check calibrates itself
+  // against whatever the picture happens to be doing.
+  assert(
+    restless < 2000,
+    `the shot has to hold still to be worth differencing: ${restless} pixels moved`
+    + ' with nothing changed',
+  );
+
+  const off = await page.evaluate(() => window.__maker.setLamps(0));
+  assert(off.drawn === 0, `turning them off should empty the draw call, ${off.drawn} left`);
+  await new Promise((r) => setTimeout(r, 400));
+  await page.screenshot({ path: `${TMP}/frontend-lamps-off.png` });
+
+  const glow = brighter(`${TMP}/frontend-lamps-still.png`, `${TMP}/frontend-lamps-off.png`);
+  assert(
+    glow.up > 4000 && glow.up > restless * 4,
+    `the lamps should reach pixels — ${glow.up} of ${glow.total} got brighter against`
+    + ` ${restless} moving on their own`,
+  );
+  // Additive means added. A glow that takes light *out* of the picture is a
+  // blend mode that is not the one this claims to be, and it would pass a plain
+  // changed-pixel count without anybody noticing — half the pixels the wrong
+  // way looks exactly like half the pixels the right way.
+  assert(
+    glow.down * 4 < glow.up,
+    `a light should not darken anything: ${glow.down} pixels went down against`
+    + ` ${glow.up} up`,
+  );
+
   await page.evaluate(() => {
     window.__maker.setTimeOfDay('round');
     window.__maker.setHudVisible(true);
@@ -335,7 +416,8 @@ export default async function (page) {
   console.log(`[frontend] verified: ${modes.length} mode cards on a title screen that fits,`
     + ` an afternoon that becomes a dusk the sun goes down and round for, with the fill`
     + ` rising as the key falls and ${Math.round((day.diff / day.total) * 100)}% of the`
-    + ` picture changing,`
+    + ` picture changing, ${dusk.lamps} lamps that draw nothing at all until it gets late`
+    + ` and then put ${glow.up} pixels of light into the picture without taking any out,`
     + ` no relay address on it, ${sections.length} settings sections, four screens inside`
     + ` the window, ${rows.length} rebindable controls in ${groups.length} groups with two`
     + ` keys each — rebound, cleared, stolen and reset, and the new key drove the game —`

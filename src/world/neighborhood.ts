@@ -53,6 +53,30 @@ export interface Slab {
    * neighbourhood can, or the house is a ladder and the map has no shape.
    */
   climbable?: boolean;
+  /**
+   * This face is a light, and glows once the lamps come on.
+   *
+   * Here rather than in a list of lamp coordinates somewhere else, because two
+   * records of one fact drift the moment somebody nudges a post. The glow is
+   * derived from the slab — its position, its size, its rotation — so it cannot
+   * end up somewhere the lamp is not. See `render/nightLights.ts`.
+   */
+  lit?: Lit;
+}
+
+/** What a slab does once the lamps come on. */
+export interface Lit {
+  /** The colour of the glow. Warmer than the thing it is painted on. */
+  color: number;
+  /**
+   * How far past the slab's own extent the halo bleeds, in metres.
+   *
+   * A lamp lens is a 20cm box, and a 20cm glow is a lamp that is switched on
+   * and unnoticeable. The bloom is what makes it a light rather than a bright
+   * face, and it is per-slab because a window pane wants a hint and a street
+   * lamp wants a halo you can see from the far end of the garden.
+   */
+  bloom?: number;
 }
 
 /** Colours specific to the neighborhood, beyond the base scene palette. */
@@ -377,6 +401,16 @@ function porch(): void {
 
   // Railing between the posts, low enough to vault.
   timber(HOUSE.halfWidth * 2, 0.12, 0.12, 0, 0.95, zFront - 1.45, LOT.plankPale);
+
+  // The porch light, under the roof beside the door.
+  //
+  // The one lamp in the game that is *theirs*. Everything else that comes on at
+  // dusk is somebody else's house across the road, which is atmosphere; a light
+  // over your own front door at the end of a round is the bit that means it is
+  // getting late and you live here.
+  timber(0.3, 0.34, 0.26, 1.5, HOUSE.porchRoof - 0.42, zFront - 0.3, LOT.cloth, {
+    chamfer: 0.07, ghost: true, lit: { color: 0xffe0a8, bloom: 0.62 },
+  });
 }
 
 /** The back deck: the right side's shortcut onto the roof, two stages up. */
@@ -388,6 +422,13 @@ function backDeck(): void {
   // A crate against the deck: the informal step everyone finds first.
   timber(1.0, 1.0, 1.0, 4.6, 0.5, zBack + 1.2, LOT.plank);
   timber(0.9, 0.9, 0.9, 4.5, 1.45, zBack + 1.0, LOT.plankPale, { ry: 0.4 });
+
+  // A bulkhead light on the back wall. The deck is where The Floor Is Lava
+  // starts and where everybody respawns, so this is the one light in the game
+  // that a player is looking at on purpose rather than noticing.
+  timber(0.26, 0.3, 0.22, 1.0, 2.35, HOUSE.halfDepth + 0.08, LOT.cloth, {
+    chamfer: 0.06, ghost: true, lit: { color: 0xffe0a8, bloom: 0.58 },
+  });
 }
 
 /**
@@ -894,7 +935,13 @@ function clutter(rng: Rng): void {
 
   // ── A lamp post out front, because the street needed a vertical ───────────
   timber(0.22, 4.4, 0.22, 8.5, 2.2, -17.5, LOT.metal, { outline: 0x4a4f54 });
-  timber(0.6, 0.5, 0.6, 8.5, 4.6, -17.5, LOT.cloth, { chamfer: 0.12, ghost: true });
+  timber(0.6, 0.5, 0.6, 8.5, 4.6, -17.5, LOT.cloth, {
+    chamfer: 0.12, ghost: true,
+    // The nearest street light to the lot, and the only one inside the fog's
+    // near plane, so it is the one that reads as an object with a light in it
+    // rather than as a glow on the horizon.
+    lit: { color: 0xffdc96, bloom: 0.85 },
+  });
 }
 
 /**

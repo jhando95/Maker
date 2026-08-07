@@ -44,6 +44,20 @@ is a habit.
 - Two frame-parser tests rested on claims that were not true: one on unmasking
   being able to corrupt an unread frame, and one on a `length > MAX_FRAME` branch
   that is unreachable while the cap exceeds 65535.
+- **The back-door light check was asserting on somebody else's house.** Written
+  as "a light behind the house at door height" and nothing else, it passed with
+  the back-door light deleted: a neighbour's front window forty-two metres east
+  sits at z 7.2, which is inside "behind the house" if you never say how far
+  behind. Both house-light checks are bounded in x as well as z now, off the
+  `HOUSE` constants rather than off numbers.
+- **The blueprint scenario's all-or-nothing check depended on where a crosshair
+  landed.** It called `stamp()` twice and hoped the second aim still collided
+  with the first, which is not a thing the scenario controlled — the moment the
+  staircase exists the ray lands on *it*. Measured, the anchor moves from y 0.15
+  to y 1.125 the instant a single frame runs between the two calls, and the
+  parts in the way fall from thirty to twelve: still refused, but by a margin
+  that was never the claim, and a slower runner eventually spent it. The second
+  attempt replays the first one's exact records now.
 
 ## CI failures that were product bugs, not flaky tests
 
@@ -83,6 +97,20 @@ and because a red check deserves an account rather than a shrug.
   the kids scenario waited three frames for a camera blend that is eased, so
   "in first person" was a bet on frame time and the local player was still being
   drawn.
+
+- **The lamps rendered nothing, and everything said they were on.** The shader
+  compiled, the level was 1, the instance count was thirty, and not one pixel
+  changed. `InstancedMesh.computeBoundingSphere` walks `count`, and the bound was
+  computed at build time while the lamps were off — so three culled the mesh
+  against a bound around nothing, every frame, forever. Nothing in the object's
+  own state was wrong; only the picture was. It is the reason the check that
+  found it photographs the glow **on its own** — same time of day, same sky, same
+  fog, same shadows, lamps the only thing moved — rather than differencing dusk
+  against noon, where a few thousand pixels of lamp are lost among half a million
+  pixels of sky. And it is why that check measures the frame's own restlessness
+  first and requires the signal to beat it: the first version of it read a camera
+  still easing into place as a glow, symmetrically, five thousand pixels up and
+  five thousand down.
 
 Every one of those is the same mistake in a new costume: **asserting on state
 that had not been established** — a frame budget standing in for the game's own

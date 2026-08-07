@@ -72,8 +72,18 @@ export interface Daylight {
   fillSky: number;
   fillGround: number;
   fillIntensity: number;
-  /** True once the street lamps should be lit. */
+  /** True once the street lamps are fully on. */
   lampsLit: boolean;
+  /**
+   * How far up the lamps are, 0 to 1.
+   *
+   * Separate from `lampsLit` because a light that appears between one frame and
+   * the next is a bug that looks like a bug, and because a sodium lamp really
+   * does take a moment to come up — it flickers on dim and orange and reaches
+   * full a good few seconds later. `lampsLit` is still the event, and still
+   * lands where it always did: the ramp is behind it and finishes there.
+   */
+  lampGlow: number;
 }
 
 /**
@@ -156,6 +166,38 @@ const FILL_GROUND_DUSK = 0x4a5a3c;
 /** When the lamps come on. Late, so it lands as an event rather than a fade. */
 export const LAMP_TIME = 0.82;
 
+/**
+ * How long the lamps take to warm up, as a fraction of the afternoon.
+ *
+ * About eighteen seconds of a five-minute round. Long enough that nothing pops,
+ * short enough that it still reads as the lights coming on rather than as the
+ * sky doing something. It runs *up to* `LAMP_TIME` rather than away from it, so
+ * the moment the lamps are at full is the moment the name says.
+ */
+export const LAMP_WARMUP = 0.06;
+
+/**
+ * How far up the lamps are at a given time.
+ *
+ * Written backwards from `LAMP_TIME` rather than forwards from the start of the
+ * ramp, and that is not a style choice: `0.82 - 0.06` is `0.7599999999999999`
+ * in binary, so counting up from it lands on `0.9999999999999991` at the one
+ * moment the constant is named for. Counting down from `LAMP_TIME` puts the
+ * exact answer at the end that has a name, and leaves the float dust at the
+ * start, where it is clamped to zero anyway.
+ */
+export function lampGlowAt(t: DayTime): number {
+  const k = clampDay(t);
+  const glow = 1 - (LAMP_TIME - k) / LAMP_WARMUP;
+  // Snapped rather than clamped, because the dust at the bottom is positive:
+  // `1 - 0.06000000000000005 / 0.06` is 9e-16, and 9e-16 is not "off". Off is
+  // a count of zero instances, and anything above zero pays for the whole draw
+  // to blend nothing over the picture — for a full quantised step, since 0.76
+  // is exactly one of the hundredths `setDaylight` lands on.
+  if (!(glow > 1e-6)) return 0;
+  return Math.min(1, glow);
+}
+
 export function daylightAt(t: DayTime): Daylight {
   const k = clampDay(t);
   // Two segments rather than one, because the interesting part of an evening is
@@ -183,6 +225,7 @@ export function daylightAt(t: DayTime): Daylight {
     fillGround: mixHex(FILL_GROUND_DAY, FILL_GROUND_DUSK, late),
     fillIntensity: 0.5 + 0.45 * late,
     lampsLit: k >= LAMP_TIME,
+    lampGlow: lampGlowAt(k),
   };
 }
 

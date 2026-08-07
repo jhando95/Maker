@@ -225,6 +225,10 @@ export function culDeSacSlabs(): Slab[] {
     out.push({
       w: 0.5, h: 0.22, d: 0.34, x: x + 1.25, y: 5.05, z,
       color: 0xf6e7a8, outline: 0x8a7a3a, chamfer: 0.06, ghost: true,
+      // Thirty to forty-five metres out, over tarmac, with nothing else lit
+      // near it — so the halo is the biggest on the map. It is the thing you
+      // see come on from the back garden without looking for it.
+      lit: { color: 0xffd98a, bloom: 0.82 },
     });
   }
 
