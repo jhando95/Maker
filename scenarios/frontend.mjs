@@ -360,35 +360,50 @@ export default async function (page) {
   // across the middle distance, which is a moving picture to difference.
   await page.waitForFunction(() => window.__maker.stats().player.onGround === true,
     null, { timeout: 5000 });
-  await new Promise((r) => setTimeout(r, 1200));
-  await page.screenshot({ path: `${TMP}/frontend-lamps-on.png` });
+  // Shot until two consecutive frames agree, rather than after a wait.
+  //
+  // The measurement below is a difference, and a difference is only about the
+  // lamps if nothing else in the picture is moving. A fixed wait is a bet on
+  // frame time: 400ms is thirty frames on a real card and *three* through
+  // SwiftShader, and the placement ghost eases toward wherever the aim ray
+  // lands. The first version of this bet 400ms, passed on my machine and read
+  // 8,940 moving pixels on CI. So it asks the picture rather than the clock.
+  const holdStill = async (a, b) => {
+    let prev = a;
+    let cur = b;
+    await page.screenshot({ path: prev });
+    for (let i = 0; i < 15; i++) {
+      await new Promise((r) => setTimeout(r, 350));
+      await page.screenshot({ path: cur });
+      const moved = brighter(prev, cur);
+      const restless = moved.up + moved.down;
+      // Never zero — a few hundred pixels of this yard move on their own — so
+      // the bar is "settled", not "frozen", and the signal is measured against
+      // whatever number comes back rather than against a constant.
+      if (restless <= 600) return { path: cur, restless };
+      const swap = prev;
+      prev = cur;
+      cur = swap;
+    }
+    return { path: cur, restless: Infinity };
+  };
 
-  // Two shots of the same thing before anything is changed, because the
-  // measurement below is a difference and a difference is only about the lamps
-  // if nothing else in the picture is moving. Without this the check reads a
-  // camera that has not finished easing as a glow — which is exactly what it
-  // did, symmetrically, five thousand pixels up and five thousand down.
-  await new Promise((r) => setTimeout(r, 400));
-  await page.screenshot({ path: `${TMP}/frontend-lamps-still.png` });
-  const still = brighter(`${TMP}/frontend-lamps-on.png`, `${TMP}/frontend-lamps-still.png`);
-  const restless = still.up + still.down;
-  // The yard is never completely still — a few hundred pixels of it move on
-  // their own — so this is a cap on *how* unstill, set well under the ~9,800 a
-  // camera mid-ease produced. The signal below is then measured against this
-  // number rather than against a constant, so the check calibrates itself
-  // against whatever the picture happens to be doing.
+  const lit = await holdStill(`${TMP}/frontend-lamps-a.png`, `${TMP}/frontend-lamps-b.png`);
   assert(
-    restless < 2000,
-    `the shot has to hold still to be worth differencing: ${restless} pixels moved`
-    + ' with nothing changed',
+    Number.isFinite(lit.restless),
+    'the picture never held still long enough to difference it',
   );
+  const restless = lit.restless;
 
   const off = await page.evaluate(() => window.__maker.setLamps(0));
   assert(off.drawn === 0, `turning them off should empty the draw call, ${off.drawn} left`);
-  await new Promise((r) => setTimeout(r, 400));
-  await page.screenshot({ path: `${TMP}/frontend-lamps-off.png` });
+  const dark = await holdStill(`${TMP}/frontend-dark-a.png`, `${TMP}/frontend-dark-b.png`);
+  assert(
+    Number.isFinite(dark.restless),
+    'the picture never held still after the lamps went out',
+  );
 
-  const glow = brighter(`${TMP}/frontend-lamps-still.png`, `${TMP}/frontend-lamps-off.png`);
+  const glow = brighter(lit.path, dark.path);
   assert(
     glow.up > 4000 && glow.up > restless * 4,
     `the lamps should reach pixels — ${glow.up} of ${glow.total} got brighter against`
