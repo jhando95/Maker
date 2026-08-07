@@ -381,6 +381,63 @@ rather than guessed. The lateness and the skip count are still logged every run,
 because they are the interesting numbers — they are just not assertions about
 somebody else's hardware.
 
+## Captions, and three tests that could not have failed
+
+The caption model got sixteen plants. Thirteen failed something immediately.
+The other three are the useful ones, because all three were the tests' fault and
+each in a different way.
+
+**One could not distinguish the bug from the fix.** The guard that refuses to
+name a direction for a sound underfoot was tested by asserting it comes back
+`ahead` — which it does either way, because a point just in front of the
+listener *is* ahead. What the guard actually buys is that the answer does not
+flip to `behind` when the player turns on the spot, so that is what is asserted
+now: two facings, same word.
+
+**One had a fixture that could not discriminate.** Coalescing matches the
+*newest* nearby line rather than the first, so a kid spraying along a fence
+keeps feeding the line in front of them. The fixture put two lines fourteen
+metres apart and the repeat next to one of them — only one candidate was ever in
+range, so first-match and last-match agreed and reversing the loop changed
+nothing. The repeat now lands seven metres from *each*, and the tell is which
+line was left alone, because whichever one coalesces gets moved to the end and
+the counts-by-position come out identical either way.
+
+**And one asserted a state that cannot happen.** `expire` walked the list from
+the front and then swept it again from the back, with a comment explaining that
+the list is not sorted after a coalesce. It is: a coalesced line has its time
+refreshed and is moved to the end in the same breath, and a new line is appended
+with the newest time, so the list is always ascending. The back sweep was dead
+code, the test for it was asserting an impossible arrangement, and a planted bug
+in it broke nothing. Both came out; what replaced them is a test that the
+ordering invariant holds, which is what makes one pass correct.
+
+## And two red checks in one hour, both mine
+
+**The first**: `scenarios/profile.mjs` asserts structure rather than
+milliseconds — its own header says a budget here would be a claim about
+GitHub's fleet — and then the GPU checks went in with `latency < 30`. CI failed
+at exactly thirty. The bound is now the only one that holds anywhere: a query
+cannot answer on the frame that issued it, and a reading cannot be older than
+the session that took it.
+
+**The second, in the fix for the first**: `statsLine` turned the readout on and
+waited two animation frames. The readout is rewritten on `FrameStats`' own
+quarter-second cadence rather than every frame, so two frames is a bet on frame
+time — fine at sixty, lost at the seven a software rasteriser manages on a
+shared runner. This project wrote that exact mistake up ten days ago about
+waiting three frames for a camera blend. It waits for the state now.
+
+## And a funnel that called itself
+
+Every sound worth captioning goes through one `ears` object rather than a
+caption call written beside each of fifteen `sounds.*` calls, because two things
+that must agree is the shape of bug this repository has lost to three times. The
+rewrite was done with a regular expression — which matched the calls *inside*
+`ears` too, so `ears.placed` called `ears.placed`. The scenario died with
+`Maximum call stack size exceeded` and the tell was already on screen: the script
+had printed "call sites rewritten: 15 -> 0", and zero was one too few.
+
 ## Every bug that was planted on purpose
 
 Each of these was introduced deliberately, to watch one assertion fail, and then
@@ -431,6 +488,15 @@ negative result trusted; a result read without asking whether it is ready — th
 one that would stall the whole pipeline; a second query opened while one is
 active; a tainted result recorded anyway; and a timer that claims to work on a
 machine with no extension.
+
+And on captions, sixteen: the range gate dropped; a collapse carrying no further
+than a placement; left and right swapped; behind never reported; a bearing taken
+against the world instead of the listener; a direction guessed for something
+underfoot; repeats that never fold; distant repeats folded anyway; stale repeats
+folded anyway; two different sounds folded together; coalescing against the
+oldest line instead of the newest; a repeat that keeps its old place in the
+list; a repeat that does not update its direction; the newest line refused
+instead of the oldest dropped; and a repeat that does not refresh the age.
 
 And on the boot-time warm-up, nine: a restore that does nothing; a restore that
 switches everything on instead of putting back what was off; counts never

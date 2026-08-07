@@ -81,6 +81,7 @@ import { PerformanceGovernor } from './app/performanceGovernor.ts';
 import { FrameStats } from './app/frameStats.ts';
 import { FrameProfile, type SectionTime } from './app/frameProfile.ts';
 import { GpuTimer, type TimerGl } from './render/gpuTimer.ts';
+import { Captions, type CaptionKind, type Caption } from './ui/captions.ts';
 import { warmUp, type Compiler, type Hideable } from './render/warmup.ts';
 
 /** How far off the window edge an off-screen objective chevron sits. */
@@ -337,6 +338,50 @@ const gamepad = new GamepadManager(input);
 // grabs pointer lock. Until then every play() is a no-op rather than an error.
 const audio = new AudioBus();
 const sounds = new GameSounds(audio, world);
+
+/**
+ * What the garden sounds like, for somebody who cannot hear it.
+ *
+ * `captions.ts` holds the rules and the reasoning; this is the funnel. Every
+ * sound worth saying out loud goes through `ears` rather than through `sounds`
+ * directly, because the alternative is a caption call written next to each of
+ * eleven `sounds.*` calls — two things that must agree, which is the shape of
+ * bug this project has now lost to three times. Pair them once and the twelfth
+ * call site cannot forget.
+ *
+ * It is also less to type at the call sites: the camera and the player are the
+ * listener, and every one of them was passing both.
+ */
+const captions = new Captions();
+
+function heard(kind: CaptionKind, x: number, y: number, z: number): void {
+  if (!settings.get('captions')) return;
+  captions.heard(
+    { kind, x, y, z, at: performance.now() / 1000 },
+    // Forward on the ground from the camera's yaw, which is the direction the
+    // player is facing and therefore what "behind" is measured against.
+    { x: player.x, z: player.z, fx: -Math.sin(camera.yaw), fz: -Math.cos(camera.yaw) },
+  );
+}
+
+const ears = {
+  placed(x: number, y: number, z: number): void {
+    sounds.placed(x, y, z, camera, player);
+    heard('place', x, y, z);
+  },
+  removed(x: number, y: number, z: number): void {
+    sounds.removed(x, y, z, camera, player);
+    heard('remove', x, y, z);
+  },
+  collapsed(x: number, y: number, z: number, parts: number): void {
+    sounds.collapsed(x, y, z, camera, player, parts);
+    heard('collapse', x, y, z);
+  },
+  sprayed(x: number, y: number, z: number): void {
+    sounds.sprayed(x, y, z, camera, player);
+    heard('spray', x, y, z);
+  },
+};
 
 const settings = new SettingsStore();
 /**
@@ -1599,7 +1644,7 @@ function drainEvents(): void {
         // The same clatter a player's own collapse makes, from where it
         // happened. A fort coming apart behind you should sound exactly like a
         // fort coming apart, whoever pulled the plank.
-        sounds.collapsed(e.x, e.y, e.z, camera, player, e.brought);
+        ears.collapsed(e.x, e.y, e.z, e.brought);
         break;
       case 'roundWon':
         audio.play('roundWin', { volume: 0.7 });
@@ -1737,7 +1782,7 @@ function doRepeat(): void {
     return;
   }
   worldChanged();
-  sounds.placed(placed.x, placed.y, placed.z, camera, player);
+  ears.placed(placed.x, placed.y, placed.z);
 }
 
 // ── Blueprints ───────────────────────────────────────────────────────────────
@@ -1840,7 +1885,7 @@ function stampWithFeedback(): boolean {
   if (net instanceof NetClient) {
     if (!build.canStamp(records)) return false;
     net.stampBlueprint(records);
-    sounds.placed(records[0]!.x, records[0]!.y, records[0]!.z, camera, player);
+    ears.placed(records[0]!.x, records[0]!.y, records[0]!.z);
     return true;
   }
   const ids = build.stamp(records);
@@ -1849,7 +1894,7 @@ function stampWithFeedback(): boolean {
     for (let i = 0; i < ids.length; i++) net.announcePlacement(ids[i]!, records[i]!);
   }
   worldChanged();
-  sounds.placed(records[0]!.x, records[0]!.y, records[0]!.z, camera, player);
+  ears.placed(records[0]!.x, records[0]!.y, records[0]!.z);
   return true;
 }
 
@@ -1900,7 +1945,7 @@ function sprayWithFeedback(): boolean {
   const added = addTag(tags, tag);
   tags = added.tags;
   redrawTags();
-  sounds.sprayed(tag.x, tag.y, tag.z, camera, player);
+  ears.sprayed(tag.x, tag.y, tag.z);
   return true;
 }
 
@@ -1909,14 +1954,14 @@ function tryPlaceWithFeedback(): boolean {
   if (record === null) return false;
   if (net instanceof NetClient) {
     net.requestPlacement(record);
-    sounds.placed(record.x, record.y, record.z, camera, player);
+    ears.placed(record.x, record.y, record.z);
     return true;
   }
   if (!build.tryPlace()) return false;
   const id = build.lastPlacedId;
   if (id !== null && net instanceof NetHost) net.announcePlacement(id, record);
   worldChanged();
-  sounds.placed(record.x, record.y, record.z, camera, player);
+  ears.placed(record.x, record.y, record.z);
   return true;
 }
 
@@ -2303,7 +2348,7 @@ function simulateBody(dt: number): void {
       // disappears here until they say so.
       if (aimed >= 0) {
         net.requestRemoval(aimed);
-        sounds.removed(px, py, pz, camera, player);
+        ears.removed(px, py, pz);
       }
     } else {
       // Everything that came down, not just the part under the crosshair: take
@@ -2317,8 +2362,8 @@ function simulateBody(dt: number): void {
         // A structure falling apart is a different event from a plank being
         // taken down, and it has to sound like one — otherwise the only
         // feedback for losing a tower is that it is not there any more.
-        if (down.length > 1) sounds.collapsed(px, py, pz, camera, player, down.length);
-        else sounds.removed(px, py, pz, camera, player);
+        if (down.length > 1) ears.collapsed(px, py, pz, down.length);
+        else ears.removed(px, py, pz);
       }
     }
   }
@@ -2326,7 +2371,7 @@ function simulateBody(dt: number): void {
   // Undo is off for a guest for the same reason as repeat.
   if (!isGuest() && input.wasPressed('interact') && build.undo()) {
     worldChanged();
-    sounds.removed(player.x, player.y + 1, player.z, camera, player);
+    ears.removed(player.x, player.y + 1, player.z);
   }
 }
 
@@ -2479,6 +2524,10 @@ function draw(alpha: number, frameDt: number): void {
     now: nowSeconds,
   });
   hud.setPins(projectPins(mode, state));
+  // Captions age out on their own clock rather than on a frame count, so a
+  // slow frame does not leave a line up twice as long as a fast one.
+  captions.expire(nowSeconds);
+  hud.setCaptions(settings.get('captions') ? captions.current : EMPTY_CAPTIONS);
   hud.setChat(comms.chat);
   hud.setEmotes(projectEmotes(state));
   hud.setVoices(projectVoices());
@@ -2532,6 +2581,8 @@ const frameStats = new FrameStats();
  */
 const profile = new FrameProfile();
 const sectionScratch: SectionTime[] = [];
+/** Shared, because clearing the caption strip should not allocate every frame. */
+const EMPTY_CAPTIONS: Caption[] = [];
 
 /**
  * And how long the GPU took, where the machine will say.
@@ -2928,7 +2979,10 @@ window.__maker = {
       qx: 0, qy: 0, qz: 0, qw: 1,
     }));
     const ids = build.stamp(records);
-    if (ids.length > 0) worldChanged();
+    if (ids.length > 0) {
+      worldChanged();
+      ears.placed(records[0]!.x, records[0]!.y, records[0]!.z);
+    }
     const last = records[records.length - 1]!;
     return { placed: ids.length, top: { x: last.x, y: BOARD_THICKNESS, z: last.z } };
   },
@@ -2939,7 +2993,11 @@ window.__maker = {
     const ray = camera.getAimRay(state.x, state.y + state.eyeHeight, state.z, MAX_REACH);
     build.update(DT, ray.ox, ray.oy, ray.oz, ray.dx, ray.dy, ray.dz, false, false);
     const ok = build.tryPlace();
-    if (ok) worldChanged();
+    if (ok) {
+      worldChanged();
+      const at = build.lastPlacedAt;
+      if (at) ears.placed(at.x, at.y, at.z);
+    }
     return ok;
   },
   /**
@@ -2961,7 +3019,14 @@ window.__maker = {
     // only whether anything did — which is the entire question a collapse
     // raises.
     const down = build.removeAimed();
-    if (down.length > 0) worldChanged();
+    if (down.length > 0) {
+      worldChanged();
+      // The same branch the remove key takes, because this hook exists to be
+      // what a player does and a hook that quietly makes no noise is a hook
+      // that would pass with the whole sound and caption path disconnected.
+      if (down.length > 1) ears.collapsed(x, y, z, down.length);
+      else ears.removed(x, y, z);
+    }
     return down;
   },
   /**
@@ -3062,9 +3127,18 @@ window.__maker = {
    */
   statsLine: async (on = true) => {
     settings.set('showStats', on);
-    await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
     const el = hud.root.querySelector('.maker-stats');
-    return el && !el.classList.contains('maker-hidden') ? (el.textContent ?? '') : null;
+    const showing = () => el !== null && !el.classList.contains('maker-hidden');
+    // Waits for the state rather than for a count of frames. The readout is
+    // rewritten on `FrameStats`' own quarter-second cadence rather than every
+    // frame, so "two frames" is a bet on frame time — which is fine at sixty
+    // and lost at the seven a software rasteriser manages on a shared runner.
+    // CI failed on exactly that, in the same week this project wrote the same
+    // mistake up about waiting three frames for a camera blend.
+    for (let i = 0; i < 120 && showing() !== on; i++) {
+      await new Promise((r) => requestAnimationFrame(r));
+    }
+    return showing() ? (el!.textContent ?? '') : null;
   },
   /**
    * What the renderer is holding on to.
@@ -3088,6 +3162,29 @@ window.__maker = {
   },
   /** What the boot-time compile had to do, so a scenario can hold it to it. */
   warmup: () => ({ ...warmed, programs: renderer.info.programs?.length ?? 0 }),
+  /**
+   * The caption strip, for a scenario.
+   *
+   * Reads the rendered lines rather than the model, because the claim worth
+   * checking end to end is that a caption a player would see obeys the range of
+   * the sound it stands in for — and a hook into the model would pass with the
+   * HUD disconnected.
+   */
+  captions: {
+    on: (v: boolean) => {
+      settings.set('captions', v);
+      // Switching them off empties the strip rather than freezing it, which is
+      // what a player expects and what lets a scenario start from silence.
+      if (!settings.get('captions')) captions.clear();
+      return settings.get('captions');
+    },
+    lines: () => Array.from(hud.root.querySelectorAll('.maker-caption'), (el) => ({
+      text: (el.textContent ?? '').trim(),
+      where: el.classList.contains('behind') ? 'behind'
+        : el.classList.contains('left') ? 'left'
+        : el.classList.contains('right') ? 'right' : 'ahead',
+    })),
+  },
   inputDevice: () => input.lastDevice,
   /** Half the width of the world, so a scenario cannot drift from the constant. */
   playHalf: () => PLAY_HALF,

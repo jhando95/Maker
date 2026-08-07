@@ -88,6 +88,18 @@ const STYLE = `
   line-height: 1.45; text-align: right; min-width: 128px; }
 .maker-stats b { font-size: 16px; }
 .maker-stats .dim { opacity: 0.62; }
+/* Bottom centre, above the help line and clear of the crosshair: captions are
+   read at a glance while looking at something else, and anything in the middle
+   of the screen is in the way of the game they are describing. */
+.maker-captions { left: 50%; bottom: 96px; transform: translateX(-50%);
+  display: flex; flex-direction: column; align-items: center; gap: 4px;
+  pointer-events: none; }
+.maker-caption { padding: 3px 10px; border-radius: var(--r-sm); font-size: 13px;
+  background: rgba(0, 0, 0, 0.55); color: #fff; white-space: nowrap; }
+.maker-caption .where { opacity: 0.7; }
+/* Behind you is the one worth a second of attention, and the only one a player
+   cannot simply look at to check. */
+.maker-caption.behind { box-shadow: inset 0 0 0 1px rgba(255, 214, 102, 0.85); }
 .maker-key { display: inline-block; padding: 1px 5px; border-radius: var(--r-sm);
   background: var(--card); color: var(--ink);
   font-weight: 800; font-size: 11px; margin-right: 3px;
@@ -383,6 +395,7 @@ const STYLE = `
 import type { Loadout, ModeHud } from '../game/gameMode.ts';
 import type { FrameSummary } from '../app/frameStats.ts';
 import type { SectionTime } from '../app/frameProfile.ts';
+import type { Caption } from './captions.ts';
 import { MAX_CHAT, type ChatLine } from '../game/comms.ts';
 
 /** Bubbles on screen at once. More than this and they are a wall, not a face. */
@@ -539,6 +552,7 @@ export class Hud {
   private readonly messageEl: HTMLDivElement;
   private readonly stats: HTMLDivElement;
   private readonly chatLog: HTMLDivElement;
+  private readonly captions: HTMLDivElement;
   private readonly sayBox: HTMLDivElement;
   private readonly sayInput: HTMLInputElement;
   private readonly sayChannelEl: HTMLSpanElement;
@@ -547,6 +561,7 @@ export class Hud {
   private readonly voiceEls: HTMLDivElement[] = [];
   private readonly mic: HTMLDivElement;
   private chatKey = '';
+  private captionKey = '';
   private readonly ammoEl: HTMLDivElement;
   private readonly vignette: HTMLDivElement;
   private readonly pins: HTMLDivElement;
@@ -621,6 +636,10 @@ export class Hud {
     this.stats = document.createElement('div');
     this.stats.className = 'maker-panel maker-stats maker-hidden';
     this.root.appendChild(this.stats);
+
+    this.captions = document.createElement('div');
+    this.captions.className = 'maker-captions';
+    this.root.appendChild(this.captions);
 
     this.chatLog = document.createElement('div');
     this.chatLog.className = 'maker-chat';
@@ -939,6 +958,30 @@ export class Hud {
    * re-rendered every frame would be sixty DOM writes a second to show text
    * that changes once in ten seconds.
    */
+  /**
+   * Say what the garden sounds like.
+   *
+   * Rebuilt only when the lines change, which is rare — the same rule the chat
+   * log follows, and for the same reason: this is text that changes a few times
+   * a round being drawn by a loop that runs sixty times a second.
+   */
+  setCaptions(lines: readonly Caption[]): void {
+    const key = lines.map((l) => `${l.kind}${l.count}${l.where}${l.at}`).join('|');
+    if (key === this.captionKey) return;
+    this.captionKey = key;
+    this.captions.replaceChildren();
+    for (const line of lines) {
+      const el = document.createElement('div');
+      el.className = `maker-caption ${line.where}`;
+      const count = line.count > 1 ? ` ×${line.count}` : '';
+      // The direction is dimmed rather than dropped: it is the part a hearing
+      // player gets for free from the pan, and the part that is useless once
+      // you have already turned to look.
+      el.innerHTML = `${line.text}${count} <span class="where">${line.where}</span>`;
+      this.captions.appendChild(el);
+    }
+  }
+
   setChat(lines: readonly ChatLine[]): void {
     const key = lines.map((l) => l.seq).join(',');
     if (key === this.chatKey) return;

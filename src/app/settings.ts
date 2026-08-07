@@ -91,6 +91,20 @@ export interface Settings {
    * ask anybody to behave.
    */
   sprayCan: boolean;
+  /**
+   * Say on screen what the garden sounds like.
+   *
+   * An accessibility option that is also a gameplay one. The collapse sound
+   * carries forty-eight metres against a placement's twenty-four, and
+   * `gameSounds.collapsed` says why: in a mode where two people are dismantling
+   * each other's forts it is the only warning the other one gets. A player who
+   * cannot hear it is not missing flavour, they are missing the warning.
+   *
+   * Off by default, because it is a second thing on the screen for somebody who
+   * did not ask for it — and every caption obeys the range of the sound it
+   * stands in for, so turning it on is never an advantage.
+   */
+  captions: boolean;
   /** Hold to crouch, or press to toggle. */
   toggleCrouch: boolean;
   toggleSprint: boolean;
@@ -132,6 +146,7 @@ export const DEFAULT_SETTINGS: Settings = {
   sfxVolume: 1,
   colorblindGhost: false,
   sprayCan: true,
+  captions: false,
   toggleCrouch: false,
   toggleSprint: false,
   gamepadEnabled: true,

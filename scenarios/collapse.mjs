@@ -252,10 +252,72 @@ export default async function (page) {
     `a supported preview should hold still, and this one moved ${drift.toFixed(3)}`,
   );
 
+  // ── And the warning, for somebody who cannot hear it ───────────────────────
+  //
+  // The collapse sound carries forty-eight metres against a placement's
+  // twenty-four, and `gameSounds.collapsed` says why: in a mode where two
+  // people are dismantling each other's forts it is the only warning the other
+  // one gets. A player who cannot hear it is missing the warning, not the
+  // flavour. Two claims, and the second is the one that keeps this honest.
+  await page.evaluate(() => window.__maker.captions.on(true));
+  const far = await page.evaluate(() => {
+    const m = window.__maker;
+    m.teleport(0, 0, 16);
+    return m.playHalf();
+  });
+  await frames(page, 6);
+
+  // One close enough to hear. Within arm's reach rather than across the lawn,
+  // because `removeAtPoint` is a build action and build actions have a reach —
+  // the first version of this put the wood six metres away and the removal ray
+  // never got there, so nothing happened and nothing was captioned.
+  //
+  // Which direction it reports is *not* asserted here, and that is deliberate
+  // rather than a gap: the hook aims the camera at whatever it is removing, so
+  // the answer can only ever be "ahead", and contorting the game to make a
+  // scenario say "behind" would be testing the fixture. The bearing is pure
+  // arithmetic with seven unit tests on it, including left/right and the
+  // ninety-degree split. What only a browser can say is the rest of it — that a
+  // caption reaches the screen at all, and that it obeys the range of the sound
+  // it stands in for.
+  await page.evaluate(() => {
+    const m = window.__maker;
+    const p = m.stats().player;
+    const path = m.layPlankPath(p.x - 0.5, p.z - 2.5, 2);
+    m.removeAtPoint(path.top.x, path.top.y, path.top.z);
+  });
+  await frames(page, 6);
+  const heard = await page.evaluate(() => window.__maker.captions.lines());
+  assert(
+    heard.length > 0,
+    'wood coming apart two metres away should say so when captions are on',
+  );
+
+  // And one past the range of the sound it stands in for. This is the rule the
+  // whole feature is built around: a caption that outran its sound would make
+  // an accessibility option an advantage, which in a game four friends play is
+  // its own kind of exclusion.
+  await page.evaluate((half) => {
+    const m = window.__maker;
+    m.captions.on(false);
+    m.captions.on(true);
+    const path = m.layPlankPath(-(half - 4), -(half - 4), 3);
+    m.removeAtPoint(path.top.x, path.top.y, path.top.z);
+  }, far);
+  await frames(page, 6);
+  const silent = await page.evaluate(() => window.__maker.captions.lines());
+  assert(
+    silent.length === 0,
+    `something past the range of its own sound should say nothing at all: ${JSON.stringify(silent)}`,
+  );
+  await page.evaluate(() => window.__maker.captions.on(false));
+
   console.log('[collapse] verified: a three-part tower stands and carries a player'
     + ` at ${up.y.toFixed(2)}m, its top comes off on its own, its leg takes all of it`
     + ` down, the player lands back on the lawn at ${after.y.toFixed(2)}m, and a beam`
     + ' with two legs under it survives losing one of them, and the preview says'
     + ` which is which before the wood is spent — pulsing ${spread.toFixed(2)} over open`
-    + ` air and holding to ${drift.toFixed(3)} on the lawn`);
+    + ` air and holding to ${drift.toFixed(3)} on the lawn — and that a player who`
+    + ` cannot hear the wood come apart is told about it (${heard.map((l) => l.text).join(', ')})`
+    + ' but never about one further away than the sound itself would have carried');
 }

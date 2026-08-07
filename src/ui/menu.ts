@@ -1120,6 +1120,7 @@ export class Menu {
     this.toggle('Toggle sprint', 'toggleSprint', s.toggleSprint);
     this.toggle('Colourblind-friendly build colours', 'colorblindGhost', s.colorblindGhost);
     this.toggle('Spray can', 'sprayCan', s.sprayCan);
+    this.toggle('Captions for sounds', 'captions', s.captions);
 
     this.section('Controller');
     this.toggle('Controller', 'gamepadEnabled', s.gamepadEnabled);
