@@ -16,7 +16,8 @@ import type { BuildSlot } from '../app/buildStore.ts';
 import { installTheme } from './theme.ts';
 
 export type Screen =
-  | 'none' | 'title' | 'settings' | 'builds' | 'pause' | 'result' | 'controls' | 'lobby';
+  | 'none' | 'title' | 'settings' | 'builds' | 'pause' | 'result' | 'controls' | 'lobby'
+  | 'together';
 
 const STYLE = `
 .mk-menu {
@@ -123,6 +124,45 @@ const STYLE = `
   line-height: 1.6; font-weight: 700; }
 
 .mk-hint { text-align: center; font-size: 11.5px; opacity: 0.55; margin-top: 14px; }
+
+/*
+ * The mode grid.
+ *
+ * Two columns, so five modes are three rows rather than ten items. Each card
+ * carries its own blurb, which is the change that actually saved the height:
+ * a full-width button with a line of grey text orphaned underneath it costs
+ * twice the space and reads as two things.
+ */
+.mk-modes { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 14px; }
+.mk-mode-card {
+  display: flex; flex-direction: column; gap: 3px; text-align: left;
+  padding: 11px 13px; font: inherit;
+  color: var(--ink); background: var(--sun);
+  border: 2px solid var(--ink); border-bottom-width: 5px; border-radius: var(--r-md);
+  cursor: pointer;
+  transition: transform 0.06s, filter 0.12s;
+}
+.mk-mode-card b { font-size: 15px; font-weight: 900; letter-spacing: -0.2px; }
+.mk-mode-card span { font-size: 11px; font-weight: 700; line-height: 1.35; color: rgba(43,32,28,0.66); }
+.mk-mode-card:hover { filter: brightness(1.07); transform: translateY(-1px); }
+.mk-mode-card:focus-visible { outline: 3px solid var(--water); outline-offset: 3px; }
+.mk-mode-card:active { transform: translateY(3px); border-bottom-width: 2px; }
+.mk-mode-card.mk-disabled:hover { filter: none; transform: none; }
+
+/* Three equal buttons on one line, for actions that are not the main event. */
+.mk-actions { display: flex; gap: 8px; }
+.mk-actions .mk-btn { margin-bottom: 0; font-size: 14px; padding: 11px 8px; }
+
+/* A labelled rule, for splitting a long screen into sections. */
+.mk-section {
+  display: flex; align-items: center; gap: 10px;
+  margin: 18px 0 6px;
+  font-size: 11px; font-weight: 900; letter-spacing: 1.2px; text-transform: uppercase;
+  color: rgba(43,32,28,0.5);
+}
+.mk-section::after {
+  content: ''; flex: 1; height: 2px; background: rgba(43,32,28,0.16); border-radius: 1px;
+}
 .mk-btn.mk-mode { margin-bottom: 3px; }
 .mk-disabled { opacity: 0.45; cursor: not-allowed; }
 /* Louder than the blurbs it sits among, because it is the one line that
@@ -393,6 +433,7 @@ export class Menu {
     switch (this.screen) {
       case 'title': this.renderTitle(); break;
       case 'settings': this.renderSettings(); break;
+      case 'together': this.renderTogether(); break;
       case 'lobby': this.renderLobby(); break;
       case 'builds': this.renderBuilds(); break;
       case 'pause': this.renderPause(); break;
@@ -410,56 +451,25 @@ export class Menu {
    * "Settings". The room name is what lets two pairs of players share one relay
    * without walking into each other's game.
    */
-  private buildPlayTogether(): void {
-    const status = this.callbacks.sessionStatus();
-    if (status !== null) {
-      const line = document.createElement('div');
-      line.className = 'mk-blurb';
-      line.textContent = status;
-      this.card.appendChild(line);
-      this.button('Play Alone Again', () => {
-        this.callbacks.onLeaveSession();
-        this.show('title');
-      }, 'mk-secondary');
-      return;
-    }
+  /**
+   * The two connection fields, made once and kept.
+   *
+   * Built in the constructor rather than per render, so what somebody typed
+   * survives a trip to the lobby and back. They were recreated on every render
+   * before, which meant editing the address and then opening any other screen
+   * silently put it back to the default.
+   */
+  private readonly relay = Menu.field('ws://localhost:8787', 'relay address');
+  private readonly room = Menu.field('yard', 'room name', 'mk-input-short');
 
-    const row = document.createElement('div');
-    row.className = 'mk-net';
-
-    const url = document.createElement('input');
-    url.type = 'text';
-    url.className = 'mk-input';
-    url.placeholder = 'ws://localhost:8787';
-    url.value = 'ws://localhost:8787';
-    url.setAttribute('aria-label', 'relay address');
-
-    const room = document.createElement('input');
-    room.type = 'text';
-    room.className = 'mk-input mk-input-short';
-    room.placeholder = 'room';
-    room.value = 'yard';
-    room.setAttribute('aria-label', 'room name');
-
-    row.append(url, room);
-    this.card.appendChild(row);
-
-    // The lobby first, because it is the way this is meant to be used: a code
-    // you gave somebody, a queue, and a yard chosen for you. Hosting by hand
-    // stays underneath it for two people on one network who would rather not
-    // involve a matchmaker at all.
-    this.button('Play With Friends', () => {
-      this.callbacks.onOpenLobby(url.value.trim());
-      this.show('lobby');
-    });
-    this.button('Host a Yard', () => {
-      this.callbacks.onHost(url.value.trim(), room.value.trim() || 'yard');
-      this.show('title');
-    }, 'mk-secondary');
-    this.button('Join a Yard', () => {
-      this.callbacks.onJoin(url.value.trim(), room.value.trim() || 'yard');
-      this.show('title');
-    }, 'mk-secondary');
+  private static field(value: string, label: string, extra = ''): HTMLInputElement {
+    const el = document.createElement('input');
+    el.type = 'text';
+    el.className = `mk-input ${extra}`.trim();
+    el.placeholder = value;
+    el.value = value;
+    el.setAttribute('aria-label', label);
+    return el;
   }
 
   private button(label: string, onClick: () => void, variant = ''): HTMLButtonElement {
@@ -481,6 +491,14 @@ export class Menu {
     this.card.appendChild(h);
   }
 
+  /** A rule with a word on it, for splitting a long screen into things. */
+  private section(text: string): void {
+    const h = document.createElement('div');
+    h.className = 'mk-section';
+    h.textContent = text;
+    this.card.appendChild(h);
+  }
+
   private renderTitle(): void {
     const title = document.createElement('h1');
     title.className = 'mk-title';
@@ -492,24 +510,35 @@ export class Menu {
     tag.textContent = 'Build it yourself. Then find out if it holds.';
     this.card.appendChild(tag);
 
-    // One button per mode, each with a line saying what it is. A menu that
-    // lists two names and no explanation makes the player pick blind and find
-    // out ninety seconds later.
+    // One card per mode, name and blurb together.
+    //
+    // It was a stack: a full-width button, then a line of grey text under it,
+    // then the next button. Five of those plus five more buttons and two text
+    // fields ran off the bottom of a 720-line window with no way to scroll, so
+    // the last thing on the screen — Settings — could not be reached at all.
+    //
+    // A two-column grid halves the height and puts the blurb where it belongs,
+    // which is inside the thing it describes rather than orphaned beneath it.
     const blocked = this.callbacks.modesBlocked();
+    const grid = document.createElement('div');
+    grid.className = 'mk-modes';
     for (const m of this.callbacks.listModes()) {
-      const button = this.button(
-        m.name, () => { if (blocked === null) this.callbacks.onPlayMode(m.id); },
-      );
-      const blurb = document.createElement('div');
-      blurb.className = 'mk-blurb';
-      blurb.textContent = m.blurb;
-      this.card.appendChild(blurb);
-      button.classList.add('mk-mode');
+      const card = document.createElement('button');
+      card.className = 'mk-mode-card';
+      card.innerHTML = `<b>${m.name}</b><span>${m.blurb}</span>`;
       if (blocked !== null) {
-        button.classList.add('mk-disabled');
-        button.setAttribute('aria-disabled', 'true');
+        card.classList.add('mk-disabled');
+        card.setAttribute('aria-disabled', 'true');
+      } else {
+        card.addEventListener('click', (e) => {
+          e.stopPropagation();
+          this.callbacks.onPlayMode(m.id);
+        });
       }
+      grid.appendChild(card);
     }
+    this.card.appendChild(grid);
+
     if (blocked !== null) {
       const why = document.createElement('div');
       why.className = 'mk-blurb mk-why';
@@ -517,21 +546,88 @@ export class Menu {
       this.card.appendChild(why);
     }
 
-    this.button('Free Build', () => this.callbacks.onPlaySandbox(), 'mk-secondary');
-    this.buildPlayTogether();
-    this.button('Saved Builds', () => {
-      this.returnTo = 'title';
-      this.show('builds');
-    }, 'mk-secondary');
-    this.button('Settings', () => {
-      this.returnTo = 'title';
-      this.show('settings');
-    }, 'mk-secondary');
+    // The one thing on this screen that is not a mode, given its own weight.
+    // Everything the project is for happens on the other side of it.
+    this.button('Play With Friends', () => this.show('together'));
+
+    const row = document.createElement('div');
+    row.className = 'mk-actions';
+    this.card.appendChild(row);
+    for (const [label, go] of [
+      ['Free Build', () => this.callbacks.onPlaySandbox()],
+      ['Saved Builds', () => { this.returnTo = 'title'; this.show('builds'); }],
+      ['Settings', () => { this.returnTo = 'title'; this.show('settings'); }],
+    ] as Array<[string, () => void]>) {
+      const b = document.createElement('button');
+      b.className = 'mk-btn mk-secondary';
+      b.textContent = label;
+      b.addEventListener('click', (e) => { e.stopPropagation(); go(); });
+      row.appendChild(b);
+    }
 
     const hint = document.createElement('div');
     hint.className = 'mk-hint';
     hint.textContent = 'Click the game to capture the mouse. Escape to pause.';
     this.card.appendChild(hint);
+  }
+
+  /**
+   * Everything about playing with other people, on a screen of its own.
+   *
+   * The relay address and the room name used to be two text fields on the
+   * title screen, above the fold, on the front page of the game — a websocket
+   * URL is the first thing a new player saw after the mode list. They are here
+   * now, under the lobby that most people will use instead, because "type a
+   * server address" is an answer to a question almost nobody has.
+   */
+  private renderTogether(): void {
+    this.heading('Play With Friends');
+
+    const status = this.callbacks.sessionStatus();
+    if (status !== null) {
+      const line = document.createElement('div');
+      line.className = 'mk-blurb';
+      line.textContent = status;
+      this.card.appendChild(line);
+      this.button('Play Alone Again', () => {
+        this.callbacks.onLeaveSession();
+        this.show('title');
+      }, 'mk-secondary');
+      this.button('Back', () => this.show('title'), 'mk-secondary');
+      return;
+    }
+
+    const blurb = document.createElement('div');
+    blurb.className = 'mk-blurb';
+    blurb.textContent = 'Get a friend code, make a party, and be dropped into a fresh yard together.';
+    this.card.appendChild(blurb);
+
+    this.button('Open the Lobby', () => {
+      this.callbacks.onOpenLobby(this.relay.value.trim());
+      this.show('lobby');
+    });
+
+    this.section('Straight to a yard');
+    const direct = document.createElement('div');
+    direct.className = 'mk-blurb';
+    direct.textContent = 'Two people on one network who would rather not involve a matchmaker.';
+    this.card.appendChild(direct);
+
+    const row = document.createElement('div');
+    row.className = 'mk-net';
+    row.append(this.relay, this.room);
+    this.card.appendChild(row);
+
+    this.button('Host a Yard', () => {
+      this.callbacks.onHost(this.relay.value.trim(), this.room.value.trim() || 'yard');
+      this.show('title');
+    }, 'mk-secondary');
+    this.button('Join a Yard', () => {
+      this.callbacks.onJoin(this.relay.value.trim(), this.room.value.trim() || 'yard');
+      this.show('title');
+    }, 'mk-secondary');
+
+    this.button('Back', () => this.show('title'), 'mk-secondary');
   }
 
   /**
@@ -811,15 +907,23 @@ export class Menu {
     this.button('Quit to Title', () => this.callbacks.onQuitToTitle(), 'mk-secondary');
   }
 
+  /**
+   * Settings, in sections.
+   *
+   * Fourteen rows in one undifferentiated column, is what this was: mouse
+   * sensitivity, then shadows, then master volume, then crouch, then the
+   * gamepad deadzone, each looking exactly as important as the last. Somebody
+   * arriving to turn the shadows off had to read the lot.
+   *
+   * The order is by how often a person comes here for it — the picture first,
+   * because that is what somebody with a slow machine is looking for, then
+   * aiming, then sound, then the two that are set once and never again.
+   */
   private renderSettings(): void {
     this.heading('Settings');
     const s = this.settings.current;
 
-    this.slider('Mouse sensitivity', 'sensitivity', s.sensitivity, 0.0004, 0.008, 0.0002,
-      (v) => `${Math.round(v * 10000) / 10}`);
-    this.toggle('Invert vertical look', 'invertY', s.invertY);
-    this.slider('Field of view', 'fov', s.fov, 55, 110, 1, (v) => `${Math.round(v)}°`);
-
+    this.section('Picture');
     this.toggle('Shadows', 'shadows', s.shadows);
     this.toggle('Outlines', 'outlines', s.outlines);
     this.slider(s.autoQuality ? 'Render scale (maximum)' : 'Render scale',
@@ -829,22 +933,35 @@ export class Menu {
     // only way the ceiling-versus-fixed distinction is visible.
     this.toggle('Lower resolution automatically if frames drop', 'autoQuality', s.autoQuality,
       () => this.render());
+    // Next to the things it would be used to judge, rather than filed under a
+    // heading of its own: somebody turning this on is about to change one of
+    // the four settings above it and wants to see whether it helped.
+    this.toggle('Show frame rate', 'showStats', s.showStats);
 
+    this.section('Looking around');
+    this.slider('Mouse sensitivity', 'sensitivity', s.sensitivity, 0.0004, 0.008, 0.0002,
+      (v) => `${Math.round(v * 10000) / 10}`);
+    this.toggle('Invert vertical look', 'invertY', s.invertY);
+    this.slider('Field of view', 'fov', s.fov, 55, 110, 1, (v) => `${Math.round(v)}°`);
+
+    this.section('Sound');
     this.slider('Master volume', 'masterVolume', s.masterVolume, 0, 1, 0.05,
       (v) => `${Math.round(v * 100)}%`);
     this.slider('Effects volume', 'sfxVolume', s.sfxVolume, 0, 1, 0.05,
       (v) => `${Math.round(v * 100)}%`);
 
-    this.toggle('Colourblind-friendly build colours', 'colorblindGhost', s.colorblindGhost);
+    this.section('Playing');
     this.toggle('Toggle crouch', 'toggleCrouch', s.toggleCrouch);
     this.toggle('Toggle sprint', 'toggleSprint', s.toggleSprint);
+    this.toggle('Colourblind-friendly build colours', 'colorblindGhost', s.colorblindGhost);
 
+    this.section('Controller');
     this.toggle('Controller', 'gamepadEnabled', s.gamepadEnabled);
     // Shown in degrees per second: radians per second is the right unit for the
     // code and a meaningless one for a player choosing how fast to turn.
-    this.slider('Controller look speed', 'gamepadLookSpeed', s.gamepadLookSpeed, 0.8, 6, 0.1,
+    this.slider('Look speed', 'gamepadLookSpeed', s.gamepadLookSpeed, 0.8, 6, 0.1,
       (v) => `${Math.round((v * 180) / Math.PI)}°/s`);
-    this.slider('Controller deadzone', 'gamepadDeadzone', s.gamepadDeadzone, 0, 0.5, 0.01,
+    this.slider('Deadzone', 'gamepadDeadzone', s.gamepadDeadzone, 0, 0.5, 0.01,
       (v) => `${Math.round(v * 100)}%`);
 
     const spacer = document.createElement('div');

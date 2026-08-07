@@ -180,6 +180,15 @@ jobs:
       - name: Bounds scenario
         run: node tools/shoot.mjs --scenario scenarios/bounds.mjs --auto-quality --out /tmp/ci-bounds.png
 
+      # The screens a player meets before they play, and the readout for when
+      # they do. Menus are the one part of this game with no simulation behind
+      # them, so every way they go wrong is a layout — the title screen ran off
+      # the bottom of a 720-line window with no way to scroll, which put
+      # Settings out of reach entirely and is invisible to every kind of test
+      # except one that measures the card against the window.
+      - name: Front-end scenario
+        run: node tools/shoot.mjs --scenario scenarios/frontend.mjs --auto-quality --out /tmp/ci-frontend.png
+
       # The whole of the lobby, end to end against a real server: two browser
       # contexts, two friend codes, a party, a queue, and a round running in the
       # room it was matched into. It is also the only thing that exercises the
@@ -247,6 +256,7 @@ jobs:
             /tmp/ci-items.png
             /tmp/ci-tag.png
             /tmp/ci-bounds.png
+            /tmp/ci-frontend.png
             /tmp/ci-lobby-friends.png
           if-no-files-found: ignore
 

@@ -124,12 +124,38 @@ describe('the character rig', () => {
     batch.hideAll();
     expect(batch.posed).toBe(0);
 
+    // Nothing is submitted, which is a stronger claim than the one this used to
+    // make. Unused slots were given a matrix that parked them below the world,
+    // on the stated grounds that resizing would churn instance counts — and
+    // that is not a thing that happens: `count` is a number three.js hands to
+    // the draw call, not a buffer to reallocate. So the old arrangement paid
+    // the GPU to transform thirteen thousand triangles into no pixels, and paid
+    // the CPU to write the matrices that made them invisible.
     const torso = batch.group.getObjectByName('torso') as THREE.InstancedMesh;
-    const m = new THREE.Matrix4();
-    torso.getMatrixAt(0, m);
-    // Parked far below the world rather than resized, so instance counts never
-    // churn.
-    expect(m.elements[13]).toBeLessThan(-1000);
+    expect(torso.count).toBe(0);
+    const eyes = batch.group.getObjectByName('eyes') as THREE.InstancedMesh;
+    expect(eyes.count).toBe(0);
+  });
+
+  it('draws exactly as many people as were posed', () => {
+    // The other half, and the one that would catch a `count` left at capacity:
+    // hiding everybody is easy to get right by accident, and a batch that draws
+    // its whole pool whenever anybody is on the lawn is the actual bug.
+    const batch = new CharacterBatch(8);
+    const shirt = new THREE.Color(0xffffff);
+    batch.begin();
+    for (let id = 0; id < 3; id++) {
+      batch.pose(1 / 60, { id, x: id, y: 0, z: 0, facing: 0, speed: 0, onGround: true, shirt });
+    }
+    batch.finish();
+
+    const torso = batch.group.getObjectByName('torso') as THREE.InstancedMesh;
+    expect(torso.count).toBe(3);
+    // Two eyes and two hands each, so those run at twice the count.
+    expect((batch.group.getObjectByName('eyes') as THREE.InstancedMesh).count).toBe(6);
+    // And the ink follows the body it outlines, or a kid loses their outline.
+    const ink = batch.group.getObjectByName('torso-ink') as THREE.InstancedMesh | null;
+    if (ink !== null) expect(ink.count).toBe(3);
   });
 
   it('walks: a moving kid swings, a stopped one settles', () => {

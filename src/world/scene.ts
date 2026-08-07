@@ -11,7 +11,7 @@ import * as THREE from 'three';
 import { Rng } from '../core/rng.ts';
 import { createToonMaterial } from '../render/toonMaterial.ts';
 import { chamferedBox, blob, addOutlineNormals } from '../render/geometry.ts';
-import { PropBatch } from '../render/propBatch.ts';
+import { PropBatch, chunkInstanced } from '../render/propBatch.ts';
 import { neighborhoodSlabs, wearPoints, TREEHOUSE, type Slab } from './neighborhood.ts';
 import { buildGround, buildTufts, averageLawnColor, type Paved } from './ground.ts';
 
@@ -71,11 +71,24 @@ export interface SceneBuild {
 class GeometryCache {
   private readonly cache = new Map<string, THREE.BufferGeometry>();
 
+  /**
+   * A box, chamfered or not.
+   *
+   * A chamfer costs a lot more than it looks: `chamferedBox` builds 24 vertices
+   * and 44 triangles where a plain box needs 8 and 12, and it does that whether
+   * the chamfer is a centimetre or a fraction of a millimetre — the topology is
+   * the same, only the inset changes. Nearly four times the geometry, for an
+   * edge treatment.
+   *
+   * That is the right trade on a house and the wrong one on a picket, so asking
+   * for no chamfer now gets a real box rather than a chamfered one with the
+   * bevel set to nothing.
+   */
   box(w: number, h: number, d: number, chamfer: number): { key: string; geometry: THREE.BufferGeometry } {
     const key = `box:${w.toFixed(4)}:${h.toFixed(4)}:${d.toFixed(4)}:${chamfer.toFixed(4)}`;
     let geometry = this.cache.get(key);
     if (geometry === undefined) {
-      geometry = chamferedBox(w, h, d, chamfer);
+      geometry = chamfer > 0 ? chamferedBox(w, h, d, chamfer) : new THREE.BoxGeometry(w, h, d);
       this.cache.set(key, geometry);
     }
     return { key, geometry };
@@ -311,7 +324,11 @@ function addGround(scene: THREE.Scene, rng: Rng, slabs: readonly Slab[]): void {
   // close together the clumps are, and spreading the same number over four
   // times the area would thin the yard you actually stand in to make verges
   // nobody can reach look slightly better. So the tufts keep their own extent.
-  scene.add(buildTufts(rng, { ...lawn, extent: 62, count: 11000 }));
+  // Split into cells before it goes in, so turning your back on the far side of
+  // the lawn stops paying for it. Sixteen metres is much finer than the scenery
+  // grid because grass is dense and low: a cell holds a few hundred clumps, and
+  // the ones behind you are the majority of them.
+  scene.add(chunkInstanced(buildTufts(rng, { ...lawn, extent: 62, count: 11000 }), 16));
 
   const geometry = new THREE.PlaneGeometry(400, 400, 1, 1);
   geometry.rotateX(-Math.PI / 2);
@@ -375,7 +392,19 @@ function addFence(props: PropBatch, cache: GeometryCache, rng: Rng): void {
         0.09, picketHeight, 0.02,
         p.x, picketHeight / 2, p.z,
         jitter(PALETTE.fence, rng, 0.04),
-        { ry: angle, rz: rng.signed(0.014), chamfer: 0.006, outline: 0x5a4432 },
+        // No chamfer, which is the single largest saving in the frame.
+        //
+        // Six hundred and seventy-five pickets at 44 triangles each, plus an
+        // outline shell at 44 more, came to 59,400 — **a fifth of everything
+        // the game drew**, on sticks two centimetres thick. A plain box is 12,
+        // so the fence now costs 16,200.
+        //
+        // The bevel was 6mm on a 20mm face and is invisible at any distance a
+        // player is ever at: diffed against the chamfered version from the
+        // closest you can stand, it moves a handful of pixels along the top
+        // edges. What actually gives a picket its shape in this art style is
+        // the outline shell, and that is untouched.
+        { ry: angle, rz: rng.signed(0.014), chamfer: 0, outline: 0x5a4432 },
       );
     }
 

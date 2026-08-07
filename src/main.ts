@@ -54,6 +54,7 @@ import { Menu, type LobbyView } from './ui/menu.ts';
 import { CrashHandler } from './app/crashHandler.ts';
 import { GamepadManager } from './core/gamepadManager.ts';
 import { PerformanceGovernor } from './app/performanceGovernor.ts';
+import { FrameStats } from './app/frameStats.ts';
 
 /** How far off the window edge an off-screen objective chevron sits. */
 const PIN_EDGE_MARGIN = 54;
@@ -1505,6 +1506,27 @@ function draw(alpha: number, frameDt: number): void {
     now: nowSeconds,
   });
   hud.setPins(projectPins(mode, state));
+
+  // Sampled every frame; written to the screen only when it has something new
+  // to say, which is four times a second. A readout that rewrote itself sixty
+  // times a second would be unreadable and would be a measurable part of what
+  // it is measuring.
+  //
+  // Read after `renderer.render`, because `renderer.info` counts the frame that
+  // just went out. Read before it and the numbers are one frame stale, which
+  // shows up as a draw count that lags a turn by a frame — invisible in normal
+  // play and maddening when somebody is using this to work out what is
+  // expensive.
+  if (frameStats.frame(frameDt) && settings.get('showStats')) {
+    hud.setStats(
+      frameStats.current,
+      renderer.info.render.calls,
+      renderer.info.render.triangles,
+    );
+  } else if (!settings.get('showStats')) {
+    hud.setStats(null, 0, 0);
+  }
+
   hud.updateDebug({
     fps: loop.fps,
     parts: world.partCount,
@@ -1516,6 +1538,8 @@ function draw(alpha: number, frameDt: number): void {
     throttled: governor.isThrottling,
   });
 }
+
+const frameStats = new FrameStats();
 
 const loop = new GameLoop({ fixedUpdate, render }, { tickRate: TICK_RATE });
 

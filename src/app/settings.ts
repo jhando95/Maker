@@ -19,6 +19,15 @@ export interface Settings {
   shadows: boolean;
   outlines: boolean;
   /**
+   * Show a small frame-rate readout while playing.
+   *
+   * Off by default, and its own setting rather than a corner of the debug
+   * overlay: that one answers a developer's questions — how high is the player,
+   * how many parts are in the world — and a player who wants to know whether
+   * their machine is keeping up should not have to read past them.
+   */
+  showStats: boolean;
+  /**
    * Render scale, 0.5 to 1. Below 1 renders smaller and upscales.
    *
    * With `autoQuality` on this is a ceiling rather than a fixed value: the
@@ -52,6 +61,7 @@ export const DEFAULT_SETTINGS: Settings = {
   fov: 72,
   shadows: true,
   outlines: true,
+  showStats: false,
   renderScale: 1,
   autoQuality: true,
   masterVolume: 0.7,

@@ -250,7 +250,6 @@ export class CharacterBatch {
   private readonly offset = new THREE.Vector3();
   private readonly head3 = new THREE.Vector3();
 
-  private static readonly HIDDEN = new THREE.Matrix4().makeTranslation(0, -9999, 0);
 
   private drawn = 0;
 
@@ -593,21 +592,38 @@ export class CharacterBatch {
     part.outline?.setMatrixAt(index, this.matrix);
   }
 
-  /** End a frame: hide the unused slots and upload. */
+  /**
+   * End a frame: stop the buffers after the last person posed, and upload.
+   *
+   * `count` rather than a hidden matrix, and the difference is the whole of it.
+   * Every unused slot used to be given a degenerate transform that collapsed it
+   * to nothing — which hides it and **still draws it**, because an
+   * `InstancedMesh` submits `count` instances whatever is in them. With nobody
+   * on the lawn that was thirty-two torsos, thirty-two heads, thirty-two heads
+   * worth of ink and sixty-four eyes going through the vertex shader every
+   * frame to produce no pixels: about thirteen thousand triangles of nothing,
+   * which is more than the whole cul-de-sac costs.
+   *
+   * Lowering `count` fixes it at both ends. The GPU stops processing the empty
+   * slots, and the loop that used to write a matrix into each of them — up to
+   * two hundred and fifty writes a frame, on the CPU, to hide things — is gone
+   * rather than merely shorter, because a slot past `count` cannot be seen no
+   * matter what is in it.
+   */
   finish(): void {
     for (const part of this.parts) {
-      for (let i = this.drawn; i < this.capacity; i++) {
-        part.mesh.setMatrixAt(i, CharacterBatch.HIDDEN);
-        part.outline?.setMatrixAt(i, CharacterBatch.HIDDEN);
-      }
+      part.mesh.count = this.drawn;
       part.mesh.instanceMatrix.needsUpdate = true;
       if (part.mesh.instanceColor !== null) part.mesh.instanceColor.needsUpdate = true;
-      if (part.outline !== null) part.outline.instanceMatrix.needsUpdate = true;
-    }
-    for (const pair of [this.hands, this.eyes]) {
-      for (let i = this.drawn * 2; i < this.capacity * 2; i++) {
-        pair.setMatrixAt(i, CharacterBatch.HIDDEN);
+      if (part.outline !== null) {
+        part.outline.count = this.drawn;
+        part.outline.instanceMatrix.needsUpdate = true;
       }
+    }
+    // Two of these per person — a left and a right — so the pair meshes run at
+    // twice the count rather than at it.
+    for (const pair of [this.hands, this.eyes]) {
+      pair.count = this.drawn * 2;
       pair.instanceMatrix.needsUpdate = true;
       if (pair.instanceColor !== null) pair.instanceColor.needsUpdate = true;
     }

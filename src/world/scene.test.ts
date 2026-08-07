@@ -15,19 +15,35 @@ import { createScene } from './scene.ts';
 import { BULB } from './culDeSac.ts';
 
 /** The tuft field, pulled back out of the assembled scene. */
-function tufts(scene: THREE.Scene): THREE.InstancedMesh {
-  const mesh = scene.getObjectByName('tufts');
-  expect(mesh).toBeDefined();
-  return mesh as THREE.InstancedMesh;
+/**
+ * Every instanced mesh the grass is drawn from.
+ *
+ * A list rather than one mesh, because the lawn is split into cells so it can be
+ * frustum-culled. This used to fetch the single mesh by name and read `count`
+ * off it — which, once the name belonged to a group, quietly returned nothing:
+ * the verge test failed honestly, and the paving test went green for the worst
+ * possible reason, having found no grass anywhere to be on the road.
+ */
+function tufts(scene: THREE.Scene): THREE.InstancedMesh[] {
+  const root = scene.getObjectByName('tufts');
+  expect(root).toBeDefined();
+  const out: THREE.InstancedMesh[] = [];
+  root!.traverse((o) => {
+    if ((o as THREE.InstancedMesh).isInstancedMesh === true) out.push(o as THREE.InstancedMesh);
+  });
+  expect(out.length, 'the lawn should be drawn by at least one mesh').toBeGreaterThan(0);
+  return out;
 }
 
 /** Every clump's position on the ground. */
-function positions(mesh: THREE.InstancedMesh): THREE.Vector3[] {
+function positions(meshes: readonly THREE.InstancedMesh[]): THREE.Vector3[] {
   const matrix = new THREE.Matrix4();
   const out: THREE.Vector3[] = [];
-  for (let i = 0; i < mesh.count; i++) {
-    mesh.getMatrixAt(i, matrix);
-    out.push(new THREE.Vector3().setFromMatrixPosition(matrix));
+  for (const mesh of meshes) {
+    for (let i = 0; i < mesh.count; i++) {
+      mesh.getMatrixAt(i, matrix);
+      out.push(new THREE.Vector3().setFromMatrixPosition(matrix));
+    }
   }
   return out;
 }

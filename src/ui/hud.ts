@@ -84,6 +84,10 @@ const STYLE = `
 .maker-status { left: 16px; bottom: 16px; }
 .maker-help { right: 16px; bottom: 16px; text-align: right; }
 .maker-debug { left: 16px; top: 16px; font-family: ui-monospace, monospace; font-size: 11px; }
+.maker-stats { right: 16px; top: 16px; font-family: ui-monospace, monospace; font-size: 12px;
+  line-height: 1.45; text-align: right; min-width: 128px; }
+.maker-stats b { font-size: 16px; }
+.maker-stats .dim { opacity: 0.62; }
 .maker-key { display: inline-block; padding: 1px 5px; border-radius: var(--r-sm);
   background: var(--card); color: var(--ink);
   font-weight: 800; font-size: 11px; margin-right: 3px;
@@ -280,6 +284,7 @@ const STYLE = `
 `;
 
 import type { Loadout, ModeHud } from '../game/gameMode.ts';
+import type { FrameSummary } from '../app/frameStats.ts';
 
 export interface HudState {
   selectedKind: number;
@@ -413,6 +418,7 @@ export class Hud {
   private readonly lock: HTMLDivElement;
   private readonly modePanel: HTMLDivElement;
   private readonly messageEl: HTMLDivElement;
+  private readonly stats: HTMLDivElement;
   private readonly ammoEl: HTMLDivElement;
   private readonly vignette: HTMLDivElement;
   private readonly pins: HTMLDivElement;
@@ -481,6 +487,12 @@ export class Hud {
     this.debug = document.createElement('div');
     this.debug.className = 'maker-panel maker-debug maker-hidden';
     this.root.appendChild(this.debug);
+
+    // Top right, opposite the debug panel, so a player who has both open can
+    // read either without one covering the other.
+    this.stats = document.createElement('div');
+    this.stats.className = 'maker-panel maker-stats maker-hidden';
+    this.root.appendChild(this.stats);
 
     this.modePanel = document.createElement('div');
     this.modePanel.className = 'maker-mode maker-hidden';
@@ -667,6 +679,29 @@ export class Hud {
    * looked identical from behind the crosshair, and the meter that moved was on
    * a body forty metres away.
    */
+  /**
+   * The frame-rate readout, or nothing.
+   *
+   * Two numbers and two counts, in that order of importance. The frame rate is
+   * what anybody looks for; the low beside it is the one that actually explains
+   * how the game feels, because a stutter is what you notice and an average is
+   * exactly the statistic that hides one. The draws and triangles are for
+   * somebody deciding what to turn down, which is the other reason to open this.
+   *
+   * Written only when the numbers change — four times a second rather than
+   * sixty — because a readout that rewrote itself every frame would be both
+   * unreadable and a measurable part of what it is measuring.
+   */
+  setStats(summary: FrameSummary | null, drawCalls: number, triangles: number): void {
+    this.stats.classList.toggle('maker-hidden', summary === null);
+    if (summary === null) return;
+    const k = (n: number): string => (n >= 1000 ? `${(n / 1000).toFixed(0)}k` : `${n}`);
+    this.stats.innerHTML =
+      `<b>${summary.fps.toFixed(0)}</b> fps<span class="dim"> · ${summary.ms.toFixed(1)} ms</span>`
+      + `<br><span class="dim">low</span> ${summary.low.toFixed(0)}`
+      + `<span class="dim"> · ${drawCalls} draws · ${k(triangles)} tris</span>`;
+  }
+
   /**
    * Say something that is not about the round.
    *
