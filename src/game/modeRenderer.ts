@@ -11,7 +11,7 @@ import { createToonMaterial, createOutlineMaterial } from '../render/toonMateria
 import { chamferedBox } from '../render/geometry.ts';
 import { MAX_BALLOONS, BALLOON_RADIUS } from './projectiles.ts';
 import type { ProjectileSystem } from './projectiles.ts';
-import type { GameMode } from './gameMode.ts';
+import type { GameMode, Marker } from './gameMode.ts';
 import { CharacterBatch, type CharacterPose } from '../render/character.ts';
 import { shirtColor } from './shirts.ts';
 import type { Actor } from './actor.ts';
@@ -261,11 +261,20 @@ export class ModeRenderer {
      * the mode's bots, which is what the headless tests hand it.
      */
     others?: readonly Actor[],
+    /**
+     * Anything to draw beside the mode's own objectives — pings, today.
+     *
+     * Passed in rather than read from anywhere, for the same reason `others` is:
+     * a ping is not the mode's business. You can ping in Free Build, where
+     * there is no mode at all to publish one, and a mark on the world that only
+     * appeared during a round would be a strange thing to explain.
+     */
+    extraMarkers?: readonly Marker[],
   ): void {
     this.updateCharacters(dt, others ?? mode?.bots ?? [], mode);
     this.updateBalloons(projectiles);
     this.updateSplashes(dt);
-    this.updateMarkers(mode, time);
+    this.updateMarkers(mode, time, extraMarkers);
     this.updateStream(time);
   }
 
@@ -328,8 +337,11 @@ export class ModeRenderer {
    * would compile a shader on the frame it appeared, which is a visible hitch
    * at exactly the moment something important just happened.
    */
-  private updateMarkers(mode: GameMode | null, time: number): void {
-    const markers = mode?.markers() ?? [];
+  private updateMarkers(
+    mode: GameMode | null, time: number, extra: readonly Marker[] = [],
+  ): void {
+    const own = mode?.markers() ?? [];
+    const markers = extra.length === 0 ? own : [...own, ...extra];
     let standIndex = 0;
     let flagIndex = 0;
 

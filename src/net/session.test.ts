@@ -5,6 +5,7 @@ import type { Transport } from './transport.ts';
 import { PartRenderer } from '../render/partRenderer.ts';
 import { BuildSystem } from '../build/buildSystem.ts';
 import { PLAY_HALF } from '../world/bounds.ts';
+import { NEAR_RADIUS } from '../game/comms.ts';
 import { CharacterController } from '../player/controller.ts';
 import { ActorRoster, LOCAL_ACTOR_ID, type Actor } from '../game/actor.ts';
 import { BUTTON, commandToIntent, makeCommand, type Command } from '../core/command.ts';
@@ -861,5 +862,182 @@ describe('saying hello', () => {
     const before = host.status.peers;
     run(host, hostCtx, client, clientCtx, 200);
     expect(host.status.peers, 'a welcomed guest introduced itself again').toBe(before);
+  });
+});
+
+describe('talking to each other', () => {
+  /** A host, two guests, and a record of everything each machine was told. */
+  function room(): {
+    host: NetHost; hostCtx: Machine; heard: Record<string, unknown[]>;
+    a: NetClient; b: NetClient; aCtx: Machine; bCtx: Machine;
+    tick(n: number): void;
+  } {
+    const heard: Record<string, unknown[]> = { host: [], a: [], b: [] };
+    const make = (key: string): Machine => {
+      const m = makeMachine();
+      m.heard = (e) => heard[key]!.push(e);
+      return m;
+    };
+    const hostCtx = make('host');
+    const aCtx = make('a');
+    const bCtx = make('b');
+    const host = new NetHost(hostCtx);
+    const pa = loopbackPair();
+    const pb = loopbackPair();
+    const a = new NetClient(aCtx, pa.client, 'ali');
+    const b = new NetClient(bCtx, pb.client, 'bo');
+    host.accept(pa.host);
+    host.accept(pb.host);
+    const tick = (n: number): void => {
+      for (let i = 0; i < n; i++) {
+        host.beforeTick();
+        a.beforeTick();
+        b.beforeTick();
+        host.afterTick(DT);
+        a.afterTick(DT, makeCommand(sharedTick));
+        b.afterTick(DT, makeCommand(sharedTick++));
+      }
+    };
+    tick(4);
+    return { host, hostCtx, heard, a, b, aCtx, bCtx, tick };
+  }
+
+  /** Where the host thinks somebody is. Teams alternate: guest 1 right, guest 2 left. */
+  function put(ctx: Machine, id: number, x: number, z: number): void {
+    ctx.actors.get(id)!.controller.teleport(x, 0.5, z);
+  }
+
+  it('carries a proximity line to somebody standing near', () => {
+    const r = room();
+    put(r.hostCtx, 1, 3, 0);
+    r.a.say('near', 'oi');
+    r.tick(4);
+    expect(r.heard.a).toContainEqual(
+      expect.objectContaining({ kind: 'say', channel: 'near', text: 'oi' }),
+    );
+  });
+
+  it('does not carry it to somebody across the map', () => {
+    const r = room();
+    put(r.hostCtx, 1, 0, 0);
+    put(r.hostCtx, 2, 0, NEAR_RADIUS + 20);
+    r.a.say('near', 'oi');
+    r.tick(4);
+    expect(r.heard.b).toHaveLength(0);
+  });
+
+  it('keeps team chat off the other team, on the wire and not on the screen', () => {
+    // The claim the whole design turns on. Guests alternate sides, so guest 1
+    // and guest 2 are opponents — and the message must not be *sent* to the
+    // other one, because a client that received it and chose not to draw it is
+    // a client somebody can replace.
+    const r = room();
+    put(r.hostCtx, 1, 0, 0);
+    put(r.hostCtx, 2, 0, 0);
+    expect(r.hostCtx.actors.get(1)!.team).not.toBe(r.hostCtx.actors.get(2)!.team);
+
+    r.a.say('team', 'they are round the back');
+    r.tick(4);
+    expect(r.heard.a).toContainEqual(expect.objectContaining({ text: 'they are round the back' }));
+    expect(r.heard.b).toHaveLength(0);
+  });
+
+  it('reaches a teammate on the far side of the world', () => {
+    // The other half: team chat ignores distance entirely, or it is proximity
+    // chat with extra steps.
+    const r = room();
+    put(r.hostCtx, 1, -50, -50);
+    put(r.hostCtx, 0, 50, 50);
+    r.a.say('team', 'help');
+    r.tick(4);
+    const mates = r.hostCtx.actors.get(1)!.team === r.hostCtx.actors.local.team;
+    expect(mates ? r.heard.host : r.heard.a).toContainEqual(
+      expect.objectContaining({ text: 'help' }),
+    );
+  });
+
+  it('lets the host be heard too', () => {
+    // The host is a player, not a switchboard. Its own line goes through the
+    // same relay so there is one copy of the rule and the host cannot be
+    // accidentally exempt from it.
+    const r = room();
+    put(r.hostCtx, 0, 0, 0);
+    put(r.hostCtx, 1, 2, 0);
+    r.host.say('near', 'over here');
+    r.tick(3);
+    expect(r.heard.host).toContainEqual(expect.objectContaining({ text: 'over here' }));
+    expect(r.heard.a).toContainEqual(expect.objectContaining({ text: 'over here' }));
+  });
+
+  it('names the speaker from what they said at the handshake', () => {
+    // A guest has no roster of names; the host took them at the handshake and
+    // is the only machine that knows who is who.
+    const r = room();
+    put(r.hostCtx, 1, 1, 0);
+    r.a.say('near', 'hello');
+    r.tick(4);
+    expect(r.heard.a).toContainEqual(expect.objectContaining({ name: 'ali' }));
+  });
+
+  it('drops an empty line rather than showing a blank name tag', () => {
+    const r = room();
+    r.a.say('near', '   ');
+    r.tick(4);
+    expect(r.heard.a).toHaveLength(0);
+  });
+
+  it('rations somebody hammering the key', () => {
+    // On the host, where it is a rule. A limit a client enforces on itself is
+    // a limit only honest clients have.
+    const r = room();
+    put(r.hostCtx, 1, 1, 0);
+    for (let i = 0; i < 10; i++) r.a.say('near', `spam ${i}`);
+    r.tick(4);
+    expect(r.heard.a.length).toBeLessThan(4);
+  });
+
+  it('sends a ping to the team and nobody else', () => {
+    // A mark on the world is a callout, and callouts are tactics.
+    const r = room();
+    put(r.hostCtx, 1, 0, 0);
+    put(r.hostCtx, 2, 1, 0);
+    r.a.ping('danger', 4, 0, 4);
+    r.tick(4);
+    expect(r.heard.a).toContainEqual(
+      expect.objectContaining({ kind: 'ping', pingKind: 'danger', x: 4, z: 4 }),
+    );
+    expect(r.heard.b).toHaveLength(0);
+  });
+
+  it('refuses a ping outside the world', () => {
+    // The position is a number a client chose. A ping four hundred metres out
+    // is a chevron on everybody's compass pointing at nothing for six seconds.
+    const r = room();
+    put(r.hostCtx, 1, 0, 0);
+    r.a.ping('look', 4000, 0, 4000);
+    r.tick(4);
+    expect(r.heard.a).toHaveLength(0);
+  });
+
+  it('performs an emote at whoever can see it', () => {
+    // The opposite rule to a ping: an emote is done at the people in front of
+    // you, whichever side they are on.
+    const r = room();
+    put(r.hostCtx, 1, 0, 0);
+    put(r.hostCtx, 2, 2, 0);
+    r.a.emote('wave');
+    r.tick(4);
+    expect(r.heard.b).toContainEqual(
+      expect.objectContaining({ kind: 'emote', emoteKind: 'wave' }),
+    );
+  });
+
+  it('does not perform one across the map', () => {
+    const r = room();
+    put(r.hostCtx, 1, 0, 0);
+    put(r.hostCtx, 2, 0, NEAR_RADIUS + 20);
+    r.a.emote('wave');
+    r.tick(4);
+    expect(r.heard.b).toHaveLength(0);
   });
 });

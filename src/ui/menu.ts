@@ -944,6 +944,10 @@ export class Menu {
     this.toggle('Invert vertical look', 'invertY', s.invertY);
     this.slider('Field of view', 'fov', s.fov, 55, 110, 1, (v) => `${Math.round(v)}°`);
 
+    this.section('Talking');
+    this.toggle('Hear team chat', 'muteTeamChat', !s.muteTeamChat, undefined, true);
+    this.toggle('Hear people nearby', 'muteNearChat', !s.muteNearChat, undefined, true);
+
     this.section('Sound');
     this.slider('Master volume', 'masterVolume', s.masterVolume, 0, 1, 0.05,
       (v) => `${Math.round(v * 100)}%`);
@@ -1093,9 +1097,16 @@ export class Menu {
    * `afterChange` is for the rare toggle that changes how another row reads.
    * Re-rendering on every toggle would tear the screen out from under whoever
    * is clicking through it.
+   *
+   * `inverted` is for a setting stored as a negative and read as a positive.
+   * The two chat mutes are the case, and it is worth the parameter rather than
+   * relabelling them: a stored `muteTeamChat` says what the code does with it,
+   * while a row reading "Mute team chat" with a tick in it is a double negative
+   * a player has to unpick. "Hear team chat", ticked, is the same fact stated
+   * the way somebody thinks about it.
    */
   private toggle<K extends keyof Settings>(
-    label: string, key: K, value: boolean, afterChange?: () => void,
+    label: string, key: K, value: boolean, afterChange?: () => void, inverted = false,
   ): void {
     const row = document.createElement('div');
     row.className = 'mk-row';
@@ -1108,7 +1119,8 @@ export class Menu {
     input.type = 'checkbox';
     input.checked = value;
     input.addEventListener('change', () => {
-      this.settings.set(key, input.checked as Settings[K]);
+      const stored = inverted ? !input.checked : input.checked;
+      this.settings.set(key, stored as Settings[K]);
       afterChange?.();
     });
     row.appendChild(input);

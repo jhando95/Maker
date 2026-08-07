@@ -189,6 +189,16 @@ jobs:
       - name: Front-end scenario
         run: node tools/shoot.mjs --scenario scenarios/frontend.mjs --auto-quality --out /tmp/ci-frontend.png
 
+      # Talking, pinging and waving. Who may hear what is a rule, and rules are
+      # unit-tested against a loopback pair; what only a browser can answer is
+      # whether any of it reaches a player. Two of these have exactly one
+      # possible home: a chat box has to take the keyboard away from the
+      # character controller, which is a question about which layer got the key
+      # and has no meaning outside a real document; and a ping has to become a
+      # mark in the world rather than only on the compass, which it did not.
+      - name: Comms scenario
+        run: node tools/shoot.mjs --scenario scenarios/comms.mjs --auto-quality --out /tmp/ci-comms.png
+
       # The whole of the lobby, end to end against a real server: two browser
       # contexts, two friend codes, a party, a queue, and a round running in the
       # room it was matched into. It is also the only thing that exercises the
@@ -257,6 +267,7 @@ jobs:
             /tmp/ci-tag.png
             /tmp/ci-bounds.png
             /tmp/ci-frontend.png
+            /tmp/ci-comms.png
             /tmp/ci-lobby-friends.png
           if-no-files-found: ignore
 

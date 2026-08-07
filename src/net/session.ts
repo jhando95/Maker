@@ -57,7 +57,12 @@ import {
 import { IDLE_INPUT, type ActorInput, type GameMode } from '../game/gameMode.ts';
 import type { ProjectileSystem } from '../game/projectiles.ts';
 import { applyItems } from '../game/itemField.ts';
-import { enforceBounds } from '../world/bounds.ts';
+import { enforceBounds, inBounds } from '../world/bounds.ts';
+import {
+  RateLimit, SAY_COOLDOWN, PING_COOLDOWN, audible, cleanChat,
+  type Channel, type EmoteKind, type Listener, type PingKind,
+} from '../game/comms.ts';
+import { cleanName } from '../app/identity.ts';
 import { packRound } from './roundPacket.ts';
 import type { Transport } from './transport.ts';
 
@@ -161,7 +166,23 @@ export interface SessionContext {
    * screen is up — and the session has no business answering that.
    */
   setRound?(round: PackedRound | null): void;
+  /**
+   * Something somebody said, pinged or did, already decided as audible.
+   *
+   * Handed to the shell rather than applied here for the same reason `setRound`
+   * is: what a machine *does* with a chat line — which log, which sound, which
+   * corner — is a question about presentation, and the session has no business
+   * answering it. Both sides call this: the host on its own relay, a guest when
+   * a message arrives.
+   */
+  heard?(event: HeardEvent): void;
 }
+
+/** Something to show the person at this keyboard. */
+export type HeardEvent =
+  | { kind: 'say'; from: number; name: string; channel: Channel; text: string }
+  | { kind: 'ping'; from: number; pingKind: PingKind; x: number; y: number; z: number }
+  | { kind: 'emote'; from: number; emoteKind: EmoteKind };
 
 /** One snapshot of one actor, kept for interpolation. */
 interface Sample {
@@ -195,6 +216,15 @@ interface Peer {
    * charges and never leaves their hand.
    */
   wasFiring: boolean;
+  /**
+   * What they called themselves at the handshake.
+   *
+   * Kept because chat needs it and nothing else did — the name arrived in
+   * `hello`, was used for one status line and thrown away. A guest has no
+   * roster of names, so the host is the only machine that can put one on a
+   * message.
+   */
+  name: string;
 }
 
 function makeRemoteActor(
@@ -327,7 +357,10 @@ export class NetHost {
     const where = this.ctx.spawnFor(team);
     const controller = new CharacterController(this.ctx.world, where.x, where.y, where.z);
     const actor = makeRemoteActor(id, team, controller, () => this.headings.get(id) ?? 0);
-    this.peers.set(id, { id, transport, actor, latest: null, ack: -1, wasFiring: false });
+    this.peers.set(id, {
+      id, transport, actor, latest: null, ack: -1, wasFiring: false,
+      name: cleanName(first.name),
+    });
     this.ctx.actors.addRemote(actor);
 
     transport.send({
@@ -382,6 +415,27 @@ export class NetHost {
         this.broadcast({ t: 'unbuilt', p: message.p });
         break;
       }
+      case 'say': {
+        const text = cleanChat(message.m);
+        if (text === null) return;
+        if (!this.sayLimit.allow(peer.id)) return;
+        this.relaySaid(peer.id, peer.name, message.ch, text);
+        break;
+      }
+      case 'ping': {
+        if (!this.pingLimit.allow(peer.id)) return;
+        // Clamped into the world, because the position is a number a client
+        // chose. A ping four hundred metres out is a chevron on the compass
+        // pointing at nothing, for everybody, for six seconds.
+        if (!inBounds(message.x, message.z)) return;
+        this.relayPinged(peer.id, message.k, message.x, message.y, message.z);
+        break;
+      }
+      case 'emote': {
+        if (!this.sayLimit.allow(peer.id)) return;
+        this.relayEmoted(peer.id, message.k);
+        break;
+      }
       default:
         break;
     }
@@ -422,6 +476,10 @@ export class NetHost {
 
   afterTick(dt: number): void {
     this.noticeRoundChange();
+    // Advanced on the tick rather than on a frame: a rate limit measured in
+    // rendered frames is a rate limit that is looser on a fast machine.
+    this.sayLimit.tick(dt);
+    this.pingLimit.tick(dt);
 
     const mode = this.ctx.mode?.() ?? null;
     for (const peer of this.peers.values()) {
@@ -540,6 +598,18 @@ export class NetHost {
    */
   private static readonly REACH_SLACK_MOVED = 2;
 
+  /**
+   * Rate limits, on the host, where they are rules.
+   *
+   * A limit a client enforces on itself is a limit only honest clients have.
+   * Pings get their own and a longer one, because a ping marks the *world* for
+   * six seconds and is therefore the one thing here worth spamming — chat and
+   * emotes only clutter a corner.
+   */
+  private readonly sayLimit = new RateLimit(SAY_COOLDOWN);
+  private readonly pingLimit = new RateLimit(PING_COOLDOWN);
+  private hostName = 'the host';
+
   private withinReach(peer: Peer, record: PlacementRecord): boolean {
     const body = peer.actor.controller;
     const limit = MAX_REACH + CAP_HEIGHT + NetHost.REACH_SLACK_MOVED;
@@ -547,6 +617,100 @@ export class NetHost {
     const dy = record.y - body.y;
     const dz = record.z - body.z;
     return dx * dx + dy * dy + dz * dz <= limit * limit;
+  }
+
+  /**
+   * Where somebody is, in the shape the audibility rule wants.
+   *
+   * The host's own player is a listener too, and the one that is easiest to
+   * forget: leave it out and the person hosting is the only one who never hears
+   * anything, which reads as their own chat being broken.
+   */
+  private listenerFor(id: number): Listener | null {
+    const actor = this.ctx.actors.get(id);
+    if (actor === undefined) return null;
+    return { id, team: actor.team, x: actor.controller.x, z: actor.controller.z };
+  }
+
+  /**
+   * Send a line to everybody entitled to it, and nobody else.
+   *
+   * Per recipient rather than broadcast, which is the whole of how team chat
+   * stays private. Broadcasting and letting each client show what it should
+   * works perfectly until somebody runs a client that does not — and a filter
+   * on the receiving end is a convention rather than a rule.
+   *
+   * `heard` goes back to the shell so the host's own screen shows what the host
+   * said. The host is a player, not a switchboard.
+   */
+  private relaySaid(from: number, name: string, ch: 'team' | 'near', text: string): void {
+    const speaker = this.listenerFor(from);
+    if (speaker === null) return;
+    for (const peer of this.peers.values()) {
+      const listener = this.listenerFor(peer.id);
+      if (listener === null || !audible(ch, speaker, listener)) continue;
+      peer.transport.send({ t: 'said', from, name, ch, m: text });
+    }
+    const here = this.listenerFor(this.ctx.actors.local.id);
+    if (here !== null && audible(ch, speaker, here)) {
+      this.ctx.heard?.({ kind: 'say', from, name, channel: ch, text });
+    }
+  }
+
+  /** Pings are team-only: a mark on the world is a callout, and callouts are tactics. */
+  private relayPinged(from: number, k: PingKind, x: number, y: number, z: number): void {
+    const speaker = this.listenerFor(from);
+    if (speaker === null) return;
+    for (const peer of this.peers.values()) {
+      const listener = this.listenerFor(peer.id);
+      if (listener === null || !audible('team', speaker, listener)) continue;
+      peer.transport.send({ t: 'pinged', from, k, x, y, z });
+    }
+    const here = this.listenerFor(this.ctx.actors.local.id);
+    if (here !== null && audible('team', speaker, here)) {
+      this.ctx.heard?.({ kind: 'ping', from, pingKind: k, x, y, z });
+    }
+  }
+
+  /** Emotes are the opposite: they are performed at whoever can see you. */
+  private relayEmoted(from: number, k: EmoteKind): void {
+    const speaker = this.listenerFor(from);
+    if (speaker === null) return;
+    for (const peer of this.peers.values()) {
+      const listener = this.listenerFor(peer.id);
+      if (listener === null || !audible('near', speaker, listener)) continue;
+      peer.transport.send({ t: 'emoted', from, k });
+    }
+    const here = this.listenerFor(this.ctx.actors.local.id);
+    if (here !== null && audible('near', speaker, here)) {
+      this.ctx.heard?.({ kind: 'emote', from, emoteKind: k });
+    }
+  }
+
+  /**
+   * The host saying something itself.
+   *
+   * Goes through the same relay as a guest's, so there is exactly one copy of
+   * the audibility rule and the host cannot accidentally be exempt from it.
+   */
+  say(ch: 'team' | 'near', raw: string): void {
+    const text = cleanChat(raw);
+    if (text === null) return;
+    const me = this.ctx.actors.local.id;
+    if (!this.sayLimit.allow(me)) return;
+    this.relaySaid(me, this.hostName, ch, text);
+  }
+
+  ping(k: PingKind, x: number, y: number, z: number): void {
+    const me = this.ctx.actors.local.id;
+    if (!this.pingLimit.allow(me) || !inBounds(x, z)) return;
+    this.relayPinged(me, k, x, y, z);
+  }
+
+  emote(k: EmoteKind): void {
+    const me = this.ctx.actors.local.id;
+    if (!this.sayLimit.allow(me)) return;
+    this.relayEmoted(me, k);
   }
 
   private broadcast(message: HostMessage): void {
@@ -806,6 +970,24 @@ export class NetClient {
         break;
       }
 
+      case 'said':
+        this.ctx.heard?.({
+          kind: 'say', from: message.from, name: message.name,
+          channel: message.ch, text: message.m,
+        });
+        break;
+
+      case 'pinged':
+        this.ctx.heard?.({
+          kind: 'ping', from: message.from, pingKind: message.k,
+          x: message.x, y: message.y, z: message.z,
+        });
+        break;
+
+      case 'emoted':
+        this.ctx.heard?.({ kind: 'emote', from: message.from, emoteKind: message.k });
+        break;
+
       case 'bye':
         this.forget(message.id);
         break;
@@ -951,6 +1133,28 @@ export class NetClient {
   /** Ask the host to build. Nothing is placed locally until they say so. */
   requestPlacement(record: PlacementRecord): void {
     this.transport.send({ t: 'build', r: record });
+  }
+
+  /**
+   * Ask to be heard.
+   *
+   * Nothing appears on this screen until the host says it may — not even the
+   * player's own line. That is a real half-second of latency on your own chat
+   * and it is the right trade: echoing locally and then receiving the host's
+   * copy shows everything twice, and suppressing the copy means keeping a
+   * record of what you have already shown. One authority, one arrival.
+   */
+  say(ch: Channel, text: string): void {
+    const clean = cleanChat(text);
+    if (clean !== null) this.transport.send({ t: 'say', ch, m: clean });
+  }
+
+  ping(k: PingKind, x: number, y: number, z: number): void {
+    this.transport.send({ t: 'ping', k, x, y, z });
+  }
+
+  emote(k: EmoteKind): void {
+    this.transport.send({ t: 'emote', k });
   }
 
   /**

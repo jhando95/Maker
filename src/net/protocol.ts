@@ -35,10 +35,11 @@
 
 import type { PackedCommand } from '../core/command.ts';
 import type { PlacementRecord } from '../build/buildSystem.ts';
+import type { EmoteKind, PingKind } from '../game/comms.ts';
 import type { Team } from '../game/actor.ts';
 
 /** Bumped whenever a message shape changes. Mismatched peers are turned away. */
-export const PROTOCOL_VERSION = 3;
+export const PROTOCOL_VERSION = 4;
 
 /**
  * One person in a snapshot, as a flat tuple.
@@ -183,7 +184,19 @@ export type ClientMessage =
   /** "I would like to place this." The host decides. */
   | { t: 'build'; r: PlacementRecord }
   /** "I would like to take that down." */
-  | { t: 'unbuild'; p: number };
+  | { t: 'unbuild'; p: number }
+  /**
+   * "Say this, on this channel."
+   *
+   * A request, like a placement, and for the same reason: who is entitled to
+   * hear a line is the host's decision and cannot be the sender's. A client
+   * that named its own recipients would be a client that could name the other
+   * team.
+   */
+  | { t: 'say'; ch: 'team' | 'near'; m: string }
+  /** "Mark this spot." The position is where the host says the player is aiming. */
+  | { t: 'ping'; k: PingKind; x: number; y: number; z: number }
+  | { t: 'emote'; k: EmoteKind };
 
 /** Everything a host can say. */
 export type HostMessage =
@@ -246,6 +259,19 @@ export type HostMessage =
   /** Somebody built something. Includes the host's own placements. */
   | { t: 'built'; id: number; r: PlacementRecord }
   | { t: 'unbuilt'; p: number }
+  /**
+   * Somebody said something, and you are entitled to have heard it.
+   *
+   * Sent to one peer at a time rather than broadcast, which is the whole of how
+   * team chat stays private: the other team is not sent the message, so there
+   * is nothing for a modified client to decide not to draw. The name travels
+   * with it because a guest has no roster of names — the host took them at the
+   * handshake and is the only one that knows who is who.
+   */
+  | { t: 'said'; from: number; name: string; ch: 'team' | 'near'; m: string }
+  /** Somebody marked a spot. Same per-recipient rule as `said`. */
+  | { t: 'pinged'; from: number; k: PingKind; x: number; y: number; z: number }
+  | { t: 'emoted'; from: number; k: EmoteKind }
   | { t: 'bye'; id: number };
 
 export type NetMessage = ClientMessage | HostMessage;

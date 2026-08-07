@@ -10,7 +10,7 @@ import * as THREE from 'three';
 import { GameLoop } from './core/loop.ts';
 import { Input } from './core/input.ts';
 import { CollisionWorld } from './physics/collisionWorld.ts';
-import { TICK_RATE, DT } from './physics/constants.ts';
+import { TICK_RATE, DT, CAP_HEIGHT } from './physics/constants.ts';
 import { createScene } from './world/scene.ts';
 import { installFixtures } from './world/neighborhood.ts';
 import { PartRenderer } from './render/partRenderer.ts';
@@ -36,6 +36,10 @@ import { RelayHostLink, relayUrl } from './net/relayLink.ts';
 import { RemoteMode } from './net/remoteMode.ts';
 import { applyItems } from './game/itemField.ts';
 import { PLAY_HALF, enforceBounds, installBarrier } from './world/bounds.ts';
+import {
+  CommsLog, EMOTE_LABELS, EMOTE_ORDER, type Channel, type EmoteKind, type PingKind,
+} from './game/comms.ts';
+import type { HeardEvent } from './net/session.ts';
 import { IdentityStore } from './app/identity.ts';
 import { LobbyClient, lobbyUrl, socketLink, type Matched } from './net/lobby.ts';
 import { QUEUE_MODES } from './net/lobbyProtocol.ts';
@@ -44,9 +48,11 @@ import { FortDefenseMode } from './game/fortDefense.ts';
 import { CaptureTheFlagMode } from './game/captureTheFlag.ts';
 import { WaterWarMode } from './game/waterWar.ts';
 import { TagMode, IT_SPAWN } from './game/tag.ts';
-import { LEFT_SPAWN, RIGHT_SPAWN } from './world/neighborhood.ts';
+import { LEFT_SPAWN, RIGHT_SPAWN, WATER_SOURCES } from './world/neighborhood.ts';
 import { IDLE_INPUT, sameForEveryone } from './game/gameMode.ts';
-import type { ActorInput, GameEvent, GameMode, ModeContext, ModeInput } from './game/gameMode.ts';
+import type {
+  ActorInput, GameEvent, GameMode, Marker, ModeContext, ModeInput,
+} from './game/gameMode.ts';
 import { SettingsStore, ghostColors, loadBindings, saveBindings, clearBindings } from './app/settings.ts';
 import { BINDABLE, describeKey, type Action } from './core/input.ts';
 import { BuildStore } from './app/buildStore.ts';
@@ -263,12 +269,27 @@ scene.add(modeRenderer.group);
 // Applied only after every system it touches exists — the subscription fires
 // immediately so defaults land without a separate apply step, which means
 // declaration order here is load-bearing.
+/**
+ * Everything anybody said, on this machine.
+ *
+ * The shell's, not a mode's: you can ping in Free Build, and a round ending
+ * does not end a conversation.
+ *
+ * Declared up here rather than beside the rest of the comms plumbing because
+ * `settings.subscribe` fires immediately with the stored values, and the mute
+ * settings read this — declared below, it was a `ReferenceError` on the first
+ * line of the first frame, which the smoke test caught as a blank screen.
+ */
+const comms = new CommsLog();
+
 settings.subscribe((s) => {
   camera.sensitivity = s.sensitivity;
   camera.invertY = s.invertY;
   camera.baseFov = s.fov;
   audio.setMasterVolume(s.masterVolume);
   audio.setSfxVolume(s.sfxVolume);
+  comms.muteChannel('team', s.muteTeamChat);
+  comms.muteChannel('near', s.muteNearChat);
   parts.setOutlinesVisible(s.outlines);
   scenery.setOutlinesVisible(s.outlines);
   modeRenderer.setOutlinesVisible(s.outlines);
@@ -352,9 +373,78 @@ const drawnActors: Actor[] = [];
 const pinScratch: ScreenPin[] = [];
 const pinVec = new THREE.Vector3();
 
+/**
+ * The mode's objectives plus everybody's pings, in one list.
+ *
+ * Reused rather than rebuilt, because this runs every frame and the compass is
+ * the one HUD element that reads world state per frame.
+ */
+const markerScratch: Marker[] = [];
+function commsMarkers(active: GameMode | null): readonly Marker[] {
+  const pings = comms.worldPings;
+  const own = active?.markers() ?? [];
+  if (pings.length === 0) return own;
+  markerScratch.length = 0;
+  for (const m of own) markerScratch.push(m);
+  for (const p of pings) {
+    markerScratch.push({
+      kind: 'flag', x: p.x, y: p.y, z: p.z, color: PING_COLOR, active: true,
+    });
+  }
+  return markerScratch;
+}
+
+/** Ping markers are the one colour nothing else in the game uses. */
+const PING_COLOR = 0x7ee0ff;
+
+/** Just the pings, for the 3D renderer, which already has the mode's own. */
+const pingScratch: Marker[] = [];
+function pingMarkers(): readonly Marker[] {
+  pingScratch.length = 0;
+  for (const p of comms.worldPings) {
+    pingScratch.push({ kind: 'flag', x: p.x, y: p.y, z: p.z, color: PING_COLOR, active: true });
+  }
+  return pingScratch;
+}
+
+const emoteScratch: Array<{ x: number; y: number; label: string }> = [];
+const emoteVec = new THREE.Vector3();
+
+/**
+ * Emote bubbles, projected to the screen.
+ *
+ * Screen space rather than world geometry, for the same reason the compass pins
+ * are: text stays crisp at any resolution and costs no draw call, and a bubble
+ * that has to stay legible at forty metres is a piece of UI wearing a hat.
+ */
+function projectEmotes(eye: { x: number; y: number; z: number }): typeof emoteScratch {
+  emoteScratch.length = 0;
+  for (const actor of actors.all) {
+    const emote = comms.emoteOf(actor.id);
+    if (emote === undefined) continue;
+    const body = actor.controller;
+    emoteVec.set(body.x, body.y + CAP_HEIGHT + 0.42, body.z);
+    emoteVec.project(camera.camera);
+    // Behind the eye, where projected coordinates are mirrored and meaningless.
+    if (emoteVec.z > 1) continue;
+    // Off screen. Unlike an objective, an emote gets no edge chevron: somebody
+    // waving behind you is not information you need pinned.
+    if (Math.abs(emoteVec.x) > 1 || Math.abs(emoteVec.y) > 1) continue;
+    emoteScratch.push({
+      x: (emoteVec.x * 0.5 + 0.5) * window.innerWidth,
+      y: (-emoteVec.y * 0.5 + 0.5) * window.innerHeight,
+      label: EMOTE_LABELS[emote.kind],
+    });
+  }
+  void eye;
+  return emoteScratch;
+}
+
 function projectPins(active: GameMode | null, eye: { x: number; y: number; z: number }): ScreenPin[] {
-  pinScratch.length = 0;
-  if (active === null) return pinScratch;
+  if (active === null && comms.worldPings.length === 0) {
+    pinScratch.length = 0;
+    return pinScratch;
+  }
 
   const width = window.innerWidth;
   const height = window.innerHeight;
@@ -366,7 +456,11 @@ function projectPins(active: GameMode | null, eye: { x: number; y: number; z: nu
 
   // Dimming is relative: with nothing marked active every pin came out dim,
   // which is the same as none of them being dim except harder to read.
-  const markers = active.markers();
+  // A ping is an objective for six seconds. Concatenated here rather than
+  // published by the mode, because none of this is a rule of any game — you can
+  // ping in Free Build, and there is no mode there to publish anything.
+  pinScratch.length = 0;
+  const markers = commsMarkers(active);
   let anyActive = false;
   for (const marker of markers) anyActive ||= marker.active === true;
 
@@ -468,7 +562,116 @@ const sessionContext: SessionContext = {
   spawnFor: (team) => (team === 'left' ? LEFT_SPAWN : RIGHT_SPAWN),
   mode: () => (isGuest() ? null : mode),
   setRound: (round) => adoptRound(round),
+  heard: (event) => receive(event),
 };
+
+
+/**
+ * Take something the session has already decided this player is entitled to.
+ *
+ * The sound is fired from the return value rather than unconditionally, which
+ * is the difference between muting a person and muting their words: a muted
+ * player's message must not announce itself, or every mute leaks the fact that
+ * somebody is talking.
+ */
+function receive(event: HeardEvent): void {
+  if (event.kind === 'say') {
+    if (comms.say(event.from, event.name, event.channel, event.text)) sounds.comms('chat');
+    return;
+  }
+  if (event.kind === 'ping') {
+    if (comms.ping(event.from, event.pingKind, event.x, event.y, event.z)) sounds.comms('ping');
+    return;
+  }
+  if (comms.emote(event.from, event.emoteKind)) sounds.comms('emote');
+}
+
+/**
+ * Say, ping or emote — through the session when there is one, and straight into
+ * the log when there is not.
+ *
+ * Playing alone still shows your own chat and your own pings. The alternative
+ * is a feature that silently does nothing until somebody else turns up, which
+ * is how a player concludes it is broken rather than empty.
+ */
+function sayLocally(channel: Channel, text: string): void {
+  if (net !== null) {
+    net.say(channel, text);
+    return;
+  }
+  receive({ kind: 'say', from: LOCAL_ACTOR_ID, name: identity.name, channel, text });
+}
+
+function pingLocally(kind: PingKind, x: number, y: number, z: number): void {
+  if (net !== null) {
+    net.ping(kind, x, y, z);
+    return;
+  }
+  receive({ kind: 'ping', from: LOCAL_ACTOR_ID, pingKind: kind, x, y, z });
+}
+
+function emoteLocally(kind: EmoteKind): void {
+  if (net !== null) {
+    net.emote(kind);
+    return;
+  }
+  receive({ kind: 'emote', from: LOCAL_ACTOR_ID, emoteKind: kind });
+}
+
+/**
+ * Where a ping goes: whatever you are looking at, or a point out in front.
+ *
+ * Cast from the eye along the crosshair rather than dropped at the player's
+ * feet, because a ping means *that* and not *here*. The fallback matters as
+ * much as the hit: aiming at the sky has to produce a mark somewhere sensible
+ * rather than nothing at all, or the key feels broken exactly when somebody is
+ * pointing at a rooftop.
+ */
+/**
+ * Which emote the key sends.
+ *
+ * A cycle rather than a wheel, for now, and the comment is the honest part: a
+ * radial picker already exists for parts and weapons and this should use it,
+ * but wiring a third content set into it is a bigger change than the feature
+ * warrants today. Tapping through six is a worse gesture than pointing at one
+ * and a much better one than not being able to say "sorry".
+ */
+let emoteAt = 0;
+function nextEmote(): EmoteKind {
+  const kind = EMOTE_ORDER[emoteAt % EMOTE_ORDER.length]!;
+  emoteAt++;
+  return kind;
+}
+
+/**
+ * Where the water is, and how much of it is left.
+ *
+ * Water War owns three draining taps and publishes them; every other mode is
+ * played in a garden where the same three taps are simply running. Asking the
+ * mode first is what makes a drained tap fall silent — the cue that mode never
+ * had, where you could still hear a source you had already lost.
+ */
+function waterSources(): ReadonlyArray<{ x: number; z: number; water?: number }> {
+  const running = mode as { sources?: ReadonlyArray<{ x: number; z: number; water: number }> } | null;
+  return running?.sources ?? WATER_SOURCES;
+}
+
+const PING_RANGE = 90;
+function pingAtCrosshair(): void {
+  const eye = player.sample(1);
+  const look = camera.getLookDirection();
+  const hit = world.raycast(
+    eye.x, eye.y + eye.eyeHeight, eye.z,
+    look.x, look.y, look.z, PING_RANGE,
+  );
+  const distance = hit === null ? 18 : hit.distance;
+  pingLocally(
+    'look',
+    eye.x + look.x * distance,
+    eye.y + eye.eyeHeight + look.y * distance,
+    eye.z + look.z * distance,
+  );
+}
 
 /**
  * The host's round, arriving on a guest.
@@ -895,6 +1098,26 @@ input.onPointerLockChange = (locked) => {
 };
 
 window.addEventListener('keydown', (e) => {
+  // The chat box first, in the capture-free ordinary phase but ahead of the
+  // pause handler, because Escape has to close a chat box rather than pause a
+  // game that is not paused. Handled here rather than through the binding
+  // table for the same reason a rebind capture is: while somebody is typing,
+  // every key means the letter on it.
+  if (hud.saying) {
+    if (e.code === 'Escape') {
+      e.preventDefault();
+      hud.openSay(null);
+      return;
+    }
+    if (e.code === 'Enter' || e.code === 'NumpadEnter') {
+      e.preventDefault();
+      const text = hud.sayText;
+      const channel = hud.sayChannel;
+      hud.openSay(null);
+      if (channel !== null) sayLocally(channel, text);
+    }
+    return;
+  }
   if (e.code !== 'Escape') return;
   e.preventDefault();
   if (menu.isOpen) menu.handleEscape();
@@ -1133,6 +1356,22 @@ function simulate(dt: number): void {
 
   input.beginTick();
 
+  // ── Talking ────────────────────────────────────────────────────────────────
+  //
+  // Handled before anything else and allowed to swallow the tick, because a
+  // player with the chat box open is typing rather than playing: without this,
+  // "wasd" walks you into a fence while you write it.
+  comms.tick(dt);
+  // A player with the chat box open is typing rather than playing. `beginTick`
+  // has already folded the pending keys into this tick's state, so returning
+  // here consumes them — which is exactly the intent: those keystrokes were
+  // letters, and letting them through walks you into a fence while you write.
+  if (hud.saying) return;
+  if (input.wasPressed('chatNear')) hud.openSay('near');
+  else if (input.wasPressed('chatTeam')) hud.openSay('team');
+  else if (input.wasPressed('ping')) pingAtCrosshair();
+  else if (input.wasPressed('emoteWheel')) emoteLocally(nextEmote());
+
   // Look is sampled per tick from accumulated mouse movement, so a 1000Hz mouse
   // and a 60Hz simulation agree on how far the view turned.
   // The part wheel takes the mouse while it is open.
@@ -1265,6 +1504,12 @@ function simulate(dt: number): void {
   // sandbox, which is exactly what a network is.
   if (mode === null) actors.refresh([]);
   sounds.update(dt, player, camera);
+  // Running water, from wherever the nearest tap is. Driven off the mode's own
+  // sources when there is one so a drained tap goes quiet — the cue Water War
+  // never had, where you could hear a source you had already lost — and off the
+  // map's constants otherwise, because the taps are running whether or not
+  // anybody is playing a game about them.
+  sounds.updateWater(player, camera, waterSources());
 
   // ── Build actions ──────────────────────────────────────────────────────────
   const hotbar = input.hotbarPressed;
@@ -1483,7 +1728,9 @@ function draw(alpha: number, frameDt: number): void {
     if (who.id !== actors.local.id || camera.showsPlayer) drawnActors.push(who);
   }
   characters.begin();
-  modeRenderer.update(frameDt, mode, projectiles, performance.now() / 1000, drawnActors);
+  modeRenderer.update(
+    frameDt, mode, projectiles, performance.now() / 1000, drawnActors, pingMarkers(),
+  );
   characters.finish();
 
   renderer.render(scene, camera.camera);
@@ -1506,6 +1753,8 @@ function draw(alpha: number, frameDt: number): void {
     now: nowSeconds,
   });
   hud.setPins(projectPins(mode, state));
+  hud.setChat(comms.chat);
+  hud.setEmotes(projectEmotes(state));
 
   // Sampled every frame; written to the screen only when it has something new
   // to say, which is four times a second. A readout that rewrote itself sixty
@@ -1845,6 +2094,26 @@ window.__maker = {
   inputDevice: () => input.lastDevice,
   /** Half the width of the world, so a scenario cannot drift from the constant. */
   playHalf: () => PLAY_HALF,
+  /**
+   * The comms surface, for the scenario.
+   *
+   * Deliberately the same calls the keys make rather than a shortcut into the
+   * log: a scenario that wrote straight into `CommsLog` would pass with the
+   * whole session layer disconnected, which is the half most likely to break.
+   */
+  comms: {
+    say: (channel: Channel, text: string) => sayLocally(channel, text),
+    ping: () => pingAtCrosshair(),
+    emote: () => emoteLocally(nextEmote()),
+    openSay: (channel: 'team' | 'near' | null) => hud.openSay(channel),
+    state: () => ({
+      chat: comms.chat.map((l) => ({ ...l })),
+      pings: comms.worldPings.length,
+      typing: hud.saying,
+      channel: hud.sayChannel,
+    }),
+    mute: (id: number) => comms.mute(id),
+  },
   /**
    * What the viewmodel is currently showing, or null for empty hands.
    *

@@ -27,7 +27,10 @@ export type SoundName =
   | 'roundStart'
   | 'roundWin'
   | 'roundLose'
-  | 'uiClick';
+  | 'uiClick'
+  | 'ping'
+  | 'emote'
+  | 'chat';
 
 export interface PlayOptions {
   /** 0..1, multiplied into the category gain. */
@@ -52,6 +55,13 @@ const MAX_VOICES = 24;
 interface Voice {
   nodes: AudioNode[];
   startedAt: number;
+  stop(): void;
+}
+
+/** A sound that keeps going, and moves. */
+export interface AmbientLoop {
+  /** Gain 0..1 and pan -1..1. Safe to call every frame; both are ramped. */
+  set(volume: number, pan: number): void;
   stop(): void;
 }
 
@@ -355,6 +365,42 @@ export class AudioBus {
         }, options);
         break;
 
+      // ── The three comms sounds ────────────────────────────────────────────
+      //
+      // Deliberately unlike anything the world makes. A ping shares a corner of
+      // the screen with a hit marker and a balloon splash, and a cue that could
+      // be mistaken for either is worse than no cue: two clean tones a fifth
+      // apart is a sound nothing in a garden makes, which is exactly why it
+      // reads as somebody talking to you.
+      case 'ping':
+        this.tone(t, {
+          type: 'triangle', freqStart: 1180 * p, freqEnd: 1180 * p,
+          duration: 0.09, peak: 0.3, attack: 0.004,
+        }, options);
+        this.tone(t + 0.075, {
+          type: 'triangle', freqStart: 1760 * p, freqEnd: 1760 * p,
+          duration: 0.16, peak: 0.26, attack: 0.004,
+        }, options);
+        break;
+
+      case 'emote':
+        // One note, up. Lighter than a ping and shorter than a chat blip,
+        // because an emote is the least urgent thing anybody can send.
+        this.tone(t, {
+          type: 'sine', freqStart: 700 * p, freqEnd: 1050 * p,
+          duration: 0.13, peak: 0.2, attack: 0.006,
+        }, options);
+        break;
+
+      case 'chat':
+        // Quiet and low. It fires once per line and a chatty lobby would
+        // otherwise be a metronome over the top of the game.
+        this.tone(t, {
+          type: 'sine', freqStart: 520 * p, freqEnd: 620 * p,
+          duration: 0.07, peak: 0.13, attack: 0.004,
+        }, options);
+        break;
+
       case 'hit':
         this.tone(t, {
           type: 'square',
@@ -571,6 +617,83 @@ export class AudioBus {
       }
     }
     this.ambientNodes = [];
+  }
+
+  /**
+   * A positioned loop that keeps running: a tap, a stream, a fire.
+   *
+   * Different from `startAmbient`, which is one bed for the whole world at a
+   * fixed level. This is a sound that has somewhere to be, so the caller moves
+   * it every frame — which means the gain has to be *ramped* rather than set.
+   * Assigning `gain.value` sixty times a second produces a click on every
+   * change, and sixty clicks a second is a buzz at the frame rate. That is the
+   * single most common way procedural audio goes wrong and it sounds like a
+   * broken speaker rather than like a bug.
+   */
+  openLoop(): AmbientLoop | null {
+    if (!this.running) return null;
+    const ctx = this.ctx!;
+    const src = this.noiseSource(0);
+    if (src === null) return null;
+
+    // Water is broadband with the low end taken out: a bandpass around 1.6kHz
+    // reads as running rather than as wind, which is the same noise through a
+    // lowpass.
+    const filter = ctx.createBiquadFilter();
+    filter.type = 'bandpass';
+    filter.frequency.value = 1600;
+    filter.Q.value = 0.7;
+
+    // A second, slower band under it, so it burbles instead of hissing. One
+    // band alone is a hiss however it is tuned — running water is two things
+    // at once, a rush and a chatter.
+    const body = ctx.createBiquadFilter();
+    body.type = 'lowpass';
+    body.frequency.value = 700;
+    body.Q.value = 1.4;
+
+    const lfo = ctx.createOscillator();
+    lfo.type = 'sine';
+    lfo.frequency.value = 0.7;
+    const lfoGain = ctx.createGain();
+    lfoGain.gain.value = 220;
+    lfo.connect(lfoGain);
+    lfoGain.connect(filter.frequency);
+
+    const gain = ctx.createGain();
+    gain.gain.value = 0.0001;
+    const panner = ctx.createStereoPanner();
+
+    src.connect(filter);
+    filter.connect(gain);
+    src.connect(body);
+    body.connect(gain);
+    gain.connect(panner);
+    panner.connect(this.ambientGain!);
+    src.start();
+    lfo.start();
+
+    let stopped = false;
+    return {
+      set: (volume: number, pan: number): void => {
+        if (stopped || this.ctx === null) return;
+        const now = this.ctx.currentTime;
+        // Ramped over a frame and a half, so a value that changes every frame
+        // is a continuous curve rather than a staircase of discontinuities.
+        gain.gain.setTargetAtTime(Math.max(0.0001, volume), now, 0.05);
+        panner.pan.setTargetAtTime(Math.max(-1, Math.min(1, pan)), now, 0.05);
+      },
+      stop: (): void => {
+        if (stopped) return;
+        stopped = true;
+        try {
+          src.stop();
+          lfo.stop();
+        } catch {
+          /* already stopped */
+        }
+      },
+    };
   }
 
   /**

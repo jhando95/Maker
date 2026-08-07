@@ -28,6 +28,20 @@ export interface Settings {
    */
   showStats: boolean;
   /**
+   * Whether to hear the two chat channels.
+   *
+   * Two settings rather than one, because they are two different decisions:
+   * team chat is people you are playing with and proximity chat is whoever
+   * happens to be nearby, and the reason to silence one is almost never the
+   * reason to silence the other.
+   *
+   * Kept here rather than sent anywhere. Muting is a statement about your own
+   * screen — telling the host would make it something that has to survive a
+   * reconnect and, worse, something the muted player could be told about.
+   */
+  muteTeamChat: boolean;
+  muteNearChat: boolean;
+  /**
    * Render scale, 0.5 to 1. Below 1 renders smaller and upscales.
    *
    * With `autoQuality` on this is a ceiling rather than a fixed value: the
@@ -62,6 +76,8 @@ export const DEFAULT_SETTINGS: Settings = {
   shadows: true,
   outlines: true,
   showStats: false,
+  muteTeamChat: false,
+  muteNearChat: false,
   renderScale: 1,
   autoQuality: true,
   masterVolume: 0.7,

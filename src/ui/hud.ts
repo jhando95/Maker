@@ -108,6 +108,65 @@ const STYLE = `
 .maker-hidden { display: none !important; }
 
 /*
+ * Chat, pings and emotes.
+ *
+ * Bottom left, above the build status, because that is the corner the eye is
+ * least often in during play — a conversation must be readable without being
+ * something you have to look past to aim.
+ */
+.maker-chat {
+  position: absolute; left: 16px; bottom: 74px;
+  display: flex; flex-direction: column; gap: 3px;
+  max-width: 42vw; pointer-events: none;
+}
+.maker-chat .line {
+  align-self: flex-start;
+  padding: 3px 9px; border-radius: var(--r-sm);
+  background: rgba(20,16,14,0.62);
+  font-size: 13px; font-weight: 700; line-height: 1.35;
+  text-shadow: 0 1px 2px rgba(0,0,0,0.6);
+  animation: mk-pop-in 0.18s var(--pop);
+}
+/* The channel is a colour and a word, not a colour alone: this is a list of
+   who may hear you, and it has to be readable to somebody who cannot tell the
+   two from each other. */
+.maker-chat .ch { font-size: 10px; font-weight: 900; letter-spacing: 0.7px;
+  text-transform: uppercase; margin-right: 5px; }
+.maker-chat .line.team .ch { color: var(--go); }
+.maker-chat .line.near .ch { color: var(--sun); }
+.maker-chat .who { opacity: 0.82; margin-right: 5px; }
+
+/* The box you type in. Takes the keyboard, so it is the one thing here that
+   is not pointer-events: none. */
+.maker-say {
+  position: absolute; left: 16px; bottom: 46px;
+  display: flex; align-items: center; gap: 7px;
+  padding: 6px 10px; border-radius: var(--r-md);
+  background: rgba(20,16,14,0.86); border: var(--edge);
+  pointer-events: auto; min-width: 34vw;
+}
+.maker-say .ch { font-size: 10px; font-weight: 900; letter-spacing: 0.7px;
+  text-transform: uppercase; }
+.maker-say.team .ch { color: var(--go); }
+.maker-say.near .ch { color: var(--sun); }
+.maker-say input {
+  flex: 1; min-width: 0; font: inherit; font-size: 14px; font-weight: 700;
+  color: var(--text); background: transparent; border: none; outline: none;
+}
+
+/* Emote bubbles ride over somebody's head, projected by the shell. */
+.maker-emotes { position: absolute; inset: 0; overflow: hidden; }
+.maker-emote {
+  position: absolute; transform: translate(-50%, -100%);
+  padding: 4px 10px; border-radius: 12px;
+  background: var(--card); color: var(--ink);
+  border: 2px solid var(--ink);
+  font-size: 15px; font-weight: 900; white-space: nowrap;
+  box-shadow: 0 3px 0 var(--ink);
+  animation: mk-pop-in 0.2s var(--pop);
+}
+
+/*
  * The objective banner.
  *
  * Centred at the top because that is where the eye goes when something changes,
@@ -285,6 +344,18 @@ const STYLE = `
 
 import type { Loadout, ModeHud } from '../game/gameMode.ts';
 import type { FrameSummary } from '../app/frameStats.ts';
+import { MAX_CHAT, type ChatLine } from '../game/comms.ts';
+
+/** Bubbles on screen at once. More than this and they are a wall, not a face. */
+const MAX_EMOTES = 8;
+
+/** Names and messages come from other people, so they are never markup. */
+function escapeHtml(raw: string): string {
+  return raw.replace(/[&<>"']/g, (c) => (
+    c === '&' ? '&amp;' : c === '<' ? '&lt;' : c === '>' ? '&gt;'
+      : c === '"' ? '&quot;' : '&#39;'
+  ));
+}
 
 export interface HudState {
   selectedKind: number;
@@ -419,6 +490,13 @@ export class Hud {
   private readonly modePanel: HTMLDivElement;
   private readonly messageEl: HTMLDivElement;
   private readonly stats: HTMLDivElement;
+  private readonly chatLog: HTMLDivElement;
+  private readonly sayBox: HTMLDivElement;
+  private readonly sayInput: HTMLInputElement;
+  private readonly sayChannelEl: HTMLSpanElement;
+  private readonly emoteLayer: HTMLDivElement;
+  private readonly emoteEls: HTMLDivElement[] = [];
+  private chatKey = '';
   private readonly ammoEl: HTMLDivElement;
   private readonly vignette: HTMLDivElement;
   private readonly pins: HTMLDivElement;
@@ -493,6 +571,31 @@ export class Hud {
     this.stats = document.createElement('div');
     this.stats.className = 'maker-panel maker-stats maker-hidden';
     this.root.appendChild(this.stats);
+
+    this.chatLog = document.createElement('div');
+    this.chatLog.className = 'maker-chat';
+    this.root.appendChild(this.chatLog);
+
+    this.emoteLayer = document.createElement('div');
+    this.emoteLayer.className = 'maker-emotes';
+    this.root.appendChild(this.emoteLayer);
+    for (let i = 0; i < MAX_EMOTES; i++) {
+      const el = document.createElement('div');
+      el.className = 'maker-emote maker-hidden';
+      this.emoteLayer.appendChild(el);
+      this.emoteEls.push(el);
+    }
+
+    this.sayBox = document.createElement('div');
+    this.sayBox.className = 'maker-say maker-hidden';
+    this.sayChannelEl = document.createElement('span');
+    this.sayChannelEl.className = 'ch';
+    this.sayInput = document.createElement('input');
+    this.sayInput.type = 'text';
+    this.sayInput.maxLength = MAX_CHAT;
+    this.sayInput.setAttribute('aria-label', 'chat message');
+    this.sayBox.append(this.sayChannelEl, this.sayInput);
+    this.root.appendChild(this.sayBox);
 
     this.modePanel = document.createElement('div');
     this.modePanel.className = 'maker-mode maker-hidden';
@@ -719,6 +822,76 @@ export class Hud {
   notice(text: string, seconds = 3): void {
     this.noticeText = text;
     this.noticeUntil = performance.now() / 1000 + seconds;
+  }
+
+  /**
+   * Draw the chat log.
+   *
+   * Rebuilt only when the set of lines changes, which is rare — a log that
+   * re-rendered every frame would be sixty DOM writes a second to show text
+   * that changes once in ten seconds.
+   */
+  setChat(lines: readonly ChatLine[]): void {
+    const key = lines.map((l) => l.seq).join(',');
+    if (key === this.chatKey) return;
+    this.chatKey = key;
+    this.chatLog.innerHTML = lines.map((l) => (
+      `<div class="line ${l.channel}">`
+      + `<span class="ch">${l.channel === 'team' ? 'team' : 'near'}</span>`
+      + `<span class="who">${escapeHtml(l.name)}</span>`
+      + `${escapeHtml(l.text)}</div>`
+    )).join('');
+  }
+
+  /**
+   * Open or close the box you type in.
+   *
+   * The HUD owns the element and the shell owns what happens to the text,
+   * which is the same split as everywhere else here: this knows how a chat box
+   * looks and nothing about who is entitled to read it.
+   */
+  openSay(channel: 'team' | 'near' | null): void {
+    this.sayBox.classList.toggle('maker-hidden', channel === null);
+    if (channel === null) {
+      this.sayInput.value = '';
+      this.sayInput.blur();
+      return;
+    }
+    this.sayBox.classList.toggle('team', channel === 'team');
+    this.sayBox.classList.toggle('near', channel === 'near');
+    this.sayChannelEl.textContent = channel === 'team' ? 'team' : 'near';
+    this.sayInput.value = '';
+    this.sayInput.focus();
+  }
+
+  get sayText(): string {
+    return this.sayInput.value;
+  }
+
+  /** Which channel the open box is on, or null when it is shut. */
+  get sayChannel(): 'team' | 'near' | null {
+    if (!this.saying) return null;
+    return this.sayBox.classList.contains('team') ? 'team' : 'near';
+  }
+
+  get saying(): boolean {
+    return !this.sayBox.classList.contains('maker-hidden');
+  }
+
+  /** Bubbles over people's heads, already projected to the screen by the shell. */
+  setEmotes(bubbles: ReadonlyArray<{ x: number; y: number; label: string }>): void {
+    for (let i = 0; i < this.emoteEls.length; i++) {
+      const el = this.emoteEls[i]!;
+      const b = bubbles[i];
+      if (b === undefined) {
+        el.classList.add('maker-hidden');
+        continue;
+      }
+      el.classList.remove('maker-hidden');
+      el.textContent = b.label;
+      el.style.left = `${b.x}px`;
+      el.style.top = `${b.y}px`;
+    }
   }
 
   hitMarker(now: number): void {

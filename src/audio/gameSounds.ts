@@ -10,7 +10,7 @@
  * Math.random because presentation does not need to be reproducible.
  */
 
-import type { AudioBus } from './audioBus.ts';
+import type { AmbientLoop, AudioBus } from './audioBus.ts';
 import { AudioBus as Bus } from './audioBus.ts';
 import type { CharacterController } from '../player/controller.ts';
 import type { CameraRig } from '../player/cameraRig.ts';
@@ -29,6 +29,11 @@ export class GameSounds {
   private wasOnGround = true;
   /** Peak downward speed during the current fall, for landing weight. */
   private fallSpeed = 0;
+  /** The one running-water loop, moved to whichever tap is nearest. */
+  private water: AmbientLoop | null = null;
+
+  /** Peak gain of the water bed, when standing on top of a running tap. */
+  private static readonly WATER_GAIN = 0.16;
 
   constructor(bus: AudioBus, world: CollisionWorld) {
     this.bus = bus;
@@ -129,6 +134,68 @@ export class GameSounds {
   /** A part chosen from the wheel. Quiet — it happens often and means little. */
   pickPart(): void {
     this.bus.play('uiClick', { volume: 0.45, pitch: 1.2 });
+  }
+
+  /**
+   * Running water, heard from wherever you are standing.
+   *
+   * One loop, moved to the nearest tap, rather than one per source. Three
+   * separate loops would be three noise generators running all round, and at
+   * any given moment two of them are inaudible — the ear cannot pick out which
+   * of two taps forty metres apart it is hearing anyway, so the honest cheap
+   * version is to sound the nearest one and let walking between them cross-fade
+   * by moving.
+   *
+   * Opened lazily, because the audio context does not exist until somebody
+   * clicks and a loop started before then is a chain of silent nodes.
+   */
+  updateWater(
+    player: CharacterController,
+    camera: CameraRig,
+    sources: ReadonlyArray<{ x: number; z: number; water?: number }>,
+  ): void {
+    if (!this.bus.running) {
+      return;
+    }
+    if (this.water === null) {
+      this.water = this.bus.openLoop();
+      if (this.water === null) return;
+    }
+
+    let nearest: { x: number; z: number; water?: number } | null = null;
+    let best = Infinity;
+    for (const s of sources) {
+      // A drained tap makes no sound, which is the cue Water War never had: you
+      // could hear a source you had already lost.
+      if ((s.water ?? 1) <= 0.001) continue;
+      const d = Math.hypot(s.x - player.x, s.z - player.z);
+      if (d < best) {
+        best = d;
+        nearest = s;
+      }
+    }
+
+    if (nearest === null) {
+      this.water.set(0, 0);
+      return;
+    }
+
+    const at = this.spatial(nearest.x, 0.4, nearest.z, camera, player);
+    // Louder than a one-shot would be at the same distance, because this is
+    // the thing a player navigates by: in Water War the taps are the map, and
+    // being able to hear which way one is beats any marker.
+    this.water.set((at.distance ?? 0) * GameSounds.WATER_GAIN, at.pan ?? 0);
+  }
+
+  /** Stop the water. For leaving a round, and for tests that count nodes. */
+  stopWater(): void {
+    this.water?.stop();
+    this.water = null;
+  }
+
+  /** Somebody marked a spot, said something, or waved. */
+  comms(which: 'ping' | 'emote' | 'chat'): void {
+    this.bus.play(which, { volume: which === 'chat' ? 0.5 : 0.75 });
   }
 
   private spatial(

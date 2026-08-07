@@ -48,6 +48,19 @@ export const ACTIONS = [
   'partWheel',
   'interact',
 
+  /**
+   * Talking to people.
+   *
+   * `ping` is on the middle mouse button because that is where every game that
+   * has one puts it: it has to be reachable without letting go of movement or
+   * aim, and it is the one comms action taken while something is happening.
+   * Chat and the emote wheel are keyboard, because both stop you playing.
+   */
+  'ping',
+  'chatNear',
+  'chatTeam',
+  'emoteWheel',
+
   'debugToggle',
   'debugFreeCam',
 ] as const;
@@ -93,6 +106,14 @@ export const DEFAULT_BINDINGS: Record<string, Action> = {
   KeyV: 'toggleCamera',
   Tab: 'partWheel',
   KeyF: 'interact',
+
+  Mouse1: 'ping',
+  Enter: 'chatNear',
+  // The convention everywhere: the same key with a modifier is the team's
+  // channel. Bound as its own action rather than as a modifier check, so it can
+  // be rebound by somebody who does not have a comfortable Shift.
+  KeyY: 'chatTeam',
+  KeyB: 'emoteWheel',
 
   Backquote: 'debugToggle',
   KeyP: 'debugFreeCam',
