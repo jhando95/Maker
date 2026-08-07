@@ -15,7 +15,7 @@ import { installFixtures } from '../world/neighborhood.ts';
 import { neighborhoodSlabs } from '../world/neighborhood.ts';
 import { Rng } from '../core/rng.ts';
 import { loopbackPair } from './transport.ts';
-import { decode, encode, PROTOCOL_VERSION } from './protocol.ts';
+import { decode, encode, PROTOCOL_VERSION, type RtcSignal } from './protocol.ts';
 import {
   NetHost, NetClient, SNAPSHOT_HZ, INTERP_DELAY, RECONCILE_THRESHOLD, MAX_PEERS,
   HELLO_GRACE_TICKS,
@@ -1039,5 +1039,169 @@ describe('talking to each other', () => {
     r.a.emote('wave');
     r.tick(4);
     expect(r.heard.b).toHaveLength(0);
+  });
+});
+
+describe('getting two browsers introduced for voice', () => {
+  /**
+   * A host, two guests, and every voice signal each machine was handed.
+   *
+   * Deliberately a second room helper rather than a parameter on the first: what
+   * the chat room records is `heard`, which is presentation, and what this
+   * records is `signalled`, which is not. Folding them together would be the
+   * first step toward the shell treating a WebRTC offer as something to draw.
+   */
+  function callers(): {
+    host: NetHost; a: NetClient; b: NetClient;
+    /**
+     * The ids the host actually handed out, read back rather than assumed.
+     *
+     * Assumed first, and it was wrong: ids go in the order the *hellos* land,
+     * not the order the transports were accepted, so `a` came out as 2. Every
+     * assertion below then addressed a signal to the machine that sent it and
+     * was correctly dropped — eight tests failing for one wrong constant, which
+     * is what hardcoding a value the system chooses buys you.
+     */
+    aId: number; bId: number;
+    got: Record<string, Array<{ from: number; s: RtcSignal }>>;
+    tick(n: number): void;
+  } {
+    const got: Record<string, Array<{ from: number; s: RtcSignal }>> = {
+      host: [], a: [], b: [],
+    };
+    const make = (key: string): Machine => {
+      const m = makeMachine();
+      m.signalled = (from, s) => got[key]!.push({ from, s });
+      return m;
+    };
+    const host = new NetHost(make('host'));
+    const pa = loopbackPair();
+    const pb = loopbackPair();
+    const a = new NetClient(make('a'), pa.client, 'ali');
+    const b = new NetClient(make('b'), pb.client, 'bo');
+    host.accept(pa.host);
+    host.accept(pb.host);
+    const tick = (n: number): void => {
+      for (let i = 0; i < n; i++) {
+        host.beforeTick();
+        a.beforeTick();
+        b.beforeTick();
+        host.afterTick(DT);
+        a.afterTick(DT, makeCommand(sharedTick));
+        b.afterTick(DT, makeCommand(sharedTick++));
+      }
+    };
+    tick(4);
+    return { host, a, b, aId: a.status.localId, bId: b.status.localId, got, tick };
+  }
+
+  const offer = (sdp: string): RtcSignal => ({ k: 'offer', sdp });
+
+  it('carries an offer from one guest to the other', () => {
+    // The whole reason signalling goes through the host: guest A and guest B
+    // have no route to each other until this handshake gives them one.
+    const r = callers();
+    r.a.signal(r.bId, offer('from-ali'));
+    r.tick(4);
+    expect(r.got.b).toHaveLength(1);
+    expect(r.got.b[0]!.s).toEqual(offer('from-ali'));
+  });
+
+  it('stamps the sender itself rather than believing the message', () => {
+    // There is no `from` on the wire for exactly this reason. If a client could
+    // name its own sender it could open a call in somebody else's name, which
+    // is the same rule that stops it naming its own chat recipients.
+    const r = callers();
+    r.a.signal(r.bId, offer('x'));
+    r.tick(4);
+    expect(r.got.b[0]!.from).toBe(r.aId);
+  });
+
+  it('does not send it to anybody else', () => {
+    const r = callers();
+    r.a.signal(r.bId, offer('x'));
+    r.tick(4);
+    expect(r.got.a).toHaveLength(0);
+    expect(r.got.host).toHaveLength(0);
+  });
+
+  it('delivers a signal addressed to the host to the host', () => {
+    // The host is a player with a voice, not a switchboard. Addressed to id 0,
+    // it stops there instead of being forwarded to nobody.
+    const r = callers();
+    r.a.signal(LOCAL_ACTOR_ID, offer('hello-host'));
+    r.tick(4);
+    expect(r.got.host).toHaveLength(1);
+    expect(r.got.host[0]!).toEqual({ from: r.aId, s: offer('hello-host') });
+    expect(r.got.b).toHaveLength(0);
+  });
+
+  it('lets the host place a call of its own', () => {
+    const r = callers();
+    r.host.signal(r.bId, offer('from-host'));
+    r.tick(4);
+    expect(r.got.b).toHaveLength(1);
+    expect(r.got.b[0]!).toEqual({ from: LOCAL_ACTOR_ID, s: offer('from-host') });
+  });
+
+  it('drops a signal addressed to somebody who is not here', () => {
+    // Routine rather than exceptional: a peer can leave in the gap between
+    // another peer deciding to dial them and the offer arriving.
+    const r = callers();
+    expect(() => {
+      r.a.signal(99, offer('x'));
+      r.tick(4);
+    }).not.toThrow();
+    expect(r.got.a).toHaveLength(0);
+    expect(r.got.b).toHaveLength(0);
+    expect(r.got.host).toHaveLength(0);
+  });
+
+  it('drops a signal somebody addressed to themselves', () => {
+    const r = callers();
+    r.a.signal(r.aId, offer('x'));
+    r.tick(4);
+    expect(r.got.a).toHaveLength(0);
+  });
+
+  it('carries candidates and the end-of-candidates marker alike', () => {
+    // The null candidate is how a browser says "that is everywhere I can be
+    // reached". Dropped, the far end waits out its own timeout instead.
+    const r = callers();
+    r.a.signal(r.bId, { k: 'ice', c: 'candidate:1 1 udp', mid: '0' });
+    r.a.signal(r.bId, { k: 'ice', c: null, mid: null });
+    r.tick(4);
+    expect(r.got.b.map((g) => g.s)).toEqual([
+      { k: 'ice', c: 'candidate:1 1 udp', mid: '0' },
+      { k: 'ice', c: null, mid: null },
+    ]);
+  });
+
+  it('lets a whole ICE burst through', () => {
+    const r = callers();
+    for (let i = 0; i < 20; i++) r.a.signal(r.bId, { k: 'ice', c: `c${i}`, mid: '0' });
+    r.tick(4);
+    expect(r.got.b).toHaveLength(20);
+  });
+
+  it('stops one guest flooding the yard through the host', () => {
+    // Without this the host is an amplifier: one guest pushes arbitrary bytes
+    // at every other guest at whatever rate their connection allows.
+    const r = callers();
+    for (let i = 0; i < 400; i++) r.a.signal(r.bId, { k: 'ice', c: `c${i}`, mid: '0' });
+    r.tick(4);
+    expect(r.got.b.length).toBeGreaterThan(0);
+    expect(r.got.b.length).toBeLessThan(400);
+  });
+
+  it('does not let one guest flooding stop another connecting', () => {
+    // The limiter must not itself become the denial of service.
+    const r = callers();
+    for (let i = 0; i < 400; i++) r.a.signal(r.bId, { k: 'ice', c: `c${i}`, mid: '0' });
+    r.tick(4);
+    const before = r.got.a.length;
+    r.b.signal(r.aId, offer('bo-calling'));
+    r.tick(4);
+    expect(r.got.a.length).toBe(before + 1);
   });
 });

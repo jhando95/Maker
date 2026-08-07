@@ -40,6 +40,8 @@ import {
   CommsLog, EMOTE_LABELS, EMOTE_ORDER, type Channel, type EmoteKind, type PingKind,
 } from './game/comms.ts';
 import type { HeardEvent } from './net/session.ts';
+import { VoiceChat } from './voice/voiceChat.ts';
+import { transmitting } from './voice/voiceRules.ts';
 import { IdentityStore } from './app/identity.ts';
 import { LobbyClient, lobbyUrl, socketLink, type Matched } from './net/lobby.ts';
 import { QUEUE_MODES } from './net/lobbyProtocol.ts';
@@ -282,6 +284,16 @@ scene.add(modeRenderer.group);
  */
 const comms = new CommsLog();
 
+/**
+ * Proximity voice.
+ *
+ * Declared beside `comms` and for the same reason — `settings.subscribe` fires
+ * immediately and reads the voice settings — and given its outbound channel as
+ * a closure over `net` rather than the session itself, because `net` is a `let`
+ * that is null before anybody joins and a different object afterwards.
+ */
+const voice = new VoiceChat(audio, (to, signal) => net?.signal(to, signal));
+
 settings.subscribe((s) => {
   camera.sensitivity = s.sensitivity;
   camera.invertY = s.invertY;
@@ -290,6 +302,13 @@ settings.subscribe((s) => {
   audio.setSfxVolume(s.sfxVolume);
   comms.muteChannel('team', s.muteTeamChat);
   comms.muteChannel('near', s.muteNearChat);
+  audio.setVoiceVolume(s.voiceVolume);
+  // Switched on and off here rather than at the point of use, because turning
+  // it on is an async permission prompt and turning it off has to release the
+  // microphone — a tab that keeps the recording indicator lit after a player
+  // switched voice off is a tab they will close.
+  if (s.voiceEnabled) void voice.start();
+  else voice.stop();
   parts.setOutlinesVisible(s.outlines);
   scenery.setOutlinesVisible(s.outlines);
   modeRenderer.setOutlinesVisible(s.outlines);
@@ -440,6 +459,47 @@ function projectEmotes(eye: { x: number; y: number; z: number }): typeof emoteSc
   return emoteScratch;
 }
 
+/**
+ * What the microphone badge says.
+ *
+ * Four states rather than two, because "nothing is coming out" has four
+ * different causes and a player who cannot tell them apart will conclude the
+ * feature is broken for whichever one they are in.
+ */
+function micLabel(): string {
+  const s = settings.current;
+  if (s.micMuted) return '🔇 MUTED';
+  if (voice.micSpeaking) return '🎙 LIVE';
+  if (s.voicePushToTalk) return '🎙 HOLD C';
+  return '🎙 OPEN';
+}
+
+const voiceScratch: Array<{ x: number; y: number }> = [];
+
+/**
+ * A speaker mark over everybody currently audible.
+ *
+ * Placed a little above the emote bubble rather than on it, so somebody who
+ * waves while talking gets both rather than one on top of the other.
+ */
+function projectVoices(): typeof voiceScratch {
+  voiceScratch.length = 0;
+  if (!voice.live) return voiceScratch;
+  for (const actor of actors.all) {
+    if (actor.kind !== 'remote' || !voice.speaking(actor.id)) continue;
+    const body = actor.controller;
+    emoteVec.set(body.x, body.y + CAP_HEIGHT + 0.95, body.z);
+    emoteVec.project(camera.camera);
+    if (emoteVec.z > 1) continue;
+    if (Math.abs(emoteVec.x) > 1 || Math.abs(emoteVec.y) > 1) continue;
+    voiceScratch.push({
+      x: (emoteVec.x * 0.5 + 0.5) * window.innerWidth,
+      y: (-emoteVec.y * 0.5 + 0.5) * window.innerHeight,
+    });
+  }
+  return voiceScratch;
+}
+
 function projectPins(active: GameMode | null, eye: { x: number; y: number; z: number }): ScreenPin[] {
   if (active === null && comms.worldPings.length === 0) {
     pinScratch.length = 0;
@@ -563,7 +623,111 @@ const sessionContext: SessionContext = {
   mode: () => (isGuest() ? null : mode),
   setRound: (round) => adoptRound(round),
   heard: (event) => receive(event),
+  signalled: (from, signal) => void voice.receive(from, signal),
 };
+
+/**
+ * Where everybody's voice comes from, and what is in the way.
+ *
+ * Run every tick beside the rest of the audio. Three separate things, and the
+ * reason they are one function is that all three are answers about the same
+ * roster in the same instant:
+ *
+ * - **The mesh** follows who is in the world. Not who is in earshot — see
+ *   `VoiceMesh` for why gating the connection on distance is the obvious
+ *   optimisation and the wrong one.
+ * - **The mix** follows where they are standing right now.
+ * - **The microphone** follows whether this player is holding the key.
+ */
+function updateVoice(dt: number): void {
+  if (!voice.live) return;
+  voice.selfId = actors.local.id;
+  voiceRoster.length = 0;
+  for (const actor of actors.all) {
+    // Bots have no microphone. Filtering on `remote` rather than on "not me"
+    // matters in every solo mode, where the roster is mostly kids.
+    if (actor.kind === 'remote') voiceRoster.push(actor.id);
+  }
+  voice.sync(voiceRoster);
+
+  const s = settings.current;
+  voice.setTransmitting(
+    transmitting(s.voiceEnabled, s.micMuted, s.voicePushToTalk, input.isDown('pushToTalk')),
+  );
+
+  const eye = player.sample(1);
+  const basis = camera.getMoveBasis();
+  refreshOcclusion(dt, eye.x, eye.y + eye.eyeHeight, eye.z);
+  voice.update(
+    dt,
+    {
+      x: eye.x, y: eye.y + eye.eyeHeight, z: eye.z,
+      rightX: basis.rx, rightZ: basis.rz,
+    },
+    voicePosition,
+    (id) => comms.isMuted(id),
+    (id) => occlusionCache.get(id) ?? false,
+  );
+}
+
+const voiceRoster: number[] = [];
+const voiceHead = { x: 0, y: 0, z: 0 };
+
+/** Somebody's mouth, roughly, or null once they have left the roster. */
+function voicePosition(id: number): { x: number; y: number; z: number } | null {
+  const actor = actors.get(id);
+  if (actor === undefined) return null;
+  const body = actor.controller;
+  voiceHead.x = body.x;
+  voiceHead.y = body.y + CAP_HEIGHT * 0.85;
+  voiceHead.z = body.z;
+  return voiceHead;
+}
+
+/**
+ * Is there something solid between these two people?
+ *
+ * One ray, head to head, against the same collision world everything else uses
+ * — so a fort somebody built muffles a voice exactly as much as the house does,
+ * which is the payoff for building the check on the world rather than on the
+ * map's constants.
+ *
+ * Rechecked on a slower clock than the mix, because the answer changes when
+ * somebody walks round a corner and not when they shuffle. Sixty raycasts a
+ * second per speaker is a real cost for a question whose answer is stable for
+ * hundreds of milliseconds at a time.
+ */
+const OCCLUSION_INTERVAL = 0.2;
+const occlusionCache = new Map<number, boolean>();
+let sinceOcclusion = OCCLUSION_INTERVAL;
+
+/**
+ * Recheck every speaker at once, or leave the cache alone.
+ *
+ * The whole map is built here rather than lazily inside the per-speaker
+ * callback, which is what the first version did and which quietly never
+ * refreshed: the clock was read inside the callback and reset nowhere, so
+ * either every peer was rechecked every frame or none ever was. Doing the sweep
+ * in one place makes "when" a single line.
+ */
+function refreshOcclusion(dt: number, ex: number, ey: number, ez: number): void {
+  sinceOcclusion += dt;
+  if (sinceOcclusion < OCCLUSION_INTERVAL) return;
+  sinceOcclusion = 0;
+  occlusionCache.clear();
+  for (const id of voiceRoster) {
+    const where = voicePosition(id);
+    if (where === null) continue;
+    const dx = where.x - ex;
+    const dy = where.y - ey;
+    const dz = where.z - ez;
+    const distance = Math.hypot(dx, dy, dz);
+    if (distance < 1e-3) continue;
+    // Stopped just short of them, or the ray ends inside their own body and
+    // everybody in the world is permanently behind a wall.
+    occlusionCache.set(id, world.raycast(ex, ey, ez, dx, dy, dz, distance - 0.4) !== null);
+  }
+}
 
 
 /**
@@ -1510,6 +1674,7 @@ function simulate(dt: number): void {
   // map's constants otherwise, because the taps are running whether or not
   // anybody is playing a game about them.
   sounds.updateWater(player, camera, waterSources());
+  updateVoice(dt);
 
   // ── Build actions ──────────────────────────────────────────────────────────
   const hotbar = input.hotbarPressed;
@@ -1755,6 +1920,8 @@ function draw(alpha: number, frameDt: number): void {
   hud.setPins(projectPins(mode, state));
   hud.setChat(comms.chat);
   hud.setEmotes(projectEmotes(state));
+  hud.setVoices(projectVoices());
+  hud.setMic(voice.live, voice.micSpeaking, micLabel());
 
   // Sampled every frame; written to the screen only when it has something new
   // to say, which is four times a second. A readout that rewrote itself sixty
@@ -1990,6 +2157,25 @@ window.__maker = {
   hostDrain: (): unknown[] => fakeHost?.drain() ?? [],
   netStatus: () => net?.status ?? null,
   /**
+   * Whether the audio context has actually started.
+   *
+   * A browser will not run one outside a real user gesture, and every node in
+   * the voice graph hangs off it. Worth exposing rather than inferring, because
+   * a suspended context fails silently: nodes connect, gains are set, and no
+   * sound is ever produced.
+   */
+  audioRunning: () => audio.running,
+  /**
+   * Start the audio context, for scenarios that never press Play.
+   *
+   * `hideOverlay` drops a scenario straight into the world and deliberately
+   * skips `enterPlay`, which is where audio is unlocked — so a scenario that
+   * needs sound has to ask. It still needs a real click first: this works only
+   * because a browser keeps *sticky* user activation after one, and without
+   * that gesture the context stays suspended and every node in it is silent.
+   */
+  wakeAudio: () => audio.unlock(),
+  /**
    * What this build speaks.
    *
    * Read by the scenarios rather than written into them. A scenario with the
@@ -2115,6 +2301,49 @@ window.__maker = {
       channel: hud.sayChannel,
     }),
     mute: (id: number) => comms.mute(id),
+  },
+  /**
+   * Voice, for the scenario that drives two real browsers at each other.
+   *
+   * `state()` reads the peer connections rather than a flag this file keeps,
+   * because "is voice working" has exactly one honest answer — whether packets
+   * are arriving — and every summary of it can be right while the audio is
+   * silent. `stats()` goes all the way to `getStats()` for that reason.
+   */
+  voice: {
+    /** Host or join a room over the real relay, for two-context scenarios. */
+    host: (url: string, room: string) => { startHosting(url, room); },
+    join: (url: string, room: string, name: string) => { joinSession(url, room, name); },
+    /**
+     * Switch voice on the way a player does, through Settings.
+     *
+     * Rather than calling `VoiceChat.start` directly, which is what the first
+     * version of the scenario did and which quietly proved nothing: the mesh
+     * came up and carried packets, and every one of them was silence, because
+     * `transmitting()` still saw `voiceEnabled: false` and had correctly
+     * disabled the track. Going through the setting exercises the path that
+     * decides whether anything is actually sent.
+     */
+    turnOn: (openMic = true) => {
+      settings.set('voiceEnabled', true);
+      settings.set('voicePushToTalk', !openMic);
+      settings.set('micMuted', false);
+      return voice.start();
+    },
+    enable: () => voice.start(),
+    disable: () => voice.stop(),
+    state: () => ({
+      live: voice.live,
+      calls: voice.callCount,
+      error: voice.error,
+      micSpeaking: voice.micSpeaking,
+      speakers: voice.speakers(),
+      marks: projectVoices().length,
+    }),
+    /** Gain and pan currently applied to one person, straight off the graph. */
+    mixFor: (id: number) => voice.mixFor(id),
+    stats: () => voice.stats(),
+    levels: () => voice.levels(),
   },
   /**
    * What the viewmodel is currently showing, or null for empty hands.

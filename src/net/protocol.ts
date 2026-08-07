@@ -39,7 +39,30 @@ import type { EmoteKind, PingKind } from '../game/comms.ts';
 import type { Team } from '../game/actor.ts';
 
 /** Bumped whenever a message shape changes. Mismatched peers are turned away. */
-export const PROTOCOL_VERSION = 4;
+export const PROTOCOL_VERSION = 5;
+
+/**
+ * One step of a WebRTC handshake, on its way between two players.
+ *
+ * Voice does **not** travel over this connection. It travels peer to peer, and
+ * all this carries is the paperwork two browsers need to find each other: an
+ * offer, an answer, and the network routes each end thinks might work.
+ *
+ * The blobs are opaque strings on purpose. SDP is a large, versioned,
+ * browser-generated format and modelling its fields here would be inventing a
+ * second parser for something both ends already agree about — the host's job is
+ * to carry it, not to read it.
+ */
+export type RtcSignal =
+  | { k: 'offer' | 'answer'; sdp: string }
+  /**
+   * One ICE candidate, or null for the end-of-candidates marker.
+   *
+   * The null case is not an edge case to tidy away: it is how a browser says
+   * "that is everywhere I can be reached", and dropping it makes the other end
+   * wait out its own timeout before giving up on routes that will never come.
+   */
+  | { k: 'ice'; c: string | null; mid: string | null };
 
 /**
  * One person in a snapshot, as a flat tuple.
@@ -196,7 +219,17 @@ export type ClientMessage =
   | { t: 'say'; ch: 'team' | 'near'; m: string }
   /** "Mark this spot." The position is where the host says the player is aiming. */
   | { t: 'ping'; k: PingKind; x: number; y: number; z: number }
-  | { t: 'emote'; k: EmoteKind };
+  | { t: 'emote'; k: EmoteKind }
+  /**
+   * "Pass this to that player." Voice handshaking, and nothing else.
+   *
+   * `to` is an actor id and may be the host's own. There is deliberately no
+   * `from` field: the host stamps it from the connection the message arrived
+   * on. A client that could name its own sender could introduce itself to the
+   * whole yard as somebody else and negotiate a call in their name — the same
+   * rule, and the same reason, as a client not naming its own chat recipients.
+   */
+  | { t: 'signal'; to: number; s: RtcSignal };
 
 /** Everything a host can say. */
 export type HostMessage =
@@ -272,6 +305,14 @@ export type HostMessage =
   /** Somebody marked a spot. Same per-recipient rule as `said`. */
   | { t: 'pinged'; from: number; k: PingKind; x: number; y: number; z: number }
   | { t: 'emoted'; from: number; k: EmoteKind }
+  /**
+   * Voice handshaking on its way to you, with the sender the host vouches for.
+   *
+   * The counterpart to the client's `rtc`, and the asymmetry is the point: the
+   * client says who it is talking *to* and the host says who it came *from*.
+   * Neither end gets to assert both.
+   */
+  | { t: 'signalled'; from: number; s: RtcSignal }
   | { t: 'bye'; id: number };
 
 export type NetMessage = ClientMessage | HostMessage;

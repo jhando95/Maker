@@ -53,7 +53,9 @@ import { ActorRoster, FIRST_REMOTE_ID, opposing, type Actor, type Team } from '.
 import {
   ACTOR_FLAG, PROTOCOL_VERSION, decode, indexToTeam, teamToIndex,
   type HostMessage, type PackedActor, type PackedRound, type PackedSelf,
+  type RtcSignal,
 } from './protocol.ts';
+import { SignalBudget } from '../voice/voiceRules.ts';
 import { IDLE_INPUT, type ActorInput, type GameMode } from '../game/gameMode.ts';
 import type { ProjectileSystem } from '../game/projectiles.ts';
 import { applyItems } from '../game/itemField.ts';
@@ -176,6 +178,15 @@ export interface SessionContext {
    * a message arrives.
    */
   heard?(event: HeardEvent): void;
+  /**
+   * One step of a voice handshake arrived for this machine.
+   *
+   * Separate from `heard` rather than folded into it, and the reason is the
+   * same one that keeps modes out of the renderer: `heard` is presentation —
+   * something to put on a screen — and this is not. Nothing about a signal is
+   * ever shown to anybody; it goes to a peer connection or nowhere.
+   */
+  signalled?(from: number, signal: RtcSignal): void;
 }
 
 /** Something to show the person at this keyboard. */
@@ -436,6 +447,11 @@ export class NetHost {
         this.relayEmoted(peer.id, message.k);
         break;
       }
+      case 'signal': {
+        if (!this.signalBudget.allow(peer.id)) return;
+        this.relaySignal(peer.id, message.to, message.s);
+        break;
+      }
       default:
         break;
     }
@@ -480,6 +496,7 @@ export class NetHost {
     // rendered frames is a rate limit that is looser on a fast machine.
     this.sayLimit.tick(dt);
     this.pingLimit.tick(dt);
+    this.signalBudget.tick(dt);
 
     const mode = this.ctx.mode?.() ?? null;
     for (const peer of this.peers.values()) {
@@ -608,6 +625,11 @@ export class NetHost {
    */
   private readonly sayLimit = new RateLimit(SAY_COOLDOWN);
   private readonly pingLimit = new RateLimit(PING_COOLDOWN);
+  /**
+   * And a bucket rather than a gap for voice handshaking, because ICE arrives
+   * in bursts. See `SignalBudget`; the shape of the traffic is the reason.
+   */
+  private readonly signalBudget = new SignalBudget();
   private hostName = 'the host';
 
   private withinReach(peer: Peer, record: PlacementRecord): boolean {
@@ -688,6 +710,34 @@ export class NetHost {
   }
 
   /**
+   * Carry one step of a voice handshake from one player to another.
+   *
+   * Unlike chat, this is addressed rather than broadcast, and unlike chat there
+   * is no audibility rule to apply — an offer is between two people by
+   * construction, and the host's job is to be a post box. What it must still do
+   * is the one thing a post box does: **stamp the sender itself.** `from` is
+   * taken from the connection the message arrived on and never from the message,
+   * so a client cannot open a call in somebody else's name.
+   *
+   * A signal addressed to nobody is dropped in silence. That is not defensive
+   * tidiness — it is routine, because a peer can leave in the gap between
+   * another peer deciding to dial them and the offer arriving.
+   */
+  private relaySignal(from: number, to: number, s: RtcSignal): void {
+    if (to === from) return;
+    if (to === this.ctx.actors.local.id) {
+      this.ctx.signalled?.(from, s);
+      return;
+    }
+    this.peers.get(to)?.transport.send({ t: 'signalled', from, s });
+  }
+
+  /** The host's own end of a handshake. Same post box, one fewer hop. */
+  signal(to: number, s: RtcSignal): void {
+    this.relaySignal(this.ctx.actors.local.id, to, s);
+  }
+
+  /**
    * The host saying something itself.
    *
    * Goes through the same relay as a guest's, so there is exactly one copy of
@@ -722,6 +772,7 @@ export class NetHost {
     if (peer === undefined) return;
     this.peers.delete(id);
     this.headings.delete(id);
+    this.signalBudget.forget(id);
     this.ctx.actors.removeRemote(id);
     this.broadcast({ t: 'bye', id });
     this.message = 'somebody left';
@@ -988,6 +1039,10 @@ export class NetClient {
         this.ctx.heard?.({ kind: 'emote', from: message.from, emoteKind: message.k });
         break;
 
+      case 'signalled':
+        this.ctx.signalled?.(message.from, message.s);
+        break;
+
       case 'bye':
         this.forget(message.id);
         break;
@@ -1155,6 +1210,17 @@ export class NetClient {
 
   emote(k: EmoteKind): void {
     this.transport.send({ t: 'emote', k });
+  }
+
+  /**
+   * Hand a step of a voice handshake to the host, to be passed on.
+   *
+   * `to` may be another guest. This machine has no route to them — the mesh is
+   * peer-to-peer once it is up, but getting it up needs somebody both ends can
+   * already reach, and the host is the only such party.
+   */
+  signal(to: number, s: RtcSignal): void {
+    this.transport.send({ t: 'signal', to, s });
   }
 
   /**

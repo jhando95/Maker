@@ -167,6 +167,44 @@ const STYLE = `
 }
 
 /*
+ * Who is talking, over their head, on the same projection the emotes use.
+ *
+ * Only ever a glyph and never a name, and that is a limit rather than a choice:
+ * a guest is told other guests' names on a chat line and nowhere else, so the
+ * roster to caption this with does not exist on their machine. A mark over the
+ * right head answers the question that actually matters mid-round — *which of
+ * these people is the voice I am hearing* — and the corner list that would need
+ * names can wait until there is a roster to build it from.
+ */
+.maker-voice {
+  position: absolute; transform: translate(-50%, -100%);
+  width: 26px; height: 26px; border-radius: 50%;
+  display: grid; place-items: center;
+  background: var(--go); color: var(--ink);
+  border: 2px solid var(--ink);
+  font-size: 13px; box-shadow: 0 2px 0 var(--ink);
+  animation: mk-voice 0.9s ease-in-out infinite;
+}
+@keyframes mk-voice {
+  0%, 100% { transform: translate(-50%, -100%) scale(1); }
+  50% { transform: translate(-50%, -100%) scale(1.14); }
+}
+
+/* Your own microphone, so nobody transmits without knowing it. */
+.maker-mic {
+  /* Above the snap readout, which also lives bottom-left and is taller than it
+     looks: at 96px the two overlapped whenever building was allowed. */
+  position: absolute; left: 16px; bottom: 148px;
+  display: flex; align-items: center; gap: 6px;
+  padding: 5px 10px; border-radius: 999px;
+  background: var(--card); color: var(--muted);
+  border: 2px solid var(--ink); box-shadow: 0 2px 0 var(--ink);
+  font-size: 12px; font-weight: 800; letter-spacing: 0.04em;
+}
+.maker-mic.live { background: var(--go); color: var(--ink); }
+.maker-mic.off { opacity: 0.55; }
+
+/*
  * The objective banner.
  *
  * Centred at the top because that is where the eye goes when something changes,
@@ -496,6 +534,8 @@ export class Hud {
   private readonly sayChannelEl: HTMLSpanElement;
   private readonly emoteLayer: HTMLDivElement;
   private readonly emoteEls: HTMLDivElement[] = [];
+  private readonly voiceEls: HTMLDivElement[] = [];
+  private readonly mic: HTMLDivElement;
   private chatKey = '';
   private readonly ammoEl: HTMLDivElement;
   private readonly vignette: HTMLDivElement;
@@ -585,6 +625,20 @@ export class Hud {
       this.emoteLayer.appendChild(el);
       this.emoteEls.push(el);
     }
+    // Same layer and the same pool discipline as the emotes: both are marks
+    // over a head that the shell has already projected, and the only difference
+    // is what puts them there.
+    for (let i = 0; i < MAX_EMOTES; i++) {
+      const el = document.createElement('div');
+      el.className = 'maker-voice maker-hidden';
+      el.textContent = '🔊';
+      this.emoteLayer.appendChild(el);
+      this.voiceEls.push(el);
+    }
+
+    this.mic = document.createElement('div');
+    this.mic.className = 'maker-mic maker-hidden';
+    this.root.appendChild(this.mic);
 
     this.sayBox = document.createElement('div');
     this.sayBox.className = 'maker-say maker-hidden';
@@ -892,6 +946,37 @@ export class Hud {
       el.style.left = `${b.x}px`;
       el.style.top = `${b.y}px`;
     }
+  }
+
+  /** A speaker mark over each person currently audible, projected by the shell. */
+  setVoices(marks: ReadonlyArray<{ x: number; y: number }>): void {
+    for (let i = 0; i < this.voiceEls.length; i++) {
+      const el = this.voiceEls[i]!;
+      const m = marks[i];
+      if (m === undefined) {
+        el.classList.add('maker-hidden');
+        continue;
+      }
+      el.classList.remove('maker-hidden');
+      el.style.left = `${m.x}px`;
+      el.style.top = `${m.y}px`;
+    }
+  }
+
+  /**
+   * Your own microphone.
+   *
+   * Shown whenever voice is on, not only while transmitting. A badge that
+   * appears the instant you start talking is a badge you never see, because you
+   * are looking at the game — and the question it exists to answer is "is this
+   * thing on", which is asked before you speak rather than during.
+   */
+  setMic(on: boolean, live: boolean, label: string): void {
+    this.mic.classList.toggle('maker-hidden', !on);
+    if (!on) return;
+    this.mic.classList.toggle('live', live);
+    this.mic.classList.toggle('off', !live);
+    this.mic.textContent = label;
   }
 
   hitMarker(now: number): void {

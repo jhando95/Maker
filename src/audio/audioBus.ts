@@ -70,6 +70,15 @@ export class AudioBus {
   private master: GainNode | null = null;
   private sfx: GainNode | null = null;
   private ambientGain: GainNode | null = null;
+  /**
+   * Where other people's voices arrive.
+   *
+   * Under `master` and beside `sfx` rather than under it, which is the whole of
+   * the decision: a player turning the game's effects down to hear their
+   * friends must not turn their friends down too, and the mute button has to
+   * silence everything including them.
+   */
+  private voiceGain: GainNode | null = null;
 
   /** Reused white-noise buffer — regenerating it per sound is pure waste. */
   private noiseBuffer: AudioBuffer | null = null;
@@ -79,7 +88,28 @@ export class AudioBus {
 
   masterVolume = 0.7;
   sfxVolume = 1.0;
+  voiceVolume = 1.0;
   muted = false;
+
+  /**
+   * The context, for anything that has to build its own graph.
+   *
+   * Voice is the one such thing and probably the only one there will ever be: a
+   * `MediaStreamAudioSourceNode` cannot be created by anything in this file
+   * because the stream arrives from a peer connection. Handing out the context
+   * rather than growing a `playRemoteStream` method keeps the WebRTC types out
+   * of the audio layer entirely.
+   *
+   * Null until somebody has clicked, like everything else here.
+   */
+  get context(): AudioContext | null {
+    return this.ctx;
+  }
+
+  /** What voice should connect to. Null until the context exists. */
+  get voiceDestination(): AudioNode | null {
+    return this.voiceGain;
+  }
 
   /** True once a user gesture has actually started the context. */
   get running(): boolean {
@@ -120,6 +150,10 @@ export class AudioBus {
     this.ambientGain.gain.value = 0.0;
     this.ambientGain.connect(this.master);
 
+    this.voiceGain = ctx.createGain();
+    this.voiceGain.gain.value = this.voiceVolume;
+    this.voiceGain.connect(this.master);
+
     // Two seconds of white noise, looped and re-windowed per use. Long enough
     // that consecutive footsteps do not audibly repeat the same grains.
     const length = Math.floor(ctx.sampleRate * 2);
@@ -139,6 +173,11 @@ export class AudioBus {
   setSfxVolume(v: number): void {
     this.sfxVolume = Math.max(0, Math.min(1, v));
     if (this.sfx !== null) this.sfx.gain.value = this.sfxVolume;
+  }
+
+  setVoiceVolume(v: number): void {
+    this.voiceVolume = Math.max(0, Math.min(1, v));
+    if (this.voiceGain !== null) this.voiceGain.gain.value = this.voiceVolume;
   }
 
   setMuted(muted: boolean): void {

@@ -199,6 +199,17 @@ jobs:
       - name: Comms scenario
         run: node tools/shoot.mjs --scenario scenarios/comms.mjs --auto-quality --out /tmp/ci-comms.png
 
+      # Proximity voice, and the only question worth asking about it: can a
+      # person in one browser hear a person in another. Two contexts, a real
+      # relay, real WebRTC and Chromium's fake microphone — which is a genuine
+      # audio track, so what crosses the connection is genuine Opus. The check
+      # counts inbound packets rather than trusting `connectionState`, because a
+      # peer connection reports itself perfectly healthy while carrying silence,
+      # and then reads the gain off the AudioParam the browser is really using.
+      # Slower than the rest; it waits on ICE, on a snapshot, and on a gain ramp.
+      - name: Voice scenario
+        run: node tools/shoot.mjs --scenario scenarios/voice.mjs --auto-quality --out /tmp/ci-voice.png
+
       # The whole of the lobby, end to end against a real server: two browser
       # contexts, two friend codes, a party, a queue, and a round running in the
       # room it was matched into. It is also the only thing that exercises the
@@ -268,6 +279,7 @@ jobs:
             /tmp/ci-bounds.png
             /tmp/ci-frontend.png
             /tmp/ci-comms.png
+            /tmp/ci-voice.png
             /tmp/ci-lobby-friends.png
           if-no-files-found: ignore
 

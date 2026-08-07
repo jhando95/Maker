@@ -42,6 +42,29 @@ export interface Settings {
   muteTeamChat: boolean;
   muteNearChat: boolean;
   /**
+   * Whether to use the microphone at all.
+   *
+   * **Off by default, and that is not timidity.** Turning this on asks the
+   * browser for the microphone, and a game that raises a permission prompt
+   * before the player has decided they want to talk to anybody has spent the
+   * one prompt it gets on a question they had no context for. A refused prompt
+   * is sticky, so the cost of asking too early is that the feature is dead
+   * until they go and find the site settings.
+   */
+  voiceEnabled: boolean;
+  /**
+   * Hold a key to talk, or send continuously.
+   *
+   * Push-to-talk by default. Open mic is what you want when everyone is in a
+   * quiet room and a menace otherwise, and the failure mode is not symmetric:
+   * the person broadcasting their television has no idea they are doing it.
+   */
+  voicePushToTalk: boolean;
+  /** Silence your own microphone without giving the permission back. */
+  micMuted: boolean;
+  /** How loud everybody else is, on top of the distance falloff. */
+  voiceVolume: number;
+  /**
    * Render scale, 0.5 to 1. Below 1 renders smaller and upscales.
    *
    * With `autoQuality` on this is a ceiling rather than a fixed value: the
@@ -78,6 +101,10 @@ export const DEFAULT_SETTINGS: Settings = {
   showStats: false,
   muteTeamChat: false,
   muteNearChat: false,
+  voiceEnabled: false,
+  voicePushToTalk: true,
+  micMuted: false,
+  voiceVolume: 1,
   renderScale: 1,
   autoQuality: true,
   masterVolume: 0.7,

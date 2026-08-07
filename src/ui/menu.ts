@@ -947,6 +947,16 @@ export class Menu {
     this.section('Talking');
     this.toggle('Hear team chat', 'muteTeamChat', !s.muteTeamChat, undefined, true);
     this.toggle('Hear people nearby', 'muteNearChat', !s.muteNearChat, undefined, true);
+    // Voice first among the voice rows, because the three below it do nothing
+    // until it is on — and a row of live-looking controls that are all inert is
+    // how a player concludes the feature is broken rather than off.
+    this.toggle('Voice chat', 'voiceEnabled', s.voiceEnabled, () => this.render());
+    if (s.voiceEnabled) {
+      this.toggle('Hold C to talk', 'voicePushToTalk', s.voicePushToTalk);
+      this.toggle('Mute my microphone', 'micMuted', s.micMuted);
+      this.slider('Voice volume', 'voiceVolume', s.voiceVolume, 0, 1, 0.05,
+        (v) => `${Math.round(v * 100)}%`);
+    }
 
     this.section('Sound');
     this.slider('Master volume', 'masterVolume', s.masterVolume, 0, 1, 0.05,

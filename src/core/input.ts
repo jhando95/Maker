@@ -60,6 +60,7 @@ export const ACTIONS = [
   'chatNear',
   'chatTeam',
   'emoteWheel',
+  'pushToTalk',
 
   'debugToggle',
   'debugFreeCam',
@@ -80,8 +81,9 @@ export const DEFAULT_BINDINGS: Record<string, Action> = {
   Space: 'jump',
   ShiftLeft: 'sprint',
   ShiftRight: 'sprint',
+  // Crouch used to be double-bound here and on C. C went to push-to-talk, which
+  // had no key at all and needs one under the left hand; see the note there.
   ControlLeft: 'crouch',
-  KeyC: 'crouch',
 
   Mouse0: 'placePart',
   Mouse2: 'removePart',
@@ -114,6 +116,19 @@ export const DEFAULT_BINDINGS: Record<string, Action> = {
   // be rebound by somebody who does not have a comfortable Shift.
   KeyY: 'chatTeam',
   KeyB: 'emoteWheel',
+  // C, taken from crouch — which keeps Left Control and loses nothing.
+  //
+  // Push-to-talk has to be held while moving and aiming, so it has to sit under
+  // the left hand. Every genuinely unbound key fails that: the free letters are
+  // all on the right of the keyboard, Alt is intercepted by the browser, and
+  // CapsLock does not fire a reliable keyup on macOS — which for a *hold* key
+  // means a microphone that stays open after the player lets go, the worst
+  // possible failure for this particular feature.
+  //
+  // So one of two conventional keys had to give up its second binding, and
+  // crouch was already double-bound while push-to-talk had nothing. Both
+  // actions still land on a key players expect to find them on.
+  KeyC: 'pushToTalk',
 
   Backquote: 'debugToggle',
   KeyP: 'debugFreeCam',
