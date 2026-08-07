@@ -102,3 +102,33 @@ if (process.argv[1]?.endsWith('imgdiff.mjs')) {
   const { diff, total } = diffPixels(a, b);
   console.log(`${diff} of ${total} pixels differ (${(100 * diff / total).toFixed(3)}%)`);
 }
+
+/**
+ * Where the changed pixels are, as a bounding box, and how many there were.
+ *
+ * A count tells you a picture moved and never tells you what moved. This was
+ * added after three separate guesses at why a screenshot pair would not hold
+ * still on CI — the answer was in the corner of the frame the whole time, and
+ * one bounding box would have said so.
+ */
+export function changedBox(a, b, tolerance = 8) {
+  const A = decode(a), B = decode(b);
+  if (A.w !== B.w || A.h !== B.h) throw new Error('imgdiff: different sizes');
+  let minX = Infinity, minY = Infinity, maxX = -1, maxY = -1, n = 0;
+  for (let y = 0; y < A.h; y++) {
+    for (let x = 0; x < A.w; x++) {
+      const i = (y * A.w + x) * A.ch;
+      if (Math.abs(A.px[i] - B.px[i]) <= tolerance
+        && Math.abs(A.px[i + 1] - B.px[i + 1]) <= tolerance
+        && Math.abs(A.px[i + 2] - B.px[i + 2]) <= tolerance) continue;
+      n++;
+      if (x < minX) minX = x;
+      if (x > maxX) maxX = x;
+      if (y < minY) minY = y;
+      if (y > maxY) maxY = y;
+    }
+  }
+  return n === 0
+    ? { n: 0, minX: 0, minY: 0, maxX: 0, maxY: 0, w: A.w, h: A.h }
+    : { n, minX, minY, maxX, maxY, w: A.w, h: A.h };
+}

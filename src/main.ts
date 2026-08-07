@@ -2647,6 +2647,15 @@ window.__maker = {
    * of those still and moving only the lamps means every pixel that differs
    * between the two shots is a lamp, and no other reading is available.
    */
+  /**
+   * Hide the aiming furniture — the ghost, its edges, the chain and stamp
+   * previews — without changing anything about the world.
+   *
+   * A photograph of a light should not have a placement preview in it. The
+   * ghost eases toward wherever the aim ray lands, which makes it the one thing
+   * in a parked shot that is never quite still.
+   */
+  setBuildPreview: (on: boolean) => build.setPreviewVisible(on),
   setLamps: (level: number) => {
     nightLights.setLevel(level);
     return { level: nightLights.level, drawn: nightLights.drawn };

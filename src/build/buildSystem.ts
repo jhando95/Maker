@@ -455,6 +455,19 @@ export class BuildSystem {
     return n;
   }
 
+  /**
+   * Show or hide every aiming preview at once — ghost, edges, chain, stamp.
+   *
+   * One flag on the group they all live under, because they are one thing from
+   * the player's side: furniture that describes where you are pointing. Added
+   * for a scenario that photographs a light and had the ghost sitting a hand's
+   * width under the lamp, chasing the aim ray, moving a couple of thousand
+   * pixels between every pair of frames it tried to difference.
+   */
+  setPreviewVisible(on: boolean): void {
+    this.ghostGroup.visible = on;
+  }
+
   private updateGhost(dt: number, candidate: Candidate | null): void {
     // Only the aimed ghost is hidden, not the whole group. The chain preview
     // describes the last part placed, not where the player is currently

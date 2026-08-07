@@ -105,6 +105,19 @@ and because a red check deserves an account rather than a shrug.
   "in first person" was a bet on frame time and the local player was still being
   drawn.
 
+- **And then it was the build ghost, and the real mistake was the shape of the
+  check.** Pinning the render scale did not fix it either; the third failure
+  printed the sequence — `3232, 2610, 8548, 2485, 2721, 2334, 8649, …` — which
+  bounces rather than trending down, and the thing bouncing was the placement
+  preview, easing toward wherever the aim ray lands, a hand's width under the
+  lamp the shot was framed on. It is hidden for the measurement now, which is
+  also just correct: a photograph of a light should not have an aiming preview
+  in it. But the lesson is not "find the third mover". Twice a working feature
+  was reported broken because a *precondition* of the measurement failed, so the
+  precondition is gone: the picture is no longer asked to hold still, it is
+  asked how much it is moving, and the glow has to beat that number four times
+  over. That is the claim that was wanted all along, and the only one that
+  cannot be defeated by finding a fourth thing that moves.
 - **The settle loop then never settled, because the renderer was resizing under
   it.** Adaptive quality changes the size of the buffer the whole picture is
   drawn into, so while the governor is hunting, *every* pixel is a changed

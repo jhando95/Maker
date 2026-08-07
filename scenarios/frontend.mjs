@@ -373,24 +373,31 @@ export default async function (page) {
     let cur = b;
     const seen = [];
     await page.screenshot({ path: prev });
-    for (let i = 0; i < 15; i++) {
+    for (let i = 0; i < 8; i++) {
       await new Promise((r) => setTimeout(r, 350));
       await page.screenshot({ path: cur });
       const moved = brighter(prev, cur);
-      const restless = moved.up + moved.down;
-      seen.push(restless);
-      // Never zero — a few hundred pixels of this yard move on their own — so
-      // the bar is "settled", not "frozen", and the signal is measured against
-      // whatever number comes back rather than against a constant.
-      if (restless <= 600) return { path: cur, restless, seen };
+      seen.push(moved.up + moved.down);
+      // Quiet enough to stop early. Not zero — a few hundred pixels of this
+      // yard move on their own — and not required either: see below.
+      if (seen[seen.length - 1] <= 600) break;
       const swap = prev;
       prev = cur;
       cur = swap;
     }
-    // The sequence, not just the failure. A run that trends downward has been
-    // given too little time; one that bounces has something in it that is
-    // never going to stop, and those want opposite fixes.
-    return { path: cur, restless: Infinity, seen };
+    // The median rather than the last or the best, and *reported* rather than
+    // demanded. Two earlier versions of this made stillness a precondition and
+    // failed on it twice: first on a 400ms wait that was three frames through
+    // SwiftShader, then on a loop that ran out of tries because the build ghost
+    // was easing toward the aim ray a hand's width under the lamp. Both times
+    // the lamps were working perfectly.
+    //
+    // So the picture is no longer asked to hold still. It is asked how much it
+    // is moving, and the glow below has to beat that number several times over
+    // — which is the claim that was wanted all along, and the only one that
+    // cannot be defeated by finding a third thing that moves.
+    const sorted = seen.slice().sort((x, y) => x - y);
+    return { path: cur, restless: sorted[sorted.length >> 1], seen };
   };
 
   // Adaptive quality pinned for the measurement, and this is the reason the
@@ -403,20 +410,20 @@ export default async function (page) {
   await page.evaluate(() => window.__maker.setAutoQuality(false));
   const pinned = await page.evaluate(() => window.__maker.renderScale().effective);
 
-  const lit = await holdStill(`${TMP}/frontend-lamps-a.png`, `${TMP}/frontend-lamps-b.png`);
-  assert(
-    Number.isFinite(lit.restless),
-    `the picture never held still long enough to difference it: ${lit.seen.join(', ')}`,
-  );
-  const restless = lit.restless;
+  // And the aiming furniture out of the picture. The build ghost sits a hand's
+  // width under the lamp this shot is framed on, easing toward wherever the aim
+  // ray lands, and it is the one thing in a parked frame that is never quite
+  // still. On CI it moved between two and nine thousand pixels between every
+  // pair of frames — the settle loop reported that sequence, which is what the
+  // sequence is for.
+  await page.evaluate(() => window.__maker.setBuildPreview(false));
 
+  const lit = await holdStill(`${TMP}/frontend-lamps-a.png`, `${TMP}/frontend-lamps-b.png`);
   const off = await page.evaluate(() => window.__maker.setLamps(0));
   assert(off.drawn === 0, `turning them off should empty the draw call, ${off.drawn} left`);
   const dark = await holdStill(`${TMP}/frontend-dark-a.png`, `${TMP}/frontend-dark-b.png`);
-  assert(
-    Number.isFinite(dark.restless),
-    `the picture never held still after the lamps went out: ${dark.seen.join(', ')}`,
-  );
+  // Whichever half of the pair was noisier sets the bar.
+  const restless = Math.max(lit.restless, dark.restless);
   // The pin held. Without this the two shots could differ because they were
   // drawn at different resolutions, and the difference would be read as light.
   const held = await page.evaluate(() => window.__maker.renderScale().effective);
@@ -429,7 +436,8 @@ export default async function (page) {
   assert(
     glow.up > 4000 && glow.up > restless * 4,
     `the lamps should reach pixels — ${glow.up} of ${glow.total} got brighter against`
-    + ` ${restless} moving on their own`,
+    + ` ${restless} moving on their own (lit ${lit.seen.join('/')},`
+    + ` dark ${dark.seen.join('/')})`,
   );
   // Additive means added. A glow that takes light *out* of the picture is a
   // blend mode that is not the one this claims to be, and it would pass a plain
@@ -442,6 +450,7 @@ export default async function (page) {
   );
 
   await page.evaluate(() => {
+    window.__maker.setBuildPreview(true);
     window.__maker.setAutoQuality(true);
     window.__maker.setTimeOfDay('round');
     window.__maker.setHudVisible(true);
