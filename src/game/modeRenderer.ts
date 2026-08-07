@@ -20,6 +20,29 @@ import type { Actor } from './actor.ts';
 const MAX_SPLASHES = 16;
 const SPLASH_LIFETIME = 0.5;
 
+/**
+ * Droplets thrown off by impacts, shared across every splash on screen.
+ *
+ * Sixteen splashes at seven droplets each would be 112, and the pool is
+ * deliberately smaller: a burst that big only happens when a dozen balloons
+ * land in the same half-second, and at that point nobody can tell which
+ * droplets belong to which splash. The pool recycles oldest-first, so what gets
+ * dropped is the tail of a splash already half over.
+ */
+const MAX_DROPLETS = 96;
+const DROPLETS_PER_SPLASH = 7;
+/**
+ * Droplet gravity, lighter than the player's 23.
+ *
+ * Not a physical claim — nothing collides with these. Real gravity at this
+ * scale pulls the arc down inside three frames, which reads as the droplets
+ * being sucked into the floor. A little over half of it lets the spray hang
+ * long enough to be seen, which is the entire job.
+ */
+const DROPLET_GRAVITY = 14;
+const DROPLET_LIFETIME = 0.55;
+const DROPLET_RADIUS = 0.06;
+
 /** Objective stands and flags a mode can ask for at once. */
 const MAX_MARKERS = 8;
 const MAX_FLAGS = 4;
@@ -34,6 +57,14 @@ const MAX_DROPS = 26;
 
 interface Splash {
   x: number; y: number; z: number;
+  age: number;
+  active: boolean;
+}
+
+/** One thrown-off bead of water. Ballistic, and it collides with nothing. */
+interface Droplet {
+  x: number; y: number; z: number;
+  vx: number; vy: number; vz: number;
   age: number;
   active: boolean;
 }
@@ -74,6 +105,10 @@ export class ModeRenderer {
   private streamEnd: { x: number; y: number; z: number } | null = null;
 
   private readonly splashes: Splash[] = [];
+  private readonly dropletMesh: THREE.InstancedMesh;
+  private readonly droplets: Droplet[] = [];
+  /** Next slot to try, so spawning does not scan the pool from zero every time. */
+  private dropletCursor = 0;
   private readonly matrix = new THREE.Matrix4();
   private readonly pos = new THREE.Vector3();
   private readonly scale = new THREE.Vector3(1, 1, 1);
@@ -117,6 +152,27 @@ export class ModeRenderer {
 
     for (let i = 0; i < MAX_SPLASHES; i++) {
       this.splashes.push({ x: 0, y: 0, z: 0, age: 0, active: false });
+    }
+
+    // The spray. A single expanding sphere is a puff of smoke wearing blue —
+    // it says "something happened here" and nothing about what. What makes an
+    // impact read as *water* is that pieces of it come off and fall, so the
+    // burst keeps its job of marking the spot and these do the describing.
+    //
+    // Opaque and unlit-bright rather than translucent like the burst: at this
+    // size a transparent droplet against a bright lawn is nothing at all, and
+    // sixteen splashes' worth of transparency is sixteen sorted draws.
+    this.dropletMesh = new THREE.InstancedMesh(
+      new THREE.SphereGeometry(DROPLET_RADIUS, 5, 4),
+      createToonMaterial({ color: 0xcdf2ff }),
+      MAX_DROPLETS,
+    );
+    this.dropletMesh.frustumCulled = false;
+    this.dropletMesh.castShadow = false;
+    this.group.add(this.dropletMesh);
+
+    for (let i = 0; i < MAX_DROPLETS; i++) {
+      this.droplets.push({ x: 0, y: 0, z: 0, vx: 0, vy: 0, vz: 0, age: 0, active: false });
     }
 
     // Objective markers: a pool of stands and a pool of flags, positioned from
@@ -221,9 +277,11 @@ export class ModeRenderer {
 
   private hideAll(): void {
     for (let i = 0; i < MAX_BALLOONS; i++) this.balloons.setMatrixAt(i, ModeRenderer.HIDDEN);
-    for (let i = 0; i < MAX_SPLASHES; i++) this.splashMesh.setMatrixAt(i, ModeRenderer.HIDDEN);
+    // The two packed pools have nothing to hide: drawing none of them is what
+    // a count of zero already means.
+    this.splashMesh.count = 0;
+    this.dropletMesh.count = 0;
     this.balloons.instanceMatrix.needsUpdate = true;
-    this.splashMesh.instanceMatrix.needsUpdate = true;
   }
 
   /** Add a splash burst at a world position. */
@@ -244,6 +302,51 @@ export class ModeRenderer {
     s.x = x; s.y = y; s.z = z;
     s.age = 0;
     s.active = true;
+
+    this.spawnDroplets(x, y, z);
+  }
+
+  /**
+   * Throw a handful of beads off an impact.
+   *
+   * `Math.random` on purpose, like the rest of this file's presentation: the
+   * renderer is never replayed and never hashed, and spending the simulation's
+   * seeded stream on spray would make two players' worlds diverge on nothing —
+   * exactly the mistake `SPLASH_INTERVAL` was written to avoid.
+   *
+   * Sprayed up and out rather than in a sphere. A splash on the lawn throws
+   * nothing downwards, and one on somebody's back throws nothing into them, so
+   * a symmetric burst spends half its droplets inside whatever was hit.
+   */
+  private spawnDroplets(x: number, y: number, z: number): void {
+    for (let n = 0; n < DROPLETS_PER_SPLASH; n++) {
+      const d = this.takeDroplet();
+      const angle = Math.random() * Math.PI * 2;
+      // Sideways speed spread wide, so the spray is a crown and not a ring.
+      const out = 1.1 + Math.random() * 2.2;
+      d.x = x; d.y = y; d.z = z;
+      d.vx = Math.cos(angle) * out;
+      d.vz = Math.sin(angle) * out;
+      d.vy = 2.4 + Math.random() * 2.3;
+      d.age = 0;
+      d.active = true;
+    }
+  }
+
+  /** A free droplet, or the oldest one if there are none. */
+  private takeDroplet(): Droplet {
+    for (let n = 0; n < MAX_DROPLETS; n++) {
+      const i = (this.dropletCursor + n) % MAX_DROPLETS;
+      if (!this.droplets[i]!.active) {
+        this.dropletCursor = (i + 1) % MAX_DROPLETS;
+        return this.droplets[i]!;
+      }
+    }
+    // Full. The cursor is the least recently taken slot, which is the closest
+    // thing to "oldest" available without sorting.
+    const i = this.dropletCursor;
+    this.dropletCursor = (i + 1) % MAX_DROPLETS;
+    return this.droplets[i]!;
   }
 
   /** Called every frame. `time` drives the stash marker's idle animation. */
@@ -274,6 +377,7 @@ export class ModeRenderer {
     this.updateCharacters(dt, others ?? mode?.bots ?? [], mode);
     this.updateBalloons(projectiles);
     this.updateSplashes(dt);
+    this.updateDroplets(dt);
     this.updateMarkers(mode, time, extraMarkers);
     this.updateStream(time);
   }
@@ -397,6 +501,25 @@ export class ModeRenderer {
   }
 
   /**
+   * Live splash bursts and droplets, for scenarios.
+   *
+   * Both, because they fail differently and one covers for the other. A burst
+   * with no spray is the old effect back; spray with no burst is a splash that
+   * spawned into a pool it could not reach. Neither number alone would notice.
+   */
+  get splashesLive(): number {
+    let n = 0;
+    for (const s of this.splashes) if (s.active) n++;
+    return n;
+  }
+
+  get dropletsLive(): number {
+    let n = 0;
+    for (const d of this.droplets) if (d.active) n++;
+    return n;
+  }
+
+  /**
    * Draw everyone who is not holding the camera.
    *
    * Was `updateBots`, and the rename is the point: a bot and another person are
@@ -446,29 +569,74 @@ export class ModeRenderer {
     this.balloons.instanceMatrix.needsUpdate = true;
   }
 
+  /**
+   * Both of these pools are *packed* rather than parked.
+   *
+   * The pool slot a splash lives in and the instance slot it draws in used to
+   * be the same number, with the unused ones pushed to y = -9999. That works,
+   * but it means the draw is always for the full pool — and since nothing is
+   * splashing during the great majority of a round, the common case was two
+   * draw calls a frame for a hundred and twelve invisible spheres. Writing the
+   * live ones into the front of the buffer and setting `count` costs one extra
+   * local and lets three.js skip the draw entirely at zero, which is the same
+   * fix the character batch got and for the same reason.
+   */
   private updateSplashes(dt: number): void {
+    let drawn = 0;
     for (let i = 0; i < this.splashes.length; i++) {
       const s = this.splashes[i]!;
-      if (!s.active) {
-        this.splashMesh.setMatrixAt(i, ModeRenderer.HIDDEN);
-        continue;
-      }
+      if (!s.active) continue;
       s.age += dt;
       if (s.age >= SPLASH_LIFETIME) {
         s.active = false;
-        this.splashMesh.setMatrixAt(i, ModeRenderer.HIDDEN);
         continue;
       }
-      // Expand fast then hold, which reads as a burst rather than a balloon.
+      // Out fast, then back in. It used to expand and hold, which meant it
+      // vanished at full size — a sphere blinking out of existence at its
+      // largest is the one shape that cannot read as anything dissipating.
+      // The material's opacity is shared across every instance and so cannot
+      // fade one of them, which makes the silhouette the only thing left to
+      // say "gone", so it has to say it.
       const t = s.age / SPLASH_LIFETIME;
-      const radius = 0.25 + Math.sqrt(t) * 1.1;
+      const shape = t < 0.32 ? Math.sqrt(t / 0.32) : 1 - (t - 0.32) / 0.68;
+      const radius = 0.18 + shape * 1.05;
       this.pos.set(s.x, s.y, s.z);
       this.scale.setScalar(radius);
-      this.matrix.compose(this.pos, new THREE.Quaternion(), this.scale);
-      this.splashMesh.setMatrixAt(i, this.matrix);
+      this.matrix.compose(this.pos, ModeRenderer.NO_ROTATION, this.scale);
+      this.splashMesh.setMatrixAt(drawn++, this.matrix);
       this.scale.setScalar(1);
     }
+    this.splashMesh.count = drawn;
     this.splashMesh.instanceMatrix.needsUpdate = true;
+  }
+
+  private updateDroplets(dt: number): void {
+    let drawn = 0;
+    for (let i = 0; i < this.droplets.length; i++) {
+      const d = this.droplets[i]!;
+      if (!d.active) continue;
+      d.age += dt;
+      if (d.age >= DROPLET_LIFETIME) {
+        d.active = false;
+        continue;
+      }
+      d.vy -= DROPLET_GRAVITY * dt;
+      d.x += d.vx * dt;
+      d.y += d.vy * dt;
+      d.z += d.vz * dt;
+
+      // Shrink over the back half only. Shrinking from the moment it spawns
+      // makes the spray look like it is being pulled back into the impact.
+      const t = d.age / DROPLET_LIFETIME;
+      const size = t < 0.5 ? 1 : 1 - (t - 0.5) * 2;
+      this.pos.set(d.x, d.y, d.z);
+      this.scale.setScalar(Math.max(size, 0.001));
+      this.matrix.compose(this.pos, ModeRenderer.NO_ROTATION, this.scale);
+      this.dropletMesh.setMatrixAt(drawn++, this.matrix);
+      this.scale.setScalar(1);
+    }
+    this.dropletMesh.count = drawn;
+    this.dropletMesh.instanceMatrix.needsUpdate = true;
   }
 
   /**
@@ -491,6 +659,7 @@ export class ModeRenderer {
   clear(): void {
     this.hideAll();
     for (const s of this.splashes) s.active = false;
+    for (const d of this.droplets) d.active = false;
     for (const stand of this.stands) stand.group.visible = false;
     for (const flag of this.flagPoles) flag.group.visible = false;
     this.setStream(null, 0, 0, 0);

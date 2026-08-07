@@ -242,10 +242,52 @@ export default async function (page) {
   );
   assert(soaked.vignette > 0, `the screen edge should bead up, opacity ${soaked.vignette}`);
 
+  // ── A balloon landing looks like water landing ─────────────────────────────
+  // Both halves of the effect, because they fail differently and either one
+  // alone would cover for the other: the burst says a splash reached the
+  // renderer at all, the spray says the droplets it spawns reached a pool they
+  // could actually use. A burst with no spray is the old single-sphere puff
+  // back, and spray with no burst never happens by accident.
+  //
+  // Driven by dropping a balloon on the player's own head — the one impact this
+  // scenario can guarantee lands, on any machine, in one simulated step.
+  const splashed = await page.evaluate(() => {
+    const before = window.__maker.roundInfo();
+    window.__maker.projectiles.spawn(
+      window.__maker.player.x, window.__maker.player.y + 4, window.__maker.player.z,
+      0, -1, 0, 14, 99,
+    );
+    // Short on purpose. Droplets live about half a second of *rendered* time,
+    // and a long fast-forward would let the balloon land and the spray finish
+    // inside one call, leaving nothing to count.
+    window.__maker.fastForward(0.4);
+    const after = window.__maker.roundInfo();
+    return { before, after };
+  });
+  assert(
+    splashed.after.splashes > 0,
+    `a balloon landing should burst, saw ${splashed.after.splashes} (was ${splashed.before.splashes})`,
+  );
+  assert(
+    splashed.after.droplets > 0,
+    `and throw spray off it, saw ${splashed.after.droplets} droplets`,
+  );
+
+  // And put one where it can be seen, for the artifact. The drop above lands on
+  // the player's own head, which is the only impact that is certain to happen
+  // and the one place a first-person camera cannot look at.
+  await page.evaluate(() => {
+    window.__maker.setCameraMode('third');
+    window.__maker.lookAt(0, -0.15);
+    const p = window.__maker.player;
+    window.__maker.projectiles.spawn(p.x, p.y + 3.5, p.z - 3.2, 0, -1, 0, 14, 99);
+    window.__maker.fastForward(0.28);
+  });
   await page.screenshot({ path: process.env.WATER_SHOT ?? 'shots/water.png' });
 
   console.log(
     '[water] verified: build phase, raid starts, tank empties and refills from a tap,',
-    'stream draws, wetness shows on the HUD and at the screen edge',
+    'stream draws, wetness shows on the HUD and at the screen edge,',
+    'and an impact bursts and throws spray',
   );
 }

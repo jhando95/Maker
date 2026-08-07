@@ -2007,6 +2007,8 @@ window.__maker = {
     markers: mode?.markers().length ?? 0,
     /** The same count from the other end: how many actually got drawn. */
     markersDrawn: modeRenderer.markersDrawn,
+    splashes: modeRenderer.splashesLive,
+    droplets: modeRenderer.dropletsLive,
     finished: mode?.finished ?? false,
   }),
   leaveSession: () => {
