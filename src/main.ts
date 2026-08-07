@@ -2160,10 +2160,17 @@ function simulate(dt: number): void {
         net.requestRemoval(aimed);
         sounds.removed(px, py, pz, camera, player);
       }
-    } else if (build.removeAimed()) {
-      if (net instanceof NetHost && aimed >= 0) net.announceRemoval(aimed);
-      worldChanged();
-      sounds.removed(px, py, pz, camera, player);
+    } else {
+      // Everything that came down, not just the part under the crosshair: take
+      // the leg out of a tower and the tower goes with it, and the guests have
+      // to be told about every plank of it rather than the one that was aimed
+      // at. See `build/support.ts`.
+      const down = build.removeAimed();
+      if (down.length > 0) {
+        if (net instanceof NetHost) for (const id of down) net.announceRemoval(id);
+        worldChanged();
+        sounds.removed(px, py, pz, camera, player);
+      }
     }
   }
 
@@ -2693,16 +2700,19 @@ window.__maker = {
    * you were pointing rather than on it. Re-aiming at the old angle happened to
    * hit it on one machine and missed on a slower one.
    */
-  removeAtPoint: (x: number, y: number, z: number): boolean => {
+  removeAtPoint: (x: number, y: number, z: number): number[] => {
     const state = player.sample(1);
     const ex = state.x, ey = state.y + state.eyeHeight, ez = state.z;
     camera.yaw = Math.atan2(-(x - ex), -(z - ez));
     camera.pitch = Math.atan2(y - ey, Math.hypot(x - ex, z - ez));
     const ray = camera.getAimRay(ex, ey, ez, MAX_REACH);
     build.update(DT, ray.ox, ray.oy, ray.oz, ray.dx, ray.dy, ray.dz, false, false);
-    const ok = build.removeAimed();
-    if (ok) worldChanged();
-    return ok;
+    // Everything that came down, so a scenario can ask *how much* rather than
+    // only whether anything did — which is the entire question a collapse
+    // raises.
+    const down = build.removeAimed();
+    if (down.length > 0) worldChanged();
+    return down;
   },
   /** Where the last placement landed, so a scenario can aim back at it. */
   lastPlacedAt: () => build.lastPlacedAt,
@@ -2822,6 +2832,42 @@ window.__maker = {
      * check about all-or-nothing refusal depend on where a crosshair happened to
      * land, and it is what turned red on CI.
      */
+    /**
+     * Take down the part standing at a point, and whatever it held up.
+     *
+     * Aim-free, for the same reason `stampThese` is: the question a collapse
+     * raises is about what was joined to what, and routing it through a
+     * crosshair makes the answer depend on where a ray happened to land. A
+     * player standing on the thing they are about to demolish cannot aim at its
+     * legs anyway — the floor is in the way.
+     *
+     * @returns every part that came down, aimed one first.
+     */
+    demolishNear: (x: number, y: number, z: number): number[] => {
+      const probe = {
+        minX: x - 0.05, minY: y - 0.05, minZ: z - 0.05,
+        maxX: x + 0.05, maxY: y + 0.05, maxZ: z + 0.05,
+      };
+      // The point has to be *inside* the part, not merely near it. A tolerance
+      // box picks up whatever is flush against the thing being aimed at — the
+      // first version took the post under a panel rather than the panel, and
+      // reported the collapse of a tower as the removal of its top.
+      let found = -1;
+      for (const id of world.queryAabb(probe)) {
+        if (world.isFixture(id)) continue;
+        const box = world.store.readAabb(id);
+        if (x < box.minX || x > box.maxX) continue;
+        if (y < box.minY || y > box.maxY) continue;
+        if (z < box.minZ || z > box.maxZ) continue;
+        // Lowest id wins, so two parts sharing a point cannot make this depend
+        // on the order the spatial hash happens to walk its cells.
+        if (found < 0 || id < found) found = id;
+      }
+      if (found < 0) return [];
+      const down = build.demolish(found);
+      if (down.length > 0) worldChanged();
+      return down;
+    },
     stampThese: (records: PlacementRecord[]) => {
       const ids = build.stamp(records);
       if (ids.length > 0) worldChanged();

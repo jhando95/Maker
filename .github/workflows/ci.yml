@@ -190,6 +190,15 @@ jobs:
       - name: Lava scenario
         run: node tools/shoot.mjs --scenario scenarios/lava.mjs --auto-quality --out /tmp/ci-lava.png
 
+      # Whether what you build holds itself up. The rule is unit-tested against
+      # thirty-odd shapes and every one of those is an argument about boxes;
+      # what only exists here is whether the collision world and the support
+      # rule agree about contact, and whether a player three metres up on a
+      # tower is on the lawn a second after somebody takes its leg out. A list
+      # of ids is not a collapse.
+      - name: Collapse scenario
+        run: node tools/shoot.mjs --scenario scenarios/collapse.mjs --auto-quality --out /tmp/ci-collapse.png
+
       # The edge of the world, and the only way to find out where it is: walk
       # at it. All three holes this closes were found by driving the real player
       # around and none of them was visible to a unit test — an infinite ground
@@ -312,6 +321,7 @@ jobs:
             /tmp/ci-items.png
             /tmp/ci-tag.png
             /tmp/ci-lava.png
+            /tmp/ci-collapse.png
             /tmp/ci-bounds.png
             /tmp/ci-frontend.png
             /tmp/ci-comms.png

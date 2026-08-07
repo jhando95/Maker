@@ -470,9 +470,12 @@ export class NetHost {
         break;
       }
       case 'unbuild': {
-        if (!this.ctx.build.applyRemove(message.p)) return;
+        // What the guest asked for, plus whatever it was holding up. The host
+        // is the only machine that works that out — see `applyRemove`.
+        const down = this.ctx.build.demolish(message.p);
+        if (down.length === 0) return;
         this.ctx.worldChanged();
-        this.broadcast({ t: 'unbuilt', p: message.p });
+        for (const id of down) this.broadcast({ t: 'unbuilt', p: id });
         break;
       }
       case 'say': {

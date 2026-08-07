@@ -23,6 +23,7 @@ import { Lumber, costOf } from './lumber.ts';
 import type { PartId } from '../physics/types.ts';
 import { boxInBounds } from '../world/bounds.ts';
 import { MAX_BLUEPRINT_PARTS } from './blueprint.ts';
+import { collapseAfter, type Box, type Structure } from './support.ts';
 
 export { worldAabb } from './partKit.ts';
 
@@ -726,24 +727,94 @@ export class BuildSystem {
     return this.buy(record);
   }
 
-  /** Remove whatever the aim ray is pointing at. */
-  removeAimed(): boolean {
+  /**
+   * Remove whatever the aim ray is pointing at, and whatever it held up.
+   *
+   * @returns every part that came down, aimed one first.
+   */
+  removeAimed(): PartId[] {
     const part = this.lastResult?.hitPart;
-    if (part === undefined || part < 0) return false;
-    return this.applyRemove(part);
+    if (part === undefined || part < 0) return [];
+    return this.demolish(part);
   }
 
+  /**
+   * Take one part away and nothing else.
+   *
+   * The guest's version, and the reason it exists: the host decides what falls
+   * and sends the list, one message per part. A guest that ran its own collapse
+   * off the first of those messages would be a second opinion about the shape
+   * of the world — which is the definition of a desync, and one that only shows
+   * up when a tower comes down.
+   */
   applyRemove(id: PartId): boolean {
-    // The map is not the player's to demolish. Aiming at the house and pressing
-    // remove has to do nothing rather than open a hole in the level.
     if (this.world.isFixture(id)) return false;
     if (!this.world.removePart(id)) return false;
+    this.forget(id);
+    this.snapper.reset();
+    return true;
+  }
+
+  /**
+   * Take a part away, and everything it was holding up.
+   *
+   * The list is the aimed part first and then whatever lost its footing, in id
+   * order — the host sends exactly this, one message per id, so the order is
+   * part of the protocol rather than an implementation detail.
+   *
+   * @returns every part that came down, or an empty array if none did.
+   */
+  demolish(id: PartId): PartId[] {
+    // The map is not the player's to demolish. Aiming at the house and pressing
+    // remove has to do nothing rather than open a hole in the level.
+    if (this.world.isFixture(id)) return [];
+    // Read before the removal, because afterwards there is nothing to read: the
+    // question is what was joined to the space this part used to fill.
+    const hole = this.world.store.readAabb(id);
+    if (!this.world.removePart(id)) return [];
+    this.forget(id);
+
+    const down: PartId[] = [id];
+    for (const stranded of collapseAfter(this.structure, hole)) {
+      if (!this.world.removePart(stranded)) continue;
+      this.forget(stranded);
+      down.push(stranded);
+    }
+    this.snapper.reset();
+    return down;
+  }
+
+  /** Take a part off the renderer, the ledger and the undo stack. */
+  private forget(id: PartId): void {
     this.renderer.remove(id);
     this.reclaim(id);
     const i = this.history.lastIndexOf(id);
     if (i !== -1) this.history.splice(i, 1);
-    this.snapper.reset();
-    return true;
+  }
+
+  /**
+   * The world, as `support.ts` wants to see it.
+   *
+   * A view rather than a copy — `near` hands straight through to the spatial
+   * hash the physics already maintains, so the flood pays for a broadphase
+   * query per part it walks and nothing else.
+   */
+  private structureView: Structure | null = null;
+
+  private get structure(): Structure {
+    if (this.structureView === null) {
+      const world = this.world;
+      this.structureView = {
+        ids: () => world.store.live(),
+        box: (id: PartId) => world.store.readAabb(id),
+        near: (box: Box) => world.queryAabb(box),
+        fixed: (id: PartId) => world.isFixture(id),
+        // Read through rather than copied: the world owns where the lawn is,
+        // and a number captured once would be a second opinion about it.
+        get groundY(): number { return world.groundY; },
+      };
+    }
+    return this.structureView;
   }
 
   /** Undo the most recent placement still standing. */

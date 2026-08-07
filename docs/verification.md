@@ -44,6 +44,13 @@ is a habit.
 - Two frame-parser tests rested on claims that were not true: one on unmasking
   being able to corrupt an unread frame, and one on a `length > MAX_FRAME` branch
   that is unreachable while the cap exceeds 65535.
+- **The collapse scenario's "taking the top off" control took the top and one
+  more.** `demolishNear` picked a part within 5cm of the point rather than the
+  part containing it, so aiming at a panel resting on a post got the post — and
+  reported the collapse of a whole tower as the removal of its top. The probe
+  is a containment test now, with the lowest id winning a tie so two parts
+  sharing a point cannot make the answer depend on the order a spatial hash
+  walks its cells.
 - **The back-door light check was asserting on somebody else's house.** Written
   as "a light behind the house at door height" and nothing else, it passed with
   the back-door light deleted: a neighbour's front window forty-two metres east
@@ -98,6 +105,25 @@ and because a red check deserves an account rather than a shrug.
   "in first person" was a bet on frame time and the local player was still being
   drawn.
 
+- **The settle loop then never settled, because the renderer was resizing under
+  it.** Adaptive quality changes the size of the buffer the whole picture is
+  drawn into, so while the governor is hunting, *every* pixel is a changed
+  pixel. On a machine that keeps up it lands on 1.00 and is never noticed; at
+  seven frames a second on CI it never stopped moving and the loop ran out of
+  tries. The scale is pinned across the measurement now, and checked afterwards
+  to have held — two shots drawn at different resolutions differ everywhere, and
+  the difference would have been read as light. The loop also reports the whole
+  sequence it saw when it gives up: a run that trends downward was given too
+  little time and one that bounces has something in it that will never stop,
+  and those want opposite fixes.
+- **A 400ms wait standing in for "the picture has stopped moving".** The lamp
+  check differences two screenshots, so it first has to establish that nothing
+  else in the frame is moving — and it established that by waiting. Four hundred
+  milliseconds is thirty frames on a real card and *three* through SwiftShader,
+  and the placement ghost eases toward wherever the aim ray lands, so the guard
+  passed here and reported 8,940 moving pixels on CI. It shoots until two
+  consecutive frames agree now. The guard caught exactly what it was written to
+  catch; it was the guard's own precondition that was a bet.
 - **The lamps rendered nothing, and everything said they were on.** The shader
   compiled, the level was 1, the instance count was thirty, and not one pixel
   changed. `InstancedMesh.computeBoundingSphere` walks `count`, and the bound was

@@ -371,27 +371,42 @@ export default async function (page) {
   const holdStill = async (a, b) => {
     let prev = a;
     let cur = b;
+    const seen = [];
     await page.screenshot({ path: prev });
     for (let i = 0; i < 15; i++) {
       await new Promise((r) => setTimeout(r, 350));
       await page.screenshot({ path: cur });
       const moved = brighter(prev, cur);
       const restless = moved.up + moved.down;
+      seen.push(restless);
       // Never zero — a few hundred pixels of this yard move on their own — so
       // the bar is "settled", not "frozen", and the signal is measured against
       // whatever number comes back rather than against a constant.
-      if (restless <= 600) return { path: cur, restless };
+      if (restless <= 600) return { path: cur, restless, seen };
       const swap = prev;
       prev = cur;
       cur = swap;
     }
-    return { path: cur, restless: Infinity };
+    // The sequence, not just the failure. A run that trends downward has been
+    // given too little time; one that bounces has something in it that is
+    // never going to stop, and those want opposite fixes.
+    return { path: cur, restless: Infinity, seen };
   };
+
+  // Adaptive quality pinned for the measurement, and this is the reason the
+  // check exists in this shape at all: the scaler changes the size of the
+  // buffer the whole picture is drawn into, so while it is hunting, *every*
+  // pixel is a changed pixel. On a machine that keeps up it settles at 1.00 and
+  // is never noticed; on CI, at seven frames a second, it never stopped moving
+  // and the settle loop ran out of tries. Turned off here and back on after, so
+  // the rest of the scenario finds the game as it left it.
+  await page.evaluate(() => window.__maker.setAutoQuality(false));
+  const pinned = await page.evaluate(() => window.__maker.renderScale().effective);
 
   const lit = await holdStill(`${TMP}/frontend-lamps-a.png`, `${TMP}/frontend-lamps-b.png`);
   assert(
     Number.isFinite(lit.restless),
-    'the picture never held still long enough to difference it',
+    `the picture never held still long enough to difference it: ${lit.seen.join(', ')}`,
   );
   const restless = lit.restless;
 
@@ -400,7 +415,14 @@ export default async function (page) {
   const dark = await holdStill(`${TMP}/frontend-dark-a.png`, `${TMP}/frontend-dark-b.png`);
   assert(
     Number.isFinite(dark.restless),
-    'the picture never held still after the lamps went out',
+    `the picture never held still after the lamps went out: ${dark.seen.join(', ')}`,
+  );
+  // The pin held. Without this the two shots could differ because they were
+  // drawn at different resolutions, and the difference would be read as light.
+  const held = await page.evaluate(() => window.__maker.renderScale().effective);
+  assert(
+    held === pinned,
+    `the render scale moved under the measurement: ${pinned} -> ${held}`,
   );
 
   const glow = brighter(lit.path, dark.path);
@@ -420,6 +442,7 @@ export default async function (page) {
   );
 
   await page.evaluate(() => {
+    window.__maker.setAutoQuality(true);
     window.__maker.setTimeOfDay('round');
     window.__maker.setHudVisible(true);
     window.__maker.teleport(0, 0.6, 16);

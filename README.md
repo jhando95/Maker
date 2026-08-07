@@ -13,6 +13,15 @@ War** over the paddling pool, the rain barrel and the garden tap, and **Fort
 Defense** on the front lawn. Two browsers can share a lawn and play any of them
 together, and there is a locker to decide what you turn up looking like.
 
+**What you build has to hold itself up.** Every part is either standing on the
+lawn, nailed to something that was already there, or joined by a chain of parts
+to one of those — and the moment that chain breaks, whatever was on the end of
+it comes down. Take the leg out of somebody's tower and the tower goes with it,
+including the kid who was standing on top. Contact counts in any direction, not
+just downward, because this is a kid with a hammer rather than a bricklayer: a
+plank nailed to the side of a post is held by that post, and half of what people
+build here is cantilevered off something.
+
 **The afternoon gets late while you play.** The sun drops and swings west across
 a round, the shadows stretch, the sky drains to a warm horizon under a deep blue,
 and by the end of a full-length round it is dusk — the street lights warm up over
