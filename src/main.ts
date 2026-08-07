@@ -12,6 +12,9 @@ import { Input } from './core/input.ts';
 import { CollisionWorld } from './physics/collisionWorld.ts';
 import { TICK_RATE, DT, CAP_HEIGHT } from './physics/constants.ts';
 import { createScene } from './world/scene.ts';
+import {
+  AFTERNOON, DUSK, GOLDEN, dayTimeForRound, type DayTime,
+} from './world/daylight.ts';
 import { installFixtures } from './world/neighborhood.ts';
 import { PartRenderer } from './render/partRenderer.ts';
 import { chamferedBox } from './render/geometry.ts';
@@ -177,7 +180,7 @@ renderer.shadowMap.needsUpdate = true;
 app.appendChild(renderer.domElement);
 
 // ── World ────────────────────────────────────────────────────────────────────
-const { scene, invalidateShadows, props: scenery, slabs } = createScene('backyard-01');
+const { scene, invalidateShadows, setDaylight, props: scenery, slabs } = createScene('backyard-01');
 const world = new CollisionWorld(1.0, 4096);
 // The map's solid geometry, from the same numbers the scenery was drawn with.
 // Installed before anything else touches the world so the starter structures
@@ -208,6 +211,43 @@ const SHADOW_REBUILD_INTERVAL = 0.25;
 
 function worldChanged(): void {
   shadowsDirty = true;
+}
+
+/**
+ * How long an afternoon takes, in seconds of play.
+ *
+ * Five minutes, which is the length of a round of Lava and a good long one of
+ * anything else — so a game that goes the distance ends at dusk and a quick one
+ * ends in the gold. It is not the length of any particular mode on purpose:
+ * tying it to a mode's own timer means it resets every time a phase does, and
+ * Fort Defense would run the sun backwards five times a round.
+ */
+const AFTERNOON_LENGTH = 300;
+
+/**
+ * Seconds of round played, which is the only clock the sky reads.
+ *
+ * Advanced by the loop rather than taken from `mode.hud().timer`, for the
+ * reason above, and reset when a round starts. Outside a round it does not
+ * move, so the yard behind the menu is the afternoon it has always been.
+ */
+let roundClock = 0;
+
+/**
+ * Where in the afternoon to draw.
+ *
+ * A player who wants the golden hour for a screenshot should not have to play
+ * four minutes of a round to get it, and a player who finds a changing sky
+ * distracting should be able to nail it down. `round` is the default because it
+ * is the one that means anything.
+ */
+function roundDayTime(): DayTime {
+  switch (settings.get('timeOfDay')) {
+    case 'afternoon': return AFTERNOON;
+    case 'golden': return GOLDEN;
+    case 'dusk': return DUSK;
+    default: return dayTimeForRound(roundClock, AFTERNOON_LENGTH);
+  }
 }
 
 function flushShadows(nowSeconds: number): void {
@@ -973,6 +1013,12 @@ function adoptRound(round: PackedRound | null): void {
     );
     mode = remoteMode;
     modeOverTimer = 0;
+    // A guest's afternoon starts when they start seeing a round, which is not
+    // when the host's did. That is a stated limitation rather than a bug — the
+    // light is not on the wire and nothing about it needs to be — but it does
+    // mean somebody who joins four minutes in gets four minutes of afternoon of
+    // their own rather than arriving at dusk with everybody else.
+    roundClock = 0;
   }
   remoteMode.apply(round);
   build.setLumber(round.wood === null ? undefined : remoteMode.lumber);
@@ -1200,6 +1246,7 @@ function startRound(id: ModeId = lastModeId): void {
   lastModeId = id;
   roundSnapshot = build.serialize();
   mode = createMode(id);
+  roundClock = 0;
   mode.start(modeContext);
   // After start(), which is where a mode sets its opening pile.
   build.setLumber(mode.lumber);
@@ -2046,6 +2093,11 @@ function simulate(dt: number): void {
 
   // ── Mode tick ──────────────────────────────────────────────────────────────
   if (mode !== null) {
+    // The afternoon only runs while a round does, so the yard behind the menu
+    // is not quietly getting dark while somebody reads the settings — and a
+    // round that is over stops the clock where it ended, which is what the
+    // result screen wants behind it.
+    if (!mode.finished) roundClock += dt;
     mode.fixedUpdate(dt, modeContext, modeInput);
     // Kids are inside the boundary too. A bot steps its own controller from
     // inside `bot.update`, so the shell is the only place with a view of all of
@@ -2181,6 +2233,18 @@ function draw(alpha: number, frameDt: number): void {
   }
 
   const nowSeconds = performance.now() / 1000;
+  // The afternoon gets late as the round does.
+  //
+  // Driven off the round's own clock rather than off a wall clock of its own,
+  // which is what makes it free over a network: a guest is already told how
+  // long is left, so both machines reach the same sky from the same number and
+  // nothing about the light is ever sent. Outside a round the yard sits in the
+  // afternoon it has always sat in.
+  //
+  // `setDaylight` says whether anything moved, and a sun that moved needs the
+  // static shadow map rebuilt — otherwise the light goes orange and swings west
+  // while every shadow on the lawn goes on pointing at midday.
+  if (setDaylight(roundDayTime())) shadowsDirty = true;
   flushShadows(nowSeconds);
   drainEvents();
   modeRenderer.setStream(
@@ -2525,6 +2589,35 @@ window.__maker = {
    * "after" on every claim it makes and two round trips between them is two
    * chances for a tick to land in the middle.
    */
+  /**
+   * Force a time of day, and say what the light did.
+   *
+   * The setting is the honest route in — a scenario that wrote the sun directly
+   * would prove the shader works on a value no player can produce — so this
+   * goes through `settings.set` exactly as the menu does, and then reads the
+   * light back off the objects three.js is really using.
+   */
+  setTimeOfDay: (choice: 'round' | 'afternoon' | 'golden' | 'dusk') => {
+    settings.set('timeOfDay', choice);
+    setDaylight(roundDayTime());
+    const fill = scene.getObjectByName('fill') as THREE.HemisphereLight;
+    const sky = scene.getObjectByName('sky') as THREE.Mesh;
+    const material = sky.material as THREE.ShaderMaterial;
+    const fog = scene.fog as THREE.Fog | null;
+    const sun = scene.getObjectByName('sun') as THREE.DirectionalLight;
+    const dir = sun.position.clone().normalize();
+    return {
+      elevation: dir.y,
+      azimuth: Math.atan2(dir.z, dir.x),
+      sunColor: `#${sun.color.getHexString()}`,
+      sunIntensity: sun.intensity,
+      fillIntensity: fill.intensity,
+      skyTop: `#${(material.uniforms.topColor!.value as THREE.Color).getHexString()}`,
+      skyHorizon: `#${(material.uniforms.horizonColor!.value as THREE.Color).getHexString()}`,
+      fogNear: fog?.near ?? null,
+      fogFar: fog?.far ?? null,
+    };
+  },
   lavaState: () => {
     const lava = mode instanceof LavaMode ? mode : null;
     if (lava === null) return null;

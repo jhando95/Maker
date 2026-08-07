@@ -13,6 +13,11 @@ War** over the paddling pool, the rain barrel and the garden tap, and **Fort
 Defense** on the front lawn. Two browsers can share a lawn and play any of them
 together, and there is a locker to decide what you turn up looking like.
 
+**The afternoon gets late while you play.** The sun drops and swings west across
+a round, the shadows stretch, the sky drains to a warm horizon under a deep blue,
+and by the end of a full-length round it is dusk. Settings → Picture → Time of
+day if you would rather nail it to one hour.
+
 **The Floor Is Lava is the one the game is named after.** The grass is out of
 bounds; you get round the garden on the deck, the crates, the fence rail, the
 treehouse and whatever you nail together to bridge the gaps. Every other mode

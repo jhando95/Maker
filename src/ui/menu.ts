@@ -265,6 +265,14 @@ const STYLE = `
   color: var(--ink); opacity: 0.7;
 }
 .mk-hint.said { opacity: 1; font-weight: 700; }
+.mk-choice { display: flex; gap: 5px; flex-wrap: wrap; justify-content: flex-end; }
+.mk-choice button {
+  padding: 5px 10px; font: inherit; font-size: 12px; font-weight: 700;
+  border: 2px solid var(--ink); border-radius: 7px; cursor: pointer;
+  background: #e6d3ae; color: var(--ink);
+}
+.mk-choice button:hover { background: #f0e0bf; }
+.mk-choice button.on { background: var(--sun); }
 
 /*
  * The locker gets out of its own way.
@@ -1071,6 +1079,15 @@ export class Menu {
     // heading of its own: somebody turning this on is about to change one of
     // the four settings above it and wants to see whether it helped.
     this.toggle('Show frame rate', 'showStats', s.showStats);
+    // Under Picture rather than under Playing, because it changes nothing about
+    // the game and everything about the picture — which is also why it is safe
+    // to offer at all.
+    this.choice('Time of day', 'timeOfDay', s.timeOfDay, [
+      { value: 'round', label: 'Follow the round' },
+      { value: 'afternoon', label: 'Afternoon' },
+      { value: 'golden', label: 'Golden' },
+      { value: 'dusk', label: 'Dusk' },
+    ]);
 
     this.section('Looking around');
     this.slider('Mouse sensitivity', 'sensitivity', s.sensitivity, 0.0004, 0.008, 0.0002,
@@ -1563,6 +1580,44 @@ export class Menu {
       afterChange?.();
     });
     row.appendChild(input);
+
+    this.card.appendChild(row);
+  }
+
+  /**
+   * A row of words to pick between, for a setting that is not a number and not
+   * a yes/no.
+   *
+   * Chips rather than a `<select>`, because the whole menu is chips and a
+   * native dropdown in the middle of it looks like it belongs to a different
+   * program — and because with four short options there is nothing to gain by
+   * hiding three of them behind a click.
+   */
+  private choice<K extends keyof Settings>(
+    label: string, key: K, value: string,
+    options: ReadonlyArray<{ value: string; label: string }>,
+  ): void {
+    const row = document.createElement('div');
+    row.className = 'mk-row';
+
+    const l = document.createElement('label');
+    l.textContent = label;
+    row.appendChild(l);
+
+    const group = document.createElement('div');
+    group.className = 'mk-choice';
+    for (const option of options) {
+      const btn = document.createElement('button');
+      btn.textContent = option.label;
+      btn.dataset.value = option.value;
+      if (option.value === value) btn.classList.add('on');
+      btn.addEventListener('click', () => {
+        this.settings.set(key, option.value as Settings[K]);
+        this.render();
+      });
+      group.appendChild(btn);
+    }
+    row.appendChild(group);
 
     this.card.appendChild(row);
   }

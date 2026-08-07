@@ -8,7 +8,11 @@
  * thing on it, could not be reached at all — and that is invisible to every
  * kind of test except one that measures the card against the window.
  */
+import { diffPixels } from '../tools/imgdiff.mjs';
+
 const assert = (c, m) => { if (!c) throw new Error(`frontend scenario: ${m}`); };
+
+const TMP = process.env.RUNNER_TEMP ?? '/tmp';
 
 /** Does the menu card fit in the window it is drawn in? */
 const cardFits = (page) => page.evaluate(() => {
@@ -265,7 +269,63 @@ export default async function (page) {
   assert(/low \d+/.test(stats.text), `and the worst frame, got "${stats.text}"`);
   assert(/\d+ draws/.test(stats.text), `and the draw count, got "${stats.text}"`);
 
+  // ── The afternoon gets late ─────────────────────────────────────────────────
+  //
+  // Driven through the setting rather than by writing the sun, because a
+  // scenario that set the light directly would prove the shader works on a
+  // value no player can produce. What comes back is read off the objects
+  // three.js is really using.
   await page.evaluate(() => {
+    window.__maker.teleport(-1.6, 0.83, 7.6);
+    window.__maker.lookAt(Math.PI * 0.5, -0.05);
+    window.__maker.setHudVisible(false);
+  });
+  await new Promise((r) => setTimeout(r, 300));
+
+  const noon = await page.evaluate(() => window.__maker.setTimeOfDay('afternoon'));
+  await new Promise((r) => setTimeout(r, 400));
+  await page.screenshot({ path: `${TMP}/frontend-afternoon.png` });
+
+  const dusk = await page.evaluate(() => window.__maker.setTimeOfDay('dusk'));
+  await new Promise((r) => setTimeout(r, 400));
+  await page.screenshot({ path: `${TMP}/frontend-dusk.png` });
+
+  assert(
+    dusk.elevation < noon.elevation,
+    `the sun should go down: ${noon.elevation.toFixed(2)} -> ${dusk.elevation.toFixed(2)}`,
+  );
+  assert(
+    Math.abs(dusk.azimuth - noon.azimuth) > 0.4,
+    'and swing round, or the shadows only ever get longer in one direction',
+  );
+  assert(
+    dusk.sunIntensity < noon.sunIntensity,
+    'the key light should fade',
+  );
+  // The counter-intuitive half, and the one that keeps a cel-shaded evening
+  // readable: dim the fill along with the key and a lawn, a fence and a kid all
+  // land in the bottom band together.
+  assert(
+    dusk.fillIntensity > noon.fillIntensity,
+    `and the fill should rise as it does: ${noon.fillIntensity} -> ${dusk.fillIntensity}`,
+  );
+  assert(
+    dusk.fogFar < noon.fogFar && dusk.fogFar > 120,
+    `haze should close in without hiding the horizon, far was ${dusk.fogFar}`,
+  );
+
+  // And it reaches pixels. Every claim above is about a number on an object;
+  // this is the one that says the picture changed, and it is the check that
+  // would survive somebody wiring the light to a scene nothing renders from.
+  const day = diffPixels(`${TMP}/frontend-afternoon.png`, `${TMP}/frontend-dusk.png`);
+  assert(
+    day.diff > day.total * 0.5,
+    `an afternoon and a dusk should barely share a pixel — only ${day.diff} of ${day.total} differ`,
+  );
+
+  await page.evaluate(() => {
+    window.__maker.setTimeOfDay('round');
+    window.__maker.setHudVisible(true);
     window.__maker.teleport(0, 0.6, 16);
     window.__maker.lookAt(Math.PI, -0.05);
   });
@@ -273,6 +333,9 @@ export default async function (page) {
   await page.screenshot({ path: `${process.env.RUNNER_TEMP ?? '/tmp'}/frontend.png` });
 
   console.log(`[frontend] verified: ${modes.length} mode cards on a title screen that fits,`
+    + ` an afternoon that becomes a dusk the sun goes down and round for, with the fill`
+    + ` rising as the key falls and ${Math.round((day.diff / day.total) * 100)}% of the`
+    + ` picture changing,`
     + ` no relay address on it, ${sections.length} settings sections, four screens inside`
     + ` the window, ${rows.length} rebindable controls in ${groups.length} groups with two`
     + ` keys each — rebound, cleared, stolen and reset, and the new key drove the game —`

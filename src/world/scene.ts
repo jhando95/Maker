@@ -9,6 +9,7 @@
 
 import * as THREE from 'three';
 import { Rng } from '../core/rng.ts';
+import { clampDay, daylightAt, type DayTime, type Daylight } from './daylight.ts';
 import { createToonMaterial } from '../render/toonMaterial.ts';
 import { chamferedBox, blob, addOutlineNormals } from '../render/geometry.ts';
 import { PropBatch, chunkInstanced } from '../render/propBatch.ts';
@@ -46,6 +47,14 @@ export const SUN_DIRECTION = new THREE.Vector3(28, 34, 18).normalize();
 export interface SceneBuild {
   scene: THREE.Scene;
   sun: THREE.DirectionalLight;
+  /**
+   * Move the light to a time of day.
+   *
+   * Returns true when anything actually changed, which is the caller's cue to
+   * rebuild the static shadow map — see `applyDaylight` for why that is not
+   * optional.
+   */
+  setDaylight(t: DayTime): boolean;
   /** Scenery batch, so the viewport-dependent outline width can be updated. */
   props: PropBatch;
   /**
@@ -135,6 +144,9 @@ export function createScene(seed: string | number = 'backyard-01'): SceneBuild {
   addSky(scene);
   addLights(scene);
   const sun = scene.getObjectByName('sun') as THREE.DirectionalLight;
+  const fill = scene.getObjectByName('fill') as THREE.HemisphereLight;
+  const sky = scene.getObjectByName('sky') as THREE.Mesh;
+  let dayTime = -1;
 
   // All repeated scenery goes into one batch. Built as individual meshes the
   // fence alone was several hundred draw calls before any player-built part.
@@ -168,6 +180,18 @@ export function createScene(seed: string | number = 'backyard-01'): SceneBuild {
     sun,
     props,
     slabs,
+    setDaylight(t: DayTime): boolean {
+      const want = clampDay(t);
+      // Quantised, because this is called every frame and every change costs a
+      // shadow-map rebuild. A hundredth of an afternoon is finer than anybody
+      // can see move and coarse enough that a five-minute round pays for a
+      // hundred rebuilds rather than eighteen thousand.
+      const stepped = Math.round(want * 100) / 100;
+      if (stepped === dayTime) return false;
+      dayTime = stepped;
+      applyDaylight(scene, sun, fill, sky, daylightAt(stepped));
+      return true;
+    },
     invalidateShadows() {
       sun.shadow.needsUpdate = true;
     },
@@ -275,7 +299,48 @@ function addLights(scene: THREE.Scene): void {
   // The green ground bounce is the single highest-value light here: it tints
   // every downward-facing surface with grass, and the scene immediately reads
   // as outdoors on a lawn rather than in a void.
-  scene.add(new THREE.HemisphereLight(0xbfe6ff, 0x7fa84a, 0.5));
+  const fill = new THREE.HemisphereLight(0xbfe6ff, 0x7fa84a, 0.5);
+  fill.name = 'fill';
+  scene.add(fill);
+}
+
+/**
+ * Write a time of day onto the scene.
+ *
+ * The shadow map is the part worth stating. It is deliberately static —
+ * `autoUpdate` is off and it is rebuilt only when the world changes — which is
+ * pure profit while the sun is nailed to one spot and a bug the moment it is
+ * not: the light would go orange and swing west while every shadow on the lawn
+ * went on pointing at the afternoon. So moving the sun invalidates it, in the
+ * same breath, rather than in the caller where somebody will one day forget.
+ */
+export function applyDaylight(
+  scene: THREE.Scene,
+  sun: THREE.DirectionalLight,
+  fill: THREE.HemisphereLight,
+  sky: THREE.Mesh,
+  light: Daylight,
+): void {
+  sun.position.set(light.sun.x, light.sun.y, light.sun.z).multiplyScalar(60);
+  sun.color.setHex(light.sunColor, THREE.SRGBColorSpace);
+  sun.intensity = light.sunIntensity;
+  sun.shadow.needsUpdate = true;
+
+  fill.color.setHex(light.fillSky, THREE.SRGBColorSpace);
+  fill.groundColor.setHex(light.fillGround, THREE.SRGBColorSpace);
+  fill.intensity = light.fillIntensity;
+
+  const material = sky.material as THREE.ShaderMaterial;
+  (material.uniforms.topColor!.value as THREE.Color).setHex(light.skyTop, THREE.SRGBColorSpace);
+  (material.uniforms.horizonColor!.value as THREE.Color)
+    .setHex(light.skyHorizon, THREE.SRGBColorSpace);
+
+  const fog = scene.fog as THREE.Fog | null;
+  if (fog !== null) {
+    fog.color.setHex(light.fog, THREE.SRGBColorSpace);
+    fog.near = light.fogNear;
+    fog.far = light.fogFar;
+  }
 }
 
 /**

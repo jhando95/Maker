@@ -90,6 +90,17 @@ export interface Settings {
   gamepadLookSpeed: number;
   /** Radial stick deadzone, as a fraction of full deflection. */
   gamepadDeadzone: number;
+  /**
+   * What time of day the garden is in.
+   *
+   * `round` is the interesting one and the default: the afternoon gets late as
+   * the round runs, so a game that goes the distance ends at dusk with the
+   * streetlights coming on. The three fixed settings are there because a player
+   * who wants the golden hour for a screenshot should not have to play four
+   * minutes of a round to get it — and because "the light keeps changing" is a
+   * thing some people find distracting and should be able to switch off.
+   */
+  timeOfDay: 'round' | 'afternoon' | 'golden' | 'dusk';
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -115,6 +126,7 @@ export const DEFAULT_SETTINGS: Settings = {
   gamepadEnabled: true,
   gamepadLookSpeed: 2.6,
   gamepadDeadzone: 0.16,
+  timeOfDay: 'round',
 };
 
 /** Bounds for every numeric setting, so a hand-edited blob cannot break the game. */
@@ -130,7 +142,24 @@ const RANGES: Partial<Record<keyof Settings, [number, number]>> = {
   gamepadDeadzone: [0, 0.5],
 };
 
+/**
+ * The allowed values for every setting that is a word rather than a number.
+ *
+ * `load` checks types and not values, which is enough while everything is a
+ * boolean or a number and stops being enough the moment one is a word: a
+ * hand-edited blob saying `"timeOfDay": "midnight"` is a string, passes the
+ * typeof check, and leaves the game asking for a time that does not exist.
+ */
+const CHOICES: Partial<Record<keyof Settings, readonly string[]>> = {
+  timeOfDay: ['round', 'afternoon', 'golden', 'dusk'],
+};
+
 function clampSetting<K extends keyof Settings>(key: K, value: Settings[K]): Settings[K] {
+  const choices = CHOICES[key];
+  if (choices !== undefined) {
+    return (typeof value === 'string' && choices.includes(value)
+      ? value : DEFAULT_SETTINGS[key]) as Settings[K];
+  }
   const range = RANGES[key];
   if (range === undefined || typeof value !== 'number') return value;
   return Math.max(range[0], Math.min(range[1], value)) as Settings[K];
