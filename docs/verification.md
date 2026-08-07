@@ -360,6 +360,27 @@ the plant actually removed the assignment it failed at once. A plant that
 survives is a claim about the test *or* about the plant, and it is worth knowing
 which before rewriting either.
 
+## And a red check that was mine, in the file that warns against it
+
+`scenarios/profile.mjs` opens by saying it asserts structure rather than
+milliseconds, because this harness runs through SwiftShader on a shared runner
+and a budget here would be a claim about GitHub's fleet. Then the GPU-timer
+assertions went in with `latency > 0 && latency < 30` — "a GPU reading should be
+a few frames late" — which is a claim about GitHub's fleet.
+
+CI failed at exactly thirty: `gpu 282.97ms over 26, 30 frames late, 93 skipped,
+0 binned`. Nothing was wrong. On a runner rasterising in software the driver
+really is that far behind, and 93 of 120 frames going unmeasured is the fixed
+pool doing precisely what it was built to do — skip rather than grow. My machine
+returns in four frames, and four is what I had asserted.
+
+The bound is now the only one that holds anywhere: a query cannot answer on the
+frame that issued it, and a reading cannot be older than the session that took
+it. `GpuTimer` gained a `frames` count so the second half of that is measured
+rather than guessed. The lateness and the skip count are still logged every run,
+because they are the interesting numbers — they are just not assertions about
+somebody else's hardware.
+
 ## Every bug that was planted on purpose
 
 Each of these was introduced deliberately, to watch one assertion fail, and then

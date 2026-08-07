@@ -335,6 +335,20 @@ describe('saying how late the number is', () => {
     expect(t.latency).toBe(4);
   });
 
+  it('counts the frames it has seen, so lateness has something to be late against', () => {
+    // The only honest bound on lateness is the length of the session. CI failed
+    // once on an assertion that a reading should be "a few frames" late, on a
+    // runner where thirty was correct and the timer was working perfectly.
+    const f = fakeGl();
+    const t = new GpuTimer(f.gl);
+    expect(t.frames).toBe(0);
+    for (let i = 0; i < 5; i++) frame(t);
+    expect(t.frames).toBe(5);
+    f.finish(0, 1_000_000);
+    t.poll();
+    expect(t.latency).toBeLessThanOrEqual(t.frames);
+  });
+
   it('is not dragged backwards by a straggler', () => {
     // Out-of-order completion is legal, and lateness is a claim about the
     // newest reading rather than about the last one to arrive.

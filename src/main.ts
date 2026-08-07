@@ -3045,6 +3045,7 @@ window.__maker = {
     gpu: {
       available: gpu.available,
       depth: gpu.depth,
+      frames: gpu.frames,
       ms: gpu.ms,
       latency: gpu.latency,
       skipped: gpu.skipped,

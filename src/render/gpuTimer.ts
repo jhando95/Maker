@@ -231,6 +231,18 @@ export class GpuTimer {
   }
 
   /**
+   * Frames this has seen, which is what `latency` is measured against.
+   *
+   * Exposed because the only honest bound on lateness is the length of the
+   * session: a shared runner rasterising in software can be thirty frames
+   * behind and be working perfectly, and a check that picked a smaller number
+   * would be asserting the machine rather than the timer.
+   */
+  get frames(): number {
+    return this.frame;
+  }
+
+  /**
    * How many frames behind the newest reading is.
    *
    * On the readout beside the number, because a GPU time that is four frames

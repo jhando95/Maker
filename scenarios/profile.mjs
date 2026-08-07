@@ -37,8 +37,8 @@ const measure = async (page, label) => {
     .map((s) => `${s.name} ${s.ms.toFixed(2)}ms ${(s.share * 100).toFixed(0)}%`)
     .join('  ');
   const g = p.gpu.available
-    ? `gpu ${p.gpu.ms.toFixed(2)}ms over ${p.gpu.depth}, ${p.gpu.latency} frames late`
-    + `, ${p.gpu.skipped} skipped, ${p.gpu.discarded} binned`
+    ? `gpu ${p.gpu.ms.toFixed(2)}ms over ${p.gpu.depth} of ${p.gpu.frames} frames,`
+    + ` ${p.gpu.latency} late, ${p.gpu.skipped} skipped, ${p.gpu.discarded} binned`
     : 'gpu unavailable';
   console.log(`[profile] ${label}: ${p.depth} frames, heaviest ${p.heaviest} | ${rows} | ${g}`);
   return p;
@@ -89,9 +89,26 @@ export default async function (page) {
     // ring of queries open and reports a confident zero.
     assert(idle.gpu.depth > 0, 'the extension is present but no result ever came back');
     assert(Number.isFinite(idle.gpu.ms) && idle.gpu.ms >= 0, `gpu reported ${idle.gpu.ms}ms`);
+
+    // How late is deliberately *not* bounded by a small number. The first
+    // version of this asserted "a few frames, not 30" and CI failed at exactly
+    // 30 — on a shared runner rasterising in software, the driver is that far
+    // behind, and 93 of 120 frames went unmeasured because the ring was full.
+    // Both of those are the design working: a fixed pool skips rather than
+    // grows, and the lateness is reported rather than hidden. Asserting a small
+    // number there was asserting the machine, which is the mistake the note at
+    // the top of this file exists to prevent, made in the same file.
+    //
+    // What is true on any machine: a query cannot answer on the frame that
+    // issued it, and a reading cannot be older than the session that took it.
+    assert(idle.gpu.latency >= 1, `a reading arrived ${idle.gpu.latency} frames late`);
     assert(
-      idle.gpu.latency > 0 && idle.gpu.latency < 30,
-      `a GPU reading should be a few frames late, not ${idle.gpu.latency}`,
+      idle.gpu.latency <= idle.gpu.frames,
+      `a reading is ${idle.gpu.latency} frames old in a session ${idle.gpu.frames} frames long`,
+    );
+    assert(
+      idle.gpu.skipped + idle.gpu.depth + idle.gpu.discarded <= idle.gpu.frames,
+      'the timer accounted for more frames than there were',
     );
   } else {
     // Absence is the ordinary case, and it has to cost nothing and claim
