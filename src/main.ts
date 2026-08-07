@@ -79,6 +79,7 @@ import { CrashHandler } from './app/crashHandler.ts';
 import { GamepadManager } from './core/gamepadManager.ts';
 import { PerformanceGovernor } from './app/performanceGovernor.ts';
 import { FrameStats } from './app/frameStats.ts';
+import { FrameProfile, type SectionTime } from './app/frameProfile.ts';
 
 /** How far off the window edge an off-screen objective chevron sits. */
 const PIN_EDGE_MARGIN = 54;
@@ -1931,6 +1932,18 @@ function fixedUpdate(dt: number): void {
 }
 
 function simulate(dt: number): void {
+  profile.start('sim');
+  try {
+    simulateBody(dt);
+  } finally {
+    // In a `finally`: a section left open across a frame is dropped rather than
+    // carried, so a throw on one tick would otherwise blank the readout for the
+    // very frame that explains it.
+    profile.stop('sim');
+  }
+}
+
+function simulateBody(dt: number): void {
   if (pendingCrash) {
     pendingCrash = false;
     throw new Error('deliberate scenario crash');
@@ -1939,7 +1952,9 @@ function simulate(dt: number): void {
   // Before anything else this tick: whatever arrived is applied at a tick
   // boundary, never in the middle of one. A socket that could deliver mid-step
   // is a socket that can split one tick's inputs across two.
+  profile.start('net');
   net?.beforeTick();
+  profile.stop('net');
 
   input.beginTick();
 
@@ -2079,7 +2094,14 @@ function simulate(dt: number): void {
   // After the step, so a guest records what it predicted for this tick and the
   // host publishes where everybody actually ended up.
   if (net instanceof NetHost) net.afterTick(dt);
-  else net?.afterTick(dt, localCommand);
+  else {
+    // Sending and receiving, counted apart from the simulation it wraps — a
+    // round that hitches on a busy socket and one that hitches on fifteen bots
+    // look identical from a frame time.
+    profile.start('net');
+    net?.afterTick(dt, localCommand);
+    profile.stop('net');
+  }
   simTick++;
 
   // Keep the roster honest even with no mode running.
@@ -2308,6 +2330,10 @@ function simulate(dt: number): void {
 
 function render(alpha: number, frameDt: number): void {
   crash.guard('render', () => draw(alpha, frameDt));
+  // Everything left over — the browser's own work between frames, the
+  // compositor, whatever is not one of the named sections — lands in `rest`,
+  // which is reported rather than lost.
+  profile.endFrame(frameDt * 1000);
 }
 
 function draw(alpha: number, frameDt: number): void {
@@ -2398,14 +2424,25 @@ function draw(alpha: number, frameDt: number): void {
   for (const who of actors.all) {
     if (who.id !== actors.local.id || camera.showsPlayer) drawnActors.push(who);
   }
+  // Posing everybody: walk cycles, faces, projectiles and every marker. This is
+  // the section that grows with the number of people on the lawn, which is
+  // exactly the number nobody could attribute before.
+  profile.start('anim');
   characters.begin();
   modeRenderer.update(
     frameDt, mode, projectiles, performance.now() / 1000, drawnActors, pingMarkers(),
   );
   characters.finish();
+  profile.stop('anim');
 
+  profile.start('draw');
   renderer.render(scene, camera.camera);
+  profile.stop('draw');
 
+  // The HUD: every DOM write this game makes, in one place. Cheap on a good day
+  // and the first thing to check on a bad one, because a layout the browser has
+  // to reflow does not show up as a slow draw call.
+  profile.start('ui');
   hud.update({
     blueprint: heldBlueprint === null ? null : {
       name: heldBlueprint.name,
@@ -2449,6 +2486,7 @@ function draw(alpha: number, frameDt: number): void {
       frameStats.current,
       renderer.info.render.calls,
       renderer.info.render.triangles,
+      profile.read(sectionScratch),
     );
   } else if (!settings.get('showStats')) {
     hud.setStats(null, 0, 0);
@@ -2464,9 +2502,22 @@ function draw(alpha: number, frameDt: number): void {
     renderScale: governor.currentScale,
     throttled: governor.isThrottling,
   });
+  profile.stop('ui');
 }
 
 const frameStats = new FrameStats();
+
+/**
+ * Where the frame goes, section by section.
+ *
+ * The fps readout has always answered *how fast* and never *what was slow*, and
+ * those are different questions — a game that drops when six kids are on the
+ * lawn has one number and a guess. `tools/bench.ts` measures systems in
+ * isolation on a synthetic world, which is the other half and not this one: it
+ * cannot say what a live frame in Tag spends, because it never runs one.
+ */
+const profile = new FrameProfile();
+const sectionScratch: SectionTime[] = [];
 
 const loop = new GameLoop({ fixedUpdate, render }, { tickRate: TICK_RATE });
 
@@ -2934,6 +2985,18 @@ window.__maker = {
     applyRenderScale();
   },
   renderScale: () => ({ effective: governor.currentScale, throttled: governor.isThrottling }),
+  /**
+   * Where the frame went, section by section.
+   *
+   * A scenario can ask this the same question a player can, which is the point
+   * of instrumenting the real loop rather than a benchmark harness: these come
+   * from frames that actually rendered a yard.
+   */
+  frameProfile: () => ({
+    depth: profile.depth,
+    heaviest: profile.heaviest()?.name ?? null,
+    sections: profile.read().map((x) => ({ name: x.name, ms: x.ms, share: x.share })),
+  }),
   inputDevice: () => input.lastDevice,
   /** Half the width of the world, so a scenario cannot drift from the constant. */
   playHalf: () => PLAY_HALF,

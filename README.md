@@ -48,6 +48,13 @@ on. Two caps make it self-limiting rather than a griefing tool: spray your
 twelfth and the next one takes your own oldest, never anybody else's. Settings →
 Playing → Spray can turns it off for a lobby that would rather it did not exist.
 
+**Settings → Playing → Frame stats** shows frames a second, frame time, the
+worst frame in the last two seconds, draw calls and triangles — and **where the
+frame went**: simulation, network, posing characters, drawing, the HUD, and
+whatever is left over, which is always reported rather than quietly dropped. The
+leftover is the point: the first time it was asked, in an empty yard, 88% of the
+frame turned out to be outside everything instrumented.
+
 **The afternoon gets late while you play.** The sun drops and swings west across
 a round, the shadows stretch, the sky drains to a warm horizon under a deep blue,
 and by the end of a full-length round it is dusk — the street lights warm up over

@@ -382,6 +382,7 @@ const STYLE = `
 
 import type { Loadout, ModeHud } from '../game/gameMode.ts';
 import type { FrameSummary } from '../app/frameStats.ts';
+import type { SectionTime } from '../app/frameProfile.ts';
 import { MAX_CHAT, type ChatLine } from '../game/comms.ts';
 
 /** Bubbles on screen at once. More than this and they are a wall, not a face. */
@@ -866,14 +867,37 @@ export class Hud {
    * sixty — because a readout that rewrote itself every frame would be both
    * unreadable and a measurable part of what it is measuring.
    */
-  setStats(summary: FrameSummary | null, drawCalls: number, triangles: number): void {
+  setStats(
+    summary: FrameSummary | null,
+    drawCalls: number,
+    triangles: number,
+    /**
+     * Where the frame went, heaviest first.
+     *
+     * Optional, because the fps line is worth having on its own and this is a
+     * second question. A frame rate says the game got slower; this says which
+     * part of it did, which is the difference between a number and a lead.
+     */
+    sections: readonly SectionTime[] = [],
+  ): void {
     this.stats.classList.toggle('maker-hidden', summary === null);
     if (summary === null) return;
     const k = (n: number): string => (n >= 1000 ? `${(n / 1000).toFixed(0)}k` : `${n}`);
+    let breakdown = '';
+    if (sections.length > 0) {
+      // Sorted by cost and cut to the top three. The whole list is five rows of
+      // mostly zeroes, and a readout somebody has to scan is a readout they
+      // stop reading.
+      const top = sections.slice().sort((a, b) => b.ms - a.ms).slice(0, 3);
+      breakdown = `<br><span class="dim">${top
+        .map((s) => `${s.name} ${s.ms.toFixed(1)}`)
+        .join(' · ')}</span>`;
+    }
     this.stats.innerHTML =
       `<b>${summary.fps.toFixed(0)}</b> fps<span class="dim"> · ${summary.ms.toFixed(1)} ms</span>`
       + `<br><span class="dim">low</span> ${summary.low.toFixed(0)}`
-      + `<span class="dim"> · ${drawCalls} draws · ${k(triangles)} tris</span>`;
+      + `<span class="dim"> · ${drawCalls} draws · ${k(triangles)} tris</span>`
+      + breakdown;
   }
 
   /**

@@ -59,6 +59,13 @@ is a habit.
   guaranteed twice over: `demolish` refuses fixtures outright and is the
   authority, and the check in the bot exists so a kid does not spend two and a
   half seconds hauling on a fence for the rest of the round.
+- **`git checkout` on a file that was also carrying uncommitted work.** Not a
+  test that could not fail — a plant that took the feature with it. Every other
+  plant today copied the file aside and copied it back; this one reverted
+  `src/main.ts` to `HEAD` to undo the plant and silently deleted the profiler
+  wiring in the same stroke, which `tsc` then reported as *no errors* because a
+  file with none of the code in it compiles perfectly. Copy aside, never check
+  out.
 - **Three checks in a row about the build preview, all passing on a preview
   that was not there.** The collapse scenario asks whether the ghost warns you
   that a placement will not hold, and it ran behind the title menu — which
@@ -191,6 +198,26 @@ that had not been established** — a frame budget standing in for the game's ow
 clock. The honest read is that `scenarios/voice.mjs` is the most expensive check
 here and has been the least trustworthy; it earns its place because nothing else
 can prove one browser can hear another.
+
+## What the profiler said the first time it was asked
+
+Worth recording because it is the answer nobody would have guessed, and because
+it is the reason `frameProfile.ts` always reports the part nobody instrumented.
+
+On the first run, in an empty yard, the breakdown came back **`rest` 190ms
+(88%), `draw` 24ms (11%), `sim` 0.9ms, `ui` 0.2ms, `anim` 0.08ms, `net`
+0.01ms** — and in Tag with six kids on the street, `rest` **97%**. Almost the
+entire frame is outside every section this project instruments, because the
+harness rasterises in software on a shared runner and the time goes to the
+compositor.
+
+Two things follow. The first is that the leftover had to be reported: without
+it the readout would have said "draw is the biggest thing at 11%" with total
+confidence and never mentioned the 88%. The second is a caution about every
+performance number this repository has ever taken from CI — **the harness is
+bound by something that is not our code**, so a frame time measured there is a
+property of GitHub's fleet. The scenario asserts structure, not milliseconds,
+for exactly that reason.
 
 ## When the measurement changed the design
 

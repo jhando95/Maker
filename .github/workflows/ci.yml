@@ -206,6 +206,16 @@ jobs:
       - name: Spray scenario
         run: node tools/shoot.mjs --scenario scenarios/spray.mjs --auto-quality --out /tmp/ci-spray.png
 
+      # Where the frame goes, on frames that really rendered a yard. It asserts
+      # nothing about milliseconds — this runs through SwiftShader on a shared
+      # runner, and a budget here would be a claim about GitHub's fleet — only
+      # that the sections account for the whole frame and that the attribution
+      # moves when the work does. What it leaves behind is the table in the log,
+      # so a change that doubles the cost of posing characters is visible in the
+      # run that introduced it.
+      - name: Frame-profile scenario
+        run: node tools/shoot.mjs --scenario scenarios/profile.mjs --auto-quality --out /tmp/ci-profile.png
+
       # The edge of the world, and the only way to find out where it is: walk
       # at it. All three holes this closes were found by driving the real player
       # around and none of them was visible to a unit test — an infinite ground
@@ -330,6 +340,7 @@ jobs:
             /tmp/ci-lava.png
             /tmp/ci-collapse.png
             /tmp/ci-spray.png
+            /tmp/ci-profile.png
             /tmp/ci-bounds.png
             /tmp/ci-frontend.png
             /tmp/ci-comms.png
