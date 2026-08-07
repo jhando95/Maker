@@ -2534,6 +2534,7 @@ window.__maker = {
     mixFor: (id: number) => voice.mixFor(id),
     stats: () => voice.stats(),
     levels: () => voice.levels(),
+    forceSpeaking: (id: number, on: boolean | null) => voice.forceSpeaking(id, on),
   },
   /**
    * What the viewmodel is currently showing, or null for empty hands.

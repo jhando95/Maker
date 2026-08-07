@@ -92,6 +92,23 @@ interface Call {
   pending: MediaStream | null;
   readonly gate: SpeakingGate;
   speaking: boolean;
+  /**
+   * Overrides `speaking` when set. For the browser check, and only that.
+   *
+   * The natural path cannot be driven from a test: Chromium's fake microphone
+   * is a synthetic tone, `getUserMedia` is asked for `noiseSuppression`, and
+   * suppressing steady artificial signals is exactly what that flag is for. CI
+   * measured the far end at 0.0151 against a `SPEAK_ON` of 0.018 — the gate was
+   * right, the audio was real (13,370 packets), and the tone had simply been
+   * cleaned off. Lowering the threshold to suit a fixture would make the
+   * indicator flicker on room noise for every real player.
+   *
+   * So the chain is tested in three honest pieces instead: that audio reaches
+   * the analyser (`levels()`, asserted in the browser), that the gate turns a
+   * level into speech (`voiceRules.test.ts`, with hysteresis and hold), and
+   * that speech becomes a mark over the right head (the browser, from here).
+   */
+  forced: boolean | null;
   /** Buffer reused by the meter, so reading a level allocates nothing. */
   samples: Float32Array | null;
 }
@@ -291,7 +308,8 @@ export class VoiceChat {
     this.calls.set(id, {
       peer,
       filter: null, gain: null, panner: null, analyser: null, sink: null,
-      pending: null, gate: new SpeakingGate(), speaking: false, samples: null,
+      pending: null, gate: new SpeakingGate(), speaking: false, forced: null,
+      samples: null,
     });
     return peer;
   }
@@ -466,13 +484,26 @@ export class VoiceChat {
     if (elapsed < METER_INTERVAL) return;
     this.lastMeterAt = now;
     for (const call of this.calls.values()) {
-      call.speaking = call.analyser === null || call.samples === null
+      const heard = call.analyser === null || call.samples === null
         ? false
         : call.gate.update(rms(call.analyser, call.samples), elapsed);
+      call.speaking = call.forced ?? heard;
     }
     if (this.micAnalyser !== null && this.micSamples !== null) {
       this.micGate.update(rms(this.micAnalyser, this.micSamples), elapsed);
     }
+  }
+
+  /**
+   * Pin somebody's speaking state on or off, or hand it back to the meter.
+   *
+   * A debug seam with one caller — see `Call.forced` for why the real path
+   * cannot be driven from a browser check. Same shape as `crashNextTick`: a
+   * field read where the value is already read anyway.
+   */
+  forceSpeaking(id: number, on: boolean | null): void {
+    const call = this.calls.get(id);
+    if (call !== undefined) call.forced = on;
   }
 
   /**

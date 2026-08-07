@@ -255,41 +255,82 @@ export default async function (page) {
     await mixAt(0, -1, 4);
 
     // ── The screen says who is talking ───────────────────────────────────────
-    // Polled until a mark appears rather than waited-for-then-read, and the
-    // difference is load-bearing here: Chromium's fake microphone is a *pulsing*
-    // beep, so the speaking gate genuinely goes on and off. Checking "is anybody
-    // speaking" and then reading the DOM a few frames later reads a frame in one
-    // of the gaps, which is the same mistake — asserting on state that was true
-    // a moment ago — that every scenario failure on this project has been.
+    // ── The audio is reaching the graph, not just the connection ────────────
+    //
+    // Packets arriving proves the *network*. This proves the **audio graph**:
+    // the analyser is tapped off the incoming stream and sees signal in it. It
+    // is the link that would break if `attachRemote` wired the source to
+    // nothing, which reports as a perfectly healthy connection carrying
+    // silence.
+    //
+    // A peak over a window rather than one reading, because Chromium's fake
+    // device is a pulse train — 40 to 80ms of tone every half second — so a
+    // single sample lands in a gap most of the time.
+    //
+    // Sampled on a timer rather than on `requestAnimationFrame`, and that is
+    // the difference between this passing and this being a coin flip. An
+    // analyser holds the last ~21ms of audio and is refilled by the audio
+    // thread continuously; a frame here is 250ms. Sampling per frame covers
+    // 21ms in every 250 — under a tenth of the timeline — and a four-second
+    // window then misses every pulse about a quarter of the time. It did, on
+    // the second local run. Ten milliseconds apart, the windows overlap and
+    // the coverage is continuous.
+    const peak = await page.evaluate(() => new Promise((resolve) => {
+      let best = 0;
+      const t0 = performance.now();
+      const step = () => {
+        for (const p of window.__maker.voice.levels().peers) {
+          if (p.level > best) best = p.level;
+        }
+        if (performance.now() - t0 > 5000) resolve(best);
+        else setTimeout(step, 10);
+      };
+      step();
+    }));
+    assert(peak > 0, `the analyser should see the incoming voice, peak was ${peak}`);
+
+    // ── A speaker gets a mark over their head ───────────────────────────────
+    //
+    // Driven from the gate's *output* rather than by trying to make the fake
+    // microphone trip it, and that is a deliberate retreat with a measurement
+    // behind it. CI failed here once with everything else healthy: 13,370
+    // packets received, gain 1, cutoff open, the guest four metres dead ahead —
+    // and the far end measured at 0.0151 against a `SPEAK_ON` of 0.018. The
+    // tone had been cleaned off by the `noiseSuppression` this game asks for on
+    // purpose, which is precisely what that flag is for. Lowering the threshold
+    // to suit the fixture would make the indicator flicker on room noise for
+    // every real player.
+    //
+    // So the chain is checked in three places that can each be honest about
+    // their own link: audio reaches the analyser (just above, for real), a
+    // level becomes speech (`voiceRules.test.ts`, hysteresis and hold and all),
+    // and speech becomes a mark on the right head (here).
     const markCount = () => page.evaluate(
       () => [...document.querySelectorAll('.maker-voice')]
         .filter((e) => !e.classList.contains('maker-hidden')).length,
     );
 
-    let marks = 0;
-    const markDeadline = Date.now() + 40000;
-    for (;;) {
-      marks = await markCount();
-      if (marks > 0) break;
-      if (Date.now() > markDeadline) {
-        const why = await page.evaluate(async (id) => ({
-          state: window.__maker.voice.state(),
-          levels: window.__maker.voice.levels(),
-          mix: window.__maker.voice.mixFor(id),
-          stats: await window.__maker.voice.stats(),
-          me: { x: window.__maker.player.x, z: window.__maker.player.z },
-          them: (() => {
-            const a = window.__maker.actors.get(id);
-            return a === undefined ? null : { x: a.controller.x, z: a.controller.z };
-          })(),
-        }), guestId);
-        throw new Error(
-          `voice scenario: a speaker never got a mark over their head; ${JSON.stringify(why)}`,
-        );
-      }
-      await frames(page, 3);
-    }
-    assert(marks > 0, 'a speaker should get a mark over their head');
+    // Pinned off first rather than assumed off. The fake microphone *does*
+    // trip the gate sometimes — about one frame in eight locally — so "nobody
+    // is marked yet" is a coin flip written as an assertion, which is the same
+    // mistake in the opposite direction from the one that caused this rewrite.
+    await page.evaluate((id) => window.__maker.voice.forceSpeaking(id, false), guestId);
+    await frames(page, 4);
+    assert(await markCount() === 0, 'nobody should be marked while nobody is speaking');
+
+    await page.evaluate((id) => window.__maker.voice.forceSpeaking(id, true), guestId);
+    await frames(page, 4);
+    const speaking = await page.evaluate(() => window.__maker.voice.state().speakers);
+    assert(speaking.includes(guestId), `the guest should read as speaking, saw ${speaking}`);
+    const marks = await markCount();
+    assert(marks === 1, `a speaker should get exactly one mark, saw ${marks}`);
+
+    // And it goes away again. A mark that appears and never clears is the same
+    // bug as one that never appears, half the time.
+    await page.evaluate((id) => window.__maker.voice.forceSpeaking(id, false), guestId);
+    await frames(page, 4);
+    assert(await markCount() === 0, 'and it should go when they stop');
+    await page.evaluate((id) => window.__maker.voice.forceSpeaking(id, null), guestId);
 
     // And they are somebody you can see. A voice with a mark floating over an
     // empty patch of lawn is worse than no mark: the renderer draws remote
@@ -313,7 +354,8 @@ export default async function (page) {
     console.log('[voice] verified: two browsers open a peer connection through the host,'
       + ' Opus packets cross it in both directions, the gain applied on the graph falls'
       + ' with distance and reaches zero out of range, the house between two people'
-      + ' muffles and quietens without silencing, and a speaker is marked on screen');
+      + ' muffles and quietens without silencing, the analyser sees the incoming voice,'
+      + ' and a speaker gets a mark over their head that clears when they stop');
   } finally {
     await other?.close();
     server.kill();
