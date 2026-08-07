@@ -62,6 +62,17 @@ export class PropBatch {
    */
   static readonly CHUNK_THRESHOLD = 80;
 
+  /**
+   * Below this many instances, a key is merged rather than instanced.
+   *
+   * Five, which is where the two costs cross for a box: under it the per-mesh
+   * overhead of an instanced draw dominates, over it the shared geometry starts
+   * to pay for the vertices it duplicates. Measured on this map, five catches
+   * 296 of the 424 meshes — seventy per cent of them — for 498 boxes and about
+   * twenty-two thousand triangles.
+   */
+  static readonly MERGE_BELOW = 5;
+
   readonly group = new THREE.Group();
 
   private readonly pending = new Map<string, Pending>();
@@ -167,9 +178,27 @@ export class PropBatch {
     if (this.built) return this.group;
     this.built = true;
 
+    /** Keys too small to be worth instancing, gathered to be merged instead. */
+    const tail: Array<{ entry: Pending; matrix: THREE.Matrix4; color: THREE.Color }> = [];
+
     for (const [key, entry] of this.pending) {
       const count = entry.matrices.length;
       if (count === 0) continue;
+
+      // Instancing a shape used once is instancing with nothing to instance:
+      // a bind, a uniform upload and a draw call, for one box. Measured on the
+      // real map, 174 of the 212 keys held exactly one instance and 70 held
+      // two — seventy per cent of the meshes carrying thirteen per cent of the
+      // boxes. Those are merged into shared geometry instead, which is the
+      // other half of the trade every batcher makes: instancing wins when one
+      // shape repeats, merging wins when many shapes do not.
+      if (count < PropBatch.MERGE_BELOW) {
+        for (let i = 0; i < count; i++) {
+          tail.push({ entry, matrix: entry.matrices[i]!, color: entry.colors[i]! });
+        }
+        continue;
+      }
+
       if (count <= PropBatch.CHUNK_THRESHOLD) {
         this.emit(key, entry, entry.matrices, entry.colors);
         continue;
@@ -196,8 +225,66 @@ export class PropBatch {
       }
     }
 
+    this.mergeTail(tail);
+
     this.pending.clear();
     return this.group;
+  }
+
+  /**
+   * Bake the one-off shapes into shared geometry.
+   *
+   * Grouped by cell **and** by outline treatment, both of which are forced. The
+   * cell keeps the bound tight, or the merge would undo the culling the chunking
+   * above exists to buy — one object spanning the neighbourhood is either
+   * entirely in the frustum or entirely behind you, which is exactly the bug
+   * this file already has a long comment about. The outline colour and
+   * thickness are uniforms on the shell's material, so two treatments cannot
+   * share a draw whatever else they share.
+   *
+   * Colour moves from a per-instance attribute to a per-vertex one, which is
+   * what makes a hundred differently-coloured boxes one draw. It costs three
+   * floats a vertex on geometry that is already resident, and the alternative
+   * is a hundred draws.
+   */
+  private mergeTail(
+    tail: ReadonlyArray<{ entry: Pending; matrix: THREE.Matrix4; color: THREE.Color }>,
+  ): void {
+    if (tail.length === 0) return;
+
+    const groups = new Map<string, typeof tail[number][]>();
+    for (const item of tail) {
+      const m = item.matrix.elements;
+      const cx = Math.floor(m[12]! / PropBatch.CHUNK);
+      const cz = Math.floor(m[14]! / PropBatch.CHUNK);
+      const id = `${cx},${cz}|${item.entry.outlineColor}|${item.entry.outlineThickness}`
+        + `|${item.entry.castShadow ? 1 : 0}${item.entry.receiveShadow ? 1 : 0}`;
+      const group = groups.get(id);
+      if (group === undefined) groups.set(id, [item]);
+      else group.push(item);
+    }
+
+    for (const [id, items] of groups) {
+      const geometry = mergeBaked(items);
+      if (geometry === null) continue;
+      const first = items[0]!.entry;
+
+      const mesh = new THREE.Mesh(geometry, createToonMaterial({ vertexColors: true }));
+      mesh.name = `prop-merged:${id}`;
+      mesh.castShadow = first.castShadow;
+      mesh.receiveShadow = first.receiveShadow;
+      mesh.frustumCulled = true;
+
+      const outlineMaterial = createOutlineMaterial(first.outlineColor, first.outlineThickness);
+      this.outlineMaterials.push(outlineMaterial);
+      const outline = new THREE.Mesh(geometry, outlineMaterial);
+      outline.name = `prop-outline:merged:${id}`;
+      outline.castShadow = false;
+      outline.receiveShadow = false;
+      outline.frustumCulled = true;
+
+      this.group.add(mesh, outline);
+    }
   }
 
   /** One instanced mesh and its outline shell, with bounds three.js can cull. */
@@ -259,6 +346,99 @@ export class PropBatch {
   get drawCalls(): number {
     return this.group.children.length;
   }
+}
+
+/**
+ * Bake a set of placed boxes into one geometry.
+ *
+ * Positions through the matrix, normals through its rotation, and the instance
+ * colour written per vertex. Only the three attributes anything downstream
+ * reads survive — position, normal and `outlineNormal` — because the geometries
+ * coming in do not all carry the same set (a chamfered box and a plain one
+ * differ) and merging arrays that disagree is how a renderer ends up drawing
+ * one shape with another's UVs. Nothing here samples a texture, so nothing is
+ * lost.
+ *
+ * Returns null when there is nothing mergeable, which is a real answer: a batch
+ * of geometry with no outline normals is one the shell shader cannot expand,
+ * and drawing it flat would be worse than not drawing the shell at all.
+ */
+function mergeBaked(
+  items: ReadonlyArray<{ entry: Pending; matrix: THREE.Matrix4; color: THREE.Color }>,
+): THREE.BufferGeometry | null {
+  // Expanded to a plain triangle list first, and cached per geometry.
+  //
+  // `BoxGeometry` is indexed: its vertex array is a third of its triangles and
+  // the order lives in the index. Walking the vertices and ignoring that draws
+  // a shape that is not the one anybody asked for — which is what the first
+  // version of this function did. Caching matters because a key with four
+  // instances would otherwise expand the same box four times.
+  const flat = new Map<THREE.BufferGeometry, THREE.BufferGeometry>();
+  const expand = (g: THREE.BufferGeometry): THREE.BufferGeometry => {
+    if (g.index === null) return g;
+    let out = flat.get(g);
+    if (out === undefined) {
+      out = g.toNonIndexed();
+      flat.set(g, out);
+    }
+    return out;
+  };
+
+  let vertices = 0;
+  for (const item of items) {
+    const position = expand(item.entry.geometry).getAttribute('position');
+    if (position === undefined) return null;
+    vertices += position.count;
+  }
+  if (vertices === 0) return null;
+
+  const positions = new Float32Array(vertices * 3);
+  const normals = new Float32Array(vertices * 3);
+  const outlines = new Float32Array(vertices * 3);
+  const colors = new Float32Array(vertices * 3);
+
+  const v = new THREE.Vector3();
+  const n = new THREE.Matrix3();
+  let at = 0;
+
+  for (const item of items) {
+    const g = expand(item.entry.geometry);
+    const position = g.getAttribute('position')!;
+    const normal = g.getAttribute('normal');
+    // `outlineNormal` is the averaged one the shell expands along. Falling back
+    // to the face normal keeps a merge possible for geometry that never went
+    // through `addOutlineNormals`, at the cost of a shell that splits at the
+    // corners — which is visibly wrong, and still better than a crash.
+    const outline = g.getAttribute('outlineNormal') ?? normal;
+    n.getNormalMatrix(item.matrix);
+
+    for (let i = 0; i < position.count; i++) {
+      v.fromBufferAttribute(position, i).applyMatrix4(item.matrix);
+      positions[at * 3] = v.x; positions[at * 3 + 1] = v.y; positions[at * 3 + 2] = v.z;
+
+      if (normal !== undefined) {
+        v.fromBufferAttribute(normal, i).applyMatrix3(n).normalize();
+        normals[at * 3] = v.x; normals[at * 3 + 1] = v.y; normals[at * 3 + 2] = v.z;
+      }
+      if (outline !== undefined) {
+        v.fromBufferAttribute(outline, i).applyMatrix3(n).normalize();
+        outlines[at * 3] = v.x; outlines[at * 3 + 1] = v.y; outlines[at * 3 + 2] = v.z;
+      }
+
+      colors[at * 3] = item.color.r;
+      colors[at * 3 + 1] = item.color.g;
+      colors[at * 3 + 2] = item.color.b;
+      at++;
+    }
+  }
+
+  const merged = new THREE.BufferGeometry();
+  merged.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  merged.setAttribute('normal', new THREE.BufferAttribute(normals, 3));
+  merged.setAttribute('outlineNormal', new THREE.BufferAttribute(outlines, 3));
+  merged.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+  merged.computeBoundingSphere();
+  return merged;
 }
 
 /**

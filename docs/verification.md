@@ -219,6 +219,24 @@ bound by something that is not our code**, so a frame time measured there is a
 property of GitHub's fleet. The scenario asserts structure, not milliseconds,
 for exactly that reason.
 
+## When I misread a screenshot and the measurement said otherwise
+
+The prop-merging change rewrites how every static object in the world is turned
+into geometry — matrices baked in, colours moved from a per-instance attribute
+to a per-vertex one, indexed boxes expanded to triangle lists. Exactly the class
+of change that goes subtly wrong.
+
+I took a screenshot, looked at it, and concluded it *had* gone wrong: a dark
+polygon across one corner, odd shapes along the bottom edge. Then I shot the
+same frame with the change stashed and diffed them: **0 of 921,600 pixels
+differ**. The shapes I was suspicious of are what that corner of the yard looks
+like. Nothing was wrong.
+
+Worth writing down as the mirror of everything else in this file. The habit here
+is planting bugs because a test that passes proves little; this is the same
+habit pointed at me — an eye that says "that looks broken" proves nothing
+either, and the two-minute check that settles it is a baseline and a diff.
+
 ## When the measurement changed the design
 
 Not a failure, but the same discipline pointing the other way, and worth one
