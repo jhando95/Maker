@@ -66,14 +66,24 @@ concurrency:
 # because it cost an afternoon to find out and the wrong answer is convincing.
 #
 # The numbers below are therefore sized for the work alone, with headroom for a
-# slow machine rather than for a queue: the checks take about nine minutes when
-# they are healthy and the benchmark well under one. They are still a bound, so
-# a genuinely hung job dies rather than running to the six-hour default.
+# slow machine rather than for a queue. They are still a bound, so a genuinely
+# hung job dies rather than running to the six-hour default.
+#
+# **Measured, and it has moved.** This job took nine minutes for most of the
+# project's life; the run that added proximity voice took **19m 39s**, because
+# `scenarios/voice.mjs` alone is 5m 19s of it — two browser contexts, a real
+# relay, ICE negotiation, and several gain ramps that have to be waited out at
+# four frames a second under software GL. Nine minutes is no longer true and the
+# comment that said so is corrected rather than left to mislead.
+#
+# 45 rather than 30, because 30 left ten minutes of headroom on a twenty-minute
+# job and runner speed varies by more than that. This is not a queue fix — see
+# above — it is a fix for the job genuinely being twice as long as it was.
 jobs:
   check:
     runs-on: ubuntu-latest
-    # ~9 minutes of work, with room for a slow runner.
-    timeout-minutes: 30
+    # ~20 minutes of work as measured on run 68, with room for a slow runner.
+    timeout-minutes: 45
 
     steps:
       - uses: actions/checkout@v4
