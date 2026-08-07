@@ -8,6 +8,22 @@ import type { CharacterController } from '../player/controller.ts';
 /** A bus that writes down what it was asked to play instead of playing it. */
 class Notebook extends AudioBus {
   readonly heard: Array<{ name: SoundName; options: PlayOptions }> = [];
+  readonly loops: Array<{ kind: string; set: number[]; stopped: boolean }> = [];
+  /** Pretend a user gesture has happened, so ambience is allowed to open. */
+  awake = true;
+
+  override get running(): boolean {
+    return this.awake;
+  }
+
+  override openLoop(kind: 'water' | 'evening' = 'water') {
+    const record = { kind, set: [] as number[], stopped: false };
+    this.loops.push(record);
+    return {
+      set: (volume: number) => { record.set.push(volume); },
+      stop: () => { record.stopped = true; },
+    };
+  }
 
   override play(name: SoundName, options: PlayOptions = {}): void {
     this.heard.push({ name, options });
@@ -90,5 +106,63 @@ describe('the sound of a structure coming down', () => {
     expect(bus.last().options.pan!).toBeGreaterThan(0.5);
     sounds.collapsed(-10, 1, 0, camera, standing(), 4);
     expect(bus.last().options.pan!).toBeLessThan(-0.5);
+  });
+});
+
+describe('the garden after the lamps come on', () => {
+  it('stays silent all afternoon, and does not even open a loop', () => {
+    // An ambient loop is a noise source, two filters and three oscillators.
+    // An afternoon should not be paying for a night.
+    const { sounds, bus } = make();
+    sounds.eveningAmbience(0);
+    expect(bus.loops).toHaveLength(0);
+    expect(sounds.eveningAt).toBe(0);
+  });
+
+  it('comes up with the lamps rather than on a clock of its own', () => {
+    const { sounds, bus } = make();
+    sounds.eveningAmbience(0.3);
+    sounds.eveningAmbience(1);
+    expect(bus.loops).toHaveLength(1);
+    expect(bus.loops[0]!.kind).toBe('evening');
+    const [quiet, loud] = bus.loops[0]!.set;
+    expect(loud!).toBeGreaterThan(quiet!);
+  });
+
+  it('opens exactly one, however many times it is asked', () => {
+    // Called every frame from the render loop, which is the whole reason this
+    // is worth a test: a loop opened per frame is a fresh oscillator per frame.
+    const { sounds, bus } = make();
+    for (let i = 0; i < 200; i++) sounds.eveningAmbience(0.8);
+    expect(bus.loops).toHaveLength(1);
+  });
+
+  it('closes it again when the afternoon comes back', () => {
+    // Which it does: a round ends, the next one starts at noon.
+    const { sounds, bus } = make();
+    sounds.eveningAmbience(1);
+    sounds.eveningAmbience(0);
+    expect(bus.loops[0]!.stopped).toBe(true);
+    expect(sounds.eveningAt).toBe(0);
+
+    sounds.eveningAmbience(1);
+    expect(bus.loops).toHaveLength(2);
+  });
+
+  it('is quiet enough to be a bed rather than a sound', () => {
+    // The moment anybody notices it *as* a sound it is too loud: this is under
+    // a game about shouting at each other across a lawn.
+    const { sounds, bus } = make();
+    sounds.eveningAmbience(1);
+    expect(Math.max(...bus.loops[0]!.set)).toBeLessThan(0.15);
+    expect(Math.max(...bus.loops[0]!.set)).toBeGreaterThan(0);
+  });
+
+  it('survives a level that has gone strange', () => {
+    const { sounds } = make();
+    sounds.eveningAmbience(NaN);
+    expect(sounds.eveningAt).toBe(0);
+    sounds.eveningAmbience(9);
+    expect(sounds.eveningAt).toBe(1);
   });
 });

@@ -42,7 +42,10 @@ a round, the shadows stretch, the sky drains to a warm horizon under a deep blue
 and by the end of a full-length round it is dusk — the street lights warm up over
 the turning head, the windows of every house on the cul-de-sac come on warmer
 than the sky behind them, and there is a light over your own back door.
-Settings → Picture → Time of day if you would rather nail it to one hour.
+The crickets come up with them, over a hum of traffic three streets away —
+the same number drives the light and the sound, so a sky that has gone orange is
+never a garden that still sounds like midday. Settings → Picture → Time of day
+if you would rather nail it to one hour.
 
 **The Floor Is Lava is the one the game is named after.** The grass is out of
 bounds; you get round the garden on the deck, the crates, the fence rail, the

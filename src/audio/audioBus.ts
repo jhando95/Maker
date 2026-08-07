@@ -708,11 +708,23 @@ export class AudioBus {
    * single most common way procedural audio goes wrong and it sounds like a
    * broken speaker rather than like a bug.
    */
-  openLoop(): AmbientLoop | null {
+  /**
+   * A sound that keeps going, in one of the two shapes this game needs.
+   *
+   * `water` is a tap or a pool: broadband with the low end taken out. `evening`
+   * is the garden after the lamps come on — crickets and a hum of traffic three
+   * streets away — and it exists because the dusk this project built was
+   * completely silent. A sky that goes orange while the soundscape stays at
+   * midday is half an evening, and it is the half you notice with your eyes
+   * shut.
+   */
+  openLoop(kind: 'water' | 'evening' = 'water'): AmbientLoop | null {
     if (!this.running) return null;
     const ctx = this.ctx!;
     const src = this.noiseSource(0);
     if (src === null) return null;
+
+    if (kind === 'evening') return this.eveningLoop(ctx, src);
 
     // Water is broadband with the low end taken out: a bandpass around 1.6kHz
     // reads as running rather than as wind, which is the same noise through a
@@ -767,6 +779,95 @@ export class AudioBus {
         try {
           src.stop();
           lfo.stop();
+        } catch {
+          /* already stopped */
+        }
+      },
+    };
+  }
+
+  /**
+   * Crickets, and something driving a long way off.
+   *
+   * A cricket is a **trill inside a chirp**: a fast tremolo somewhere near
+   * twenty a second, whose depth itself waxes and wanes about once every two
+   * seconds. One LFO alone gives a buzz — an insect rather than a garden full
+   * of them — so the slow one modulates the fast one's depth, which is the
+   * cheapest thing that sounds like several of them not quite in time.
+   *
+   * Under it, noise through a very low lowpass: no engine, no tyres, nothing
+   * you could point at. What distant traffic actually contributes to a back
+   * garden is a floor under the silence, and the silence is what makes a
+   * synthesised night sound like a broken speaker.
+   */
+  private eveningLoop(ctx: AudioContext, src: AudioBufferSourceNode): AmbientLoop {
+    const chirps = ctx.createBiquadFilter();
+    chirps.type = 'bandpass';
+    chirps.frequency.value = 4800;
+    chirps.Q.value = 11;
+
+    // Swings between silent and full: the base gain and the tremolo depth are
+    // the same number, so the trough is zero rather than merely quieter.
+    const tremolo = ctx.createGain();
+    tremolo.gain.value = 0.5;
+
+    const fast = ctx.createOscillator();
+    fast.type = 'sine';
+    fast.frequency.value = 23;
+    const fastDepth = ctx.createGain();
+    fastDepth.gain.value = 0.5;
+    fast.connect(fastDepth);
+    fastDepth.connect(tremolo.gain);
+
+    const slow = ctx.createOscillator();
+    slow.type = 'sine';
+    slow.frequency.value = 0.42;
+    const slowDepth = ctx.createGain();
+    slowDepth.gain.value = 0.36;
+    slow.connect(slowDepth);
+    slowDepth.connect(fastDepth.gain);
+
+    const traffic = ctx.createBiquadFilter();
+    traffic.type = 'lowpass';
+    traffic.frequency.value = 110;
+    traffic.Q.value = 0.5;
+    const trafficGain = ctx.createGain();
+    trafficGain.gain.value = 0.55;
+
+    const gain = ctx.createGain();
+    gain.gain.value = 0.0001;
+    const panner = ctx.createStereoPanner();
+
+    src.connect(chirps);
+    chirps.connect(tremolo);
+    tremolo.connect(gain);
+    src.connect(traffic);
+    traffic.connect(trafficGain);
+    trafficGain.connect(gain);
+    gain.connect(panner);
+    panner.connect(this.ambientGain!);
+    src.start();
+    fast.start();
+    slow.start();
+
+    let stopped = false;
+    return {
+      set: (volume: number, pan: number): void => {
+        if (stopped || this.ctx === null) return;
+        const now = this.ctx.currentTime;
+        // Slower than the water loop's ramp. Evening comes on over minutes and
+        // a soundscape that tracked it at a twentieth of a second would swell
+        // audibly every time the day clock ticked a hundredth.
+        gain.gain.setTargetAtTime(Math.max(0.0001, volume), now, 0.4);
+        panner.pan.setTargetAtTime(Math.max(-1, Math.min(1, pan)), now, 0.4);
+      },
+      stop: (): void => {
+        if (stopped) return;
+        stopped = true;
+        try {
+          src.stop();
+          fast.stop();
+          slow.stop();
         } catch {
           /* already stopped */
         }

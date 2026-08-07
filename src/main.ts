@@ -13,7 +13,7 @@ import { CollisionWorld } from './physics/collisionWorld.ts';
 import { TICK_RATE, DT, CAP_HEIGHT } from './physics/constants.ts';
 import { createScene } from './world/scene.ts';
 import {
-  AFTERNOON, DUSK, GOLDEN, dayTimeForRound, type DayTime,
+  AFTERNOON, DUSK, GOLDEN, dayTimeForRound, lampGlowAt, type DayTime,
 } from './world/daylight.ts';
 import { installFixtures } from './world/neighborhood.ts';
 import { PartRenderer } from './render/partRenderer.ts';
@@ -2264,6 +2264,10 @@ function draw(alpha: number, frameDt: number): void {
   // static shadow map rebuilt — otherwise the light goes orange and swings west
   // while every shadow on the lawn goes on pointing at midday.
   if (setDaylight(roundDayTime())) shadowsDirty = true;
+  // The crickets come up with the lamps rather than on a clock of their own,
+  // off the same number — so a sky that has gone orange is never a garden that
+  // still sounds like midday.
+  sounds.eveningAmbience(lampGlowAt(roundDayTime()));
   flushShadows(nowSeconds);
   drainEvents();
   modeRenderer.setStream(

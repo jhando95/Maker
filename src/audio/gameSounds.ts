@@ -31,6 +31,9 @@ export class GameSounds {
   private fallSpeed = 0;
   /** The one running-water loop, moved to whichever tap is nearest. */
   private water: AmbientLoop | null = null;
+  /** The garden after the lamps come on. Opened the first time it is wanted. */
+  private evening: AmbientLoop | null = null;
+  private eveningLevel = 0;
 
   /** Peak gain of the water bed, when standing on top of a running tap. */
   private static readonly WATER_GAIN = 0.16;
@@ -120,6 +123,42 @@ export class GameSounds {
       ...this.spatial(x, y, z, camera, player),
       pitch: 0.95 + Math.random() * 0.12,
     });
+  }
+
+  /**
+   * How far into the evening the garden sounds.
+   *
+   * Driven by the same number that brings the lamps up, so the crickets arrive
+   * with the light rather than on a clock of their own — and, like the light,
+   * it is a function of the round timer both machines already have, so nothing
+   * about it is ever sent.
+   *
+   * Opened on first use and **closed when it goes back to zero**, rather than
+   * left running silently: an ambient loop is a noise source, two filters and
+   * three oscillators, and an afternoon should not be paying for a night.
+   */
+  eveningAmbience(level: number): void {
+    const want = Math.min(1, Math.max(0, Number.isFinite(level) ? level : 0));
+    this.eveningLevel = want;
+
+    if (want <= 0) {
+      this.evening?.stop();
+      this.evening = null;
+      return;
+    }
+    if (!this.bus.running) return;
+    this.evening ??= this.bus.openLoop('evening');
+    // Quiet. It is a bed under a game about shouting at each other across a
+    // lawn, and the moment anybody notices it as a *sound* it is too loud.
+    this.evening?.set(want * GameSounds.EVENING_GAIN, 0);
+  }
+
+  /** Peak gain of the evening bed, at full dusk. */
+  private static readonly EVENING_GAIN = 0.09;
+
+  /** How far into the evening the garden currently sounds. */
+  get eveningAt(): number {
+    return this.eveningLevel;
   }
 
   /**
