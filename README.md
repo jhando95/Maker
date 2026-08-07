@@ -6,11 +6,18 @@ bridges. The long-term goal is party modes played *inside* the things you build:
 capture the flag, water balloon battles, tag.
 
 A house at the head of a cul-de-sac, with neighbours, hedgerows and woods
-filling every horizon it can see, the movement and building mechanics the
-whole game rests on, three modes — **Capture the Flag** across the two yards,
-**Fort Defense** on the front lawn, and **Water War** over the paddling pool,
-the rain barrel and the garden tap — and two browsers can share a lawn and play
-any of them together.
+filling every horizon it can see, the movement and building mechanics the whole
+game rests on, and five modes: **The Floor Is Lava** round the whole garden,
+**Capture the Flag** across the two yards, **Tag** out on the street, **Water
+War** over the paddling pool, the rain barrel and the garden tap, and **Fort
+Defense** on the front lawn. Two browsers can share a lawn and play any of them
+together, and there is a locker to decide what you turn up looking like.
+
+**The Floor Is Lava is the one the game is named after.** The grass is out of
+bounds; you get round the garden on the deck, the crates, the fence rail, the
+treehouse and whatever you nail together to bridge the gaps. Every other mode
+treats building as something you do to help you fight. This one has no fighting
+in it, and building is the only way to move at all.
 
 ```bash
 npm install

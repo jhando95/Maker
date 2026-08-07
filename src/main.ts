@@ -56,6 +56,8 @@ import { FortDefenseMode } from './game/fortDefense.ts';
 import { CaptureTheFlagMode } from './game/captureTheFlag.ts';
 import { WaterWarMode } from './game/waterWar.ts';
 import { TagMode, IT_SPAWN } from './game/tag.ts';
+import { LavaMode, LAVA_SPAWN, COURSE as LAVA_COURSE } from './game/lava.ts';
+import { BOARD_THICKNESS } from './build/partKit.ts';
 import { LEFT_SPAWN, RIGHT_SPAWN, WATER_SOURCES } from './world/neighborhood.ts';
 import { IDLE_INPUT, sameForEveryone } from './game/gameMode.ts';
 import type {
@@ -95,9 +97,17 @@ const PIN_MIN_DISTANCE = 2.5;
  * the menu, the restart path and the debug API all need to name a mode and none
  * of them should be able to name one that does not exist.
  */
-export type ModeId = 'fortDefense' | 'captureTheFlag' | 'waterWar' | 'tag';
+export type ModeId = 'fortDefense' | 'captureTheFlag' | 'waterWar' | 'tag' | 'lava';
 
 export const MODES: ReadonlyArray<{ id: ModeId; name: string; blurb: string }> = [
+  {
+    // First on the list, because it is the one that is about the thing the game
+    // is named after — and because it is the only one whose rules a player
+    // already knows before they read the card.
+    id: 'lava',
+    name: 'The Floor Is Lava',
+    blurb: 'The grass is lava. Get round the garden on the roofs, the crates and whatever you nail together.',
+  },
   {
     id: 'captureTheFlag',
     name: 'Capture the Flag',
@@ -121,6 +131,7 @@ export const MODES: ReadonlyArray<{ id: ModeId; name: string; blurb: string }> =
 ];
 
 function createMode(id: ModeId): GameMode {
+  if (id === 'lava') return new LavaMode();
   if (id === 'captureTheFlag') return new CaptureTheFlagMode();
   if (id === 'waterWar') return new WaterWarMode();
   if (id === 'tag') return new TagMode();
@@ -1242,10 +1253,17 @@ function resetPlayerToSpawn(id: ModeId = lastModeId): void {
   // second copy of the position would be a mode that quietly moved.
   if (id === 'captureTheFlag') player.teleport(LEFT_SPAWN.x, LEFT_SPAWN.y, LEFT_SPAWN.z);
   else if (id === 'tag') player.teleport(IT_SPAWN.x, IT_SPAWN.y, IT_SPAWN.z);
+  else if (id === 'lava') player.teleport(LAVA_SPAWN.x, LAVA_SPAWN.y, LAVA_SPAWN.z);
   else player.teleport(STARTER_ORIGIN.x, 0.5, STARTER_ORIGIN.z - 9);
   // Tag looks down the garden at the runners, which is also the way they are
-  // about to go: past the house, out of the gate and onto the street.
-  camera.yaw = id === 'captureTheFlag' ? Math.PI * 0.5 : id === 'tag' ? 0 : Math.PI;
+  // about to go: past the house, out of the gate and onto the street. Lava
+  // looks west at the treehouse, which is both the first checkpoint and the
+  // clearest possible statement of the problem: it is over there, and
+  // everything between here and it is lava.
+  camera.yaw = id === 'captureTheFlag' ? Math.PI * 0.5
+    : id === 'tag' ? 0
+      : id === 'lava' ? Math.PI * 0.5
+        : Math.PI;
   camera.pitch = -0.05;
 }
 
@@ -2500,6 +2518,48 @@ window.__maker = {
   look: (dx: number, dy: number) => input.injectLook(dx, dy),
   hud,
   /** Aim and place without a mouse, so scenarios can drive the build system. */
+  /**
+   * Everything the lava mode knows, flattened.
+   *
+   * One call rather than five, because the scenario compares a "before" and an
+   * "after" on every claim it makes and two round trips between them is two
+   * chances for a tick to land in the middle.
+   */
+  lavaState: () => {
+    const lava = mode instanceof LavaMode ? mode : null;
+    if (lava === null) return null;
+    return {
+      spawn: { ...LAVA_SPAWN },
+      course: LAVA_COURSE.map((c) => ({ name: c.name, x: c.x, y: c.y, z: c.z })),
+      cleared: lava.clearedFor(actors.local.id),
+      depth: lava.depthFor(actors.local.id),
+      dunks: lava.dunksFor(actors.local.id),
+      progress: lava.progressFor(actors.local.id),
+      finished: lava.finished,
+      won: lava.won,
+      player: { x: player.x, y: player.y, z: player.z },
+    };
+  },
+  /**
+   * Lay a run of planks out across the lawn, the way a player does.
+   *
+   * Through `build.place` rather than by writing into the world, so what the
+   * scenario stands on afterwards is a real placement that went through real
+   * validation and real cost — a plank conjured past the build system would
+   * prove the raycast works on something no player could ever have made.
+   */
+  layPlankPath: (x: number, z: number, count: number) => {
+    const half = BOARD_THICKNESS / 2;
+    const records = Array.from({ length: count }, (_, i) => ({
+      kind: 0, colorway: 0,
+      x: x + i * 0.9, y: half, z,
+      qx: 0, qy: 0, qz: 0, qw: 1,
+    }));
+    const ids = build.stamp(records);
+    if (ids.length > 0) worldChanged();
+    const last = records[records.length - 1]!;
+    return { placed: ids.length, top: { x: last.x, y: BOARD_THICKNESS, z: last.z } };
+  },
   placeAt: (yaw: number, pitch: number): boolean => {
     camera.yaw = yaw;
     camera.pitch = pitch;
@@ -2775,6 +2835,40 @@ window.__maker = {
       x: player.x, y: player.y, z: player.z,
       mantled, bounced, fell, peakY, onGround: player.onGround,
     };
+  },
+  /**
+   * Run the player and the mode together, the way the loop does.
+   *
+   * `driveIntent` steps a body and no mode; `fastForward` steps a mode and no
+   * body. Both were enough for every mode that came before, because their rules
+   * are about where you are and the position is true whether or not anybody
+   * stepped you into it.
+   *
+   * The lava rule is not. It asks what you are *standing on*, and `onGround` is
+   * a thing only `step` sets — so a body teleported onto the grass and never
+   * stepped is, correctly, in mid-air over it, and the mode says so. Which is a
+   * true answer to the wrong question and would have made a scenario measure
+   * nothing at all.
+   */
+  runRound: (seconds: number, partial: Partial<MoveIntent> = {}) => {
+    const ticks = Math.round(seconds / DT);
+    for (let i = 0; i < ticks; i++) {
+      player.step(DT, {
+        forward: 0, right: 0, jump: false, sprint: false, crouch: false, climb: 0,
+        ...partial,
+      });
+      applyItems(player);
+      enforceBounds(player);
+      if (mode !== null) {
+        const look = camera.getLookDirection();
+        mode.fixedUpdate(DT, modeContext, sameForEveryone({
+          fire: false, firePressed: false, fireReleased: false,
+          aimX: look.x, aimY: look.y, aimZ: look.z,
+        }));
+      }
+    }
+    drainEvents();
+    return { x: player.x, y: player.y, z: player.z, onGround: player.onGround };
   },
   /** Connect to a lobby, for the lobby scenario. */
   openLobby: (url: string) => { connectLobby(url); },

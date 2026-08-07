@@ -181,6 +181,15 @@ jobs:
       - name: Tag scenario
         run: node tools/shoot.mjs --scenario scenarios/tag.mjs --auto-quality --out /tmp/ci-tag.png
 
+      # The lava mode, whose single rule is a raycast against the real map: the
+      # ground plane has to come back as ground under your feet on the grass and
+      # as a part under your feet on a plank you laid five centimetres above it.
+      # There is nowhere else that question can be asked honestly, and if the
+      # answer is ever wrong the mode is either unplayable or trivial with
+      # nothing in between.
+      - name: Lava scenario
+        run: node tools/shoot.mjs --scenario scenarios/lava.mjs --auto-quality --out /tmp/ci-lava.png
+
       # The edge of the world, and the only way to find out where it is: walk
       # at it. All three holes this closes were found by driving the real player
       # around and none of them was visible to a unit test — an infinite ground
@@ -302,6 +311,7 @@ jobs:
             /tmp/ci-mantle.png
             /tmp/ci-items.png
             /tmp/ci-tag.png
+            /tmp/ci-lava.png
             /tmp/ci-bounds.png
             /tmp/ci-frontend.png
             /tmp/ci-comms.png

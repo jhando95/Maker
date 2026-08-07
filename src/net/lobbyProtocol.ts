@@ -179,6 +179,10 @@ export function decodeLobby(raw: string): LobbyMessage | null {
  * two humans is a real match and four is a good one.
  */
 export const MODE_TARGET: Readonly<Record<string, number>> = {
+  // Two is a race and four is a scramble, and the difference is that with four
+  // people in the yard the planks somebody else left are as much of the level
+  // as the crates are. It is the only mode where the other players are terrain.
+  lava: 2,
   captureTheFlag: 4,
   // The most people of any mode, and the only one where more is strictly
   // better: a chaser with four runners to choose between has a decision every
