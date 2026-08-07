@@ -192,6 +192,26 @@ export class GameSounds {
     });
   }
 
+  /**
+   * A hiss of paint.
+   *
+   * Short, quiet and high — a can is a small object held at arm's length, and
+   * it fires several times a second while somebody is drawing. Anything with
+   * weight to it would be exhausting within one wall.
+   */
+  sprayed(
+    x: number, y: number, z: number,
+    camera: CameraRig, player: CharacterController,
+  ): void {
+    this.bus.play('spray', {
+      ...this.spatial(x, y, z, camera, player),
+      volume: 0.5,
+      // Varied a little each time, because a sound repeated at exactly one
+      // pitch five times a second stops being a hiss and becomes a tone.
+      pitch: 0.94 + ((Math.abs(Math.round(x * 71) + Math.round(y * 37)) % 13) / 100),
+    });
+  }
+
   /** The build ghost latched onto a new snap target. */
   snapped(): void {
     this.bus.play('snap', { volume: 0.5 });

@@ -16,6 +16,11 @@ import {
   AFTERNOON, DUSK, GOLDEN, dayTimeForRound, lampGlowAt, type DayTime,
 } from './world/daylight.ts';
 import { installFixtures } from './world/neighborhood.ts';
+import { TagDecals } from './render/tagDecals.ts';
+import {
+  SPRAY_INTERVAL, SPRAY_RANGE, TAG_COLORS, TAG_SHAPES,
+  addTag, clampTag, inRange, orphaned, type TagRecord,
+} from './game/spray.ts';
 import { PartRenderer } from './render/partRenderer.ts';
 import { chamferedBox } from './render/geometry.ts';
 import { BuildSystem, type PlacementRecord } from './build/buildSystem.ts';
@@ -198,6 +203,52 @@ scene.add(parts.group);
 const build = new BuildSystem(world, parts);
 scene.add(build.ghostGroup);
 
+// Every mark anybody has sprayed in this yard. One instanced mesh per shape,
+// none of them drawn until somebody has used that shape.
+const decals = new TagDecals();
+scene.add(decals.group);
+
+/**
+ * The spray can: whether it is out, what it is loaded with, and every mark
+ * anybody has left in this yard.
+ *
+ * Declared up here rather than beside the code that uses it, and that is not
+ * tidiness — `worldChanged()` prunes dead tags and is called during start-up,
+ * so a `let` further down the file would be in its temporal dead zone. This
+ * project has shipped exactly that crash once already, from a `settings`
+ * subscription that fired immediately and read a `const` declared below it.
+ */
+let canOut = false;
+let tagShape = 0;
+let tagColor = 0;
+let sprayCooldown = 0;
+let tags: TagRecord[] = [];
+
+function redrawTags(): void {
+  decals.set(tags);
+}
+
+/**
+ * Drop every tag whose part is no longer alive.
+ *
+ * Called from `worldChanged()`, which is the one funnel every removal in this
+ * game already goes through — a player taking a plank down, a collapse taking
+ * eleven, undo, a guest's removal arriving over the wire, a whole yard being
+ * replaced at the start of a round. Naming the parts at each of those call
+ * sites would be more precise and would eventually be forgotten at one of
+ * them, and the symptom is a mark hanging in mid-air, which reads as a
+ * rendering bug rather than as a missed call.
+ */
+function forgetTagsOnDead(): void {
+  if (tags.length === 0) return;
+  const dead = new Set<number>();
+  for (const t of tags) if (t.part >= 0 && !world.store.isAlive(t.part)) dead.add(t.part);
+  if (dead.size === 0) return;
+  const lost = new Set(orphaned(tags, dead));
+  tags = tags.filter((t) => !lost.has(t));
+  redrawTags();
+}
+
 /**
  * Mark the shadow map stale after the world changes.
  *
@@ -213,6 +264,7 @@ const SHADOW_REBUILD_INTERVAL = 0.25;
 
 function worldChanged(): void {
   shadowsDirty = true;
+  forgetTagsOnDead();
 }
 
 /**
@@ -1807,6 +1859,48 @@ function stampWithFeedback(): boolean {
  * between asking and being answered is exactly the round trip and a click that
  * feels like nothing is a click the player repeats.
  */
+/**
+ * The spray can: whether it is out, what it is loaded with, and every mark
+ * anybody has left in this yard.
+ *
+ * Slot nine, beside the eight parts. While it is out the place button sprays
+ * and the part-cycling keys change the tag, so it needs no keys of its own —
+ * every key a left hand can reach was already bound, and putting the least
+ * important feature in the game on the least reachable key is how a toy stops
+ * being used.
+ */
+/**
+ * Put a mark where the crosshair is, if there is a surface there.
+ *
+ * The normal comes from the raycast rather than from the camera, so a tag lies
+ * on what it hit instead of facing the person who sprayed it — which is the
+ * difference between paint and a sticker floating in front of a wall.
+ */
+function sprayWithFeedback(): boolean {
+  const state = player.sample(1);
+  const ray = camera.getAimRay(state.x, state.y + state.eyeHeight, state.z, SPRAY_RANGE);
+  const hit = world.raycast(ray.ox, ray.oy, ray.oz, ray.dx, ray.dy, ray.dz, SPRAY_RANGE);
+  if (hit === null || !inRange(hit.distance, true)) return false;
+
+  const tag = clampTag({
+    shape: tagShape,
+    color: tagColor,
+    size: 0.5,
+    // Turned by where you are standing rather than randomly, so two tags
+    // sprayed from the same spot line up and a wall can be written on.
+    spin: camera.yaw,
+    x: hit.x, y: hit.y, z: hit.z,
+    nx: hit.nx, ny: hit.ny, nz: hit.nz,
+    part: hit.isGround ? -1 : hit.part,
+  }, actors.local.id);
+
+  const added = addTag(tags, tag);
+  tags = added.tags;
+  redrawTags();
+  sounds.sprayed(tag.x, tag.y, tag.z, camera, player);
+  return true;
+}
+
 function tryPlaceWithFeedback(): boolean {
   const record = build.place();
   if (record === null) return false;
@@ -2007,7 +2101,14 @@ function simulate(dt: number): void {
 
   // ── Build actions ──────────────────────────────────────────────────────────
   const hotbar = input.hotbarPressed;
-  if (hotbar >= 0) build.selectKind(hotbar);
+  if (hotbar >= 0) {
+    build.selectKind(hotbar);
+    canOut = false;
+  }
+  if (settings.get('sprayCan') && input.wasPressed('toolSpray')) canOut = !canOut;
+  // Switched off mid-round, the can goes back in the bag rather than staying in
+  // somebody's hand until they press something.
+  if (!settings.get('sprayCan')) canOut = false;
 
   const wheel = input.wheel;
   if (wheel !== 0) {
@@ -2084,7 +2185,21 @@ function simulate(dt: number): void {
     }
     build.showStampPreview(stampRecords());
 
-    if (input.wasPressed('placePart')) {
+    if (canOut) {
+      // The can borrows the buttons rather than adding any. Cycling wraps
+      // through every shape in every colour, which is 88 tags on one key.
+      if (input.wasPressed('nextPart') || input.wasPressed('prevPart')) {
+        const step = input.wasPressed('nextPart') ? 1 : -1;
+        tagShape += step;
+        if (tagShape >= TAG_SHAPES.length) { tagShape = 0; tagColor = (tagColor + 1) % TAG_COLORS.length; }
+        if (tagShape < 0) { tagShape = TAG_SHAPES.length - 1; tagColor = (tagColor + TAG_COLORS.length - 1) % TAG_COLORS.length; }
+      }
+      sprayCooldown -= DT;
+      if (input.isDown('placePart') && sprayCooldown <= 0) {
+        sprayCooldown = SPRAY_INTERVAL;
+        if (!sprayWithFeedback() && input.wasPressed('placePart')) sounds.invalid();
+      }
+    } else if (input.wasPressed('placePart')) {
       placeHeldTicks = 0;
       const done = heldBlueprint !== null ? stampWithFeedback() : tryPlaceWithFeedback();
       if (!done) sounds.invalid();
@@ -2755,6 +2870,28 @@ window.__maker = {
     const down = build.removeAimed();
     if (down.length > 0) worldChanged();
     return down;
+  },
+  /**
+   * The spray can, for a scenario: what is in the yard, what is loaded, and a
+   * way to put a mark down without owning a mouse.
+   */
+  spray: {
+    tags: () => tags.map((t) => ({ ...t })),
+    drawn: () => decals.drawn,
+    canOut: () => canOut,
+    take: (on: boolean) => { canOut = on && settings.get('sprayCan'); return canOut; },
+    style: (shape: number, color: number) => {
+      tagShape = ((shape % TAG_SHAPES.length) + TAG_SHAPES.length) % TAG_SHAPES.length;
+      tagColor = ((color % TAG_COLORS.length) + TAG_COLORS.length) % TAG_COLORS.length;
+    },
+    /** Spray at whatever the crosshair is on, ignoring the rate limit. */
+    at: (x: number, y: number, z: number): boolean => {
+      const state = player.sample(1);
+      const ex = state.x, ey = state.y + state.eyeHeight, ez = state.z;
+      camera.yaw = Math.atan2(-(x - ex), -(z - ez));
+      camera.pitch = Math.atan2(y - ey, Math.hypot(x - ex, z - ez));
+      return sprayWithFeedback();
+    },
   },
   /** Where the last placement landed, so a scenario can aim back at it. */
   lastPlacedAt: () => build.lastPlacedAt,

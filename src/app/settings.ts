@@ -81,6 +81,16 @@ export interface Settings {
    * pair is the single worst choice a builder could make.
    */
   colorblindGhost: boolean;
+  /**
+   * Whether the spray can is in the hotbar at all.
+   *
+   * On by default and switchable off, which is the honest way to ship a toy
+   * into a shared world: it is the one feature here that exists purely to be
+   * silly, it is the one that can be used to annoy somebody, and a host who
+   * decides their lobby does not want paint on the fence should not have to
+   * ask anybody to behave.
+   */
+  sprayCan: boolean;
   /** Hold to crouch, or press to toggle. */
   toggleCrouch: boolean;
   toggleSprint: boolean;
@@ -121,6 +131,7 @@ export const DEFAULT_SETTINGS: Settings = {
   masterVolume: 0.7,
   sfxVolume: 1,
   colorblindGhost: false,
+  sprayCan: true,
   toggleCrouch: false,
   toggleSprint: false,
   gamepadEnabled: true,

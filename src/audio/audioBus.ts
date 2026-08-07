@@ -20,6 +20,7 @@ export type SoundName =
   | 'invalid'
   | 'remove'
   | 'collapse'
+  | 'spray'
   | 'jump'
   | 'land'
   | 'throw'
@@ -501,6 +502,29 @@ export class AudioBus {
         }, options);
         break;
       }
+
+      // A can of paint: a short hiss of high noise, with the barest tick of a
+      // valve at the front. Two things rather than one, because pure noise
+      // reads as static and the tick is what makes it an object.
+      case 'spray':
+        this.noiseBurst(t, {
+          duration: 0.13,
+          filter: 'highpass',
+          freqStart: 2600 * p,
+          freqEnd: 5200 * p,
+          q: 0.6,
+          peak: 0.1,
+          attack: 0.008,
+        }, options);
+        this.tone(t, {
+          type: 'square',
+          freqStart: 1500 * p,
+          freqEnd: 900 * p,
+          duration: 0.02,
+          peak: 0.03,
+          attack: 0.001,
+        }, options);
+        break;
 
       case 'uiClick':
         this.tone(t, {

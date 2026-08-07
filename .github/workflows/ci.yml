@@ -199,6 +199,13 @@ jobs:
       - name: Collapse scenario
         run: node tools/shoot.mjs --scenario scenarios/collapse.mjs --auto-quality --out /tmp/ci-collapse.png
 
+      # Whether a can of paint paints. The rules are arithmetic and the decals
+      # are matrices; what only exists here is the join — a raycast has to come
+      # back with a surface normal a mark can lie in, and the mark has to go
+      # when the plank it is on does.
+      - name: Spray scenario
+        run: node tools/shoot.mjs --scenario scenarios/spray.mjs --auto-quality --out /tmp/ci-spray.png
+
       # The edge of the world, and the only way to find out where it is: walk
       # at it. All three holes this closes were found by driving the real player
       # around and none of them was visible to a unit test — an infinite ground
@@ -322,6 +329,7 @@ jobs:
             /tmp/ci-tag.png
             /tmp/ci-lava.png
             /tmp/ci-collapse.png
+            /tmp/ci-spray.png
             /tmp/ci-bounds.png
             /tmp/ci-frontend.png
             /tmp/ci-comms.png

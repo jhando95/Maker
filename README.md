@@ -37,6 +37,17 @@ points: a wall with a door is still beaten by the door, and a sealed one is
 beaten by finding its legs. Fort Defense is now a game about where the wood
 goes.
 
+**There is a can of spray paint in slot nine.** It cannot hit anybody, block
+anybody or hold anything up, and a round plays out exactly the same whether or
+not a single tag exists — it is there so four friends in a back garden can leave
+something behind. Eleven shapes in eight colours, sprayed onto whatever the
+crosshair is on: the fence, the house, the lawn, somebody else's fort. The marks
+are the same instanced polygons the locker paints a shirt with, so the can added
+no geometry to the game at all, and paint goes down with whatever it was painted
+on. Two caps make it self-limiting rather than a griefing tool: spray your
+twelfth and the next one takes your own oldest, never anybody else's. Settings →
+Playing → Spray can turns it off for a lobby that would rather it did not exist.
+
 **The afternoon gets late while you play.** The sun drops and swings west across
 a round, the shadows stretch, the sky drains to a warm horizon under a deep blue,
 and by the end of a full-length round it is dusk — the street lights warm up over

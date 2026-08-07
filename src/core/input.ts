@@ -67,6 +67,16 @@ export const ACTIONS = [
   'interact',
 
   /**
+   * The spray can, which is a ninth thing to hold rather than a ninth key.
+   *
+   * Slot 9, beside the eight parts, and while it is out the place button
+   * sprays and the part-cycling keys cycle the tag. Every key a left hand can
+   * reach was already bound — and inventing two more for a toy would have put
+   * the least important feature in the game on the least reachable keys.
+   */
+  'toolSpray',
+
+  /**
    * Talking to people.
    *
    * `ping` is on the middle mouse button because that is where every game that
@@ -128,6 +138,12 @@ export const DEFAULT_BINDINGS: Record<string, Action> = {
   KeyV: 'toggleCamera',
   Tab: 'partWheel',
   KeyF: 'interact',
+
+  // The spray can. Held, not tapped — a stroke should be a line rather than a
+  // row of taps. G is already the repeat-place key and Backquote is the debug
+  // toggle, so this takes two that nothing else wants: X for the can and Z for
+  // cycling what it puts down, both under the left hand while it is on WASD.
+  Digit9: 'toolSpray',
 
   Mouse1: 'ping',
   Enter: 'chatNear',
@@ -233,6 +249,7 @@ export const BINDING_GROUPS: ReadonlyArray<{
       { action: 'interact', label: 'Undo' },
     ],
   },
+
   {
     title: 'Choosing a part',
     actions: [
@@ -247,6 +264,7 @@ export const BINDING_GROUPS: ReadonlyArray<{
       { action: 'hotbar6', label: 'Slot 6' },
       { action: 'hotbar7', label: 'Slot 7' },
       { action: 'hotbar8', label: 'Slot 8' },
+      { action: 'toolSpray', label: 'Spray can' },
     ],
   },
   {
