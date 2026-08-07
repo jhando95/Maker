@@ -14,6 +14,7 @@ import { SettingsStore, type Settings } from '../app/settings.ts';
 import { formatCode, MAX_NAME } from '../app/identity.ts';
 import type { BuildSlot } from '../app/buildStore.ts';
 import { installTheme } from './theme.ts';
+import { describeKey } from '../core/input.ts';
 
 export type Screen =
   | 'none' | 'title' | 'settings' | 'builds' | 'pause' | 'result' | 'controls' | 'lobby'
@@ -235,6 +236,7 @@ const STYLE = `
   display: flex; align-items: center; gap: 10px;
   padding: 7px 0; border-bottom: 2px solid rgba(43,32,28,0.12);
 }
+.mk-bind label { flex: 1; min-width: 0; }
 .mk-bind label { flex: 1; font-size: 13.5px; }
 .mk-bind button {
   min-width: 108px; padding: 6px 12px;
@@ -243,6 +245,21 @@ const STYLE = `
   background: #e6d3ae; color: var(--ink); border: 2px solid var(--ink);
 }
 .mk-bind button:hover { background: #f0e0bf; }
+.mk-bind button.empty { background: #d8c6a4; color: #8a7a5e; font-weight: 600; }
+/* Fixed, so the two slots line up down the screen. Left to size themselves,
+   "Down Arrow" shunts its pair left and the column reads as a ragged edge. */
+.mk-bind .keys { display: flex; gap: 6px; flex: 0 0 auto; width: 232px; }
+.mk-bind .keys button { flex: 1 1 0; min-width: 0; padding: 6px 4px; }
+.mk-group {
+  margin: 14px 0 4px; padding-bottom: 4px;
+  font-size: 12px; font-weight: 800; letter-spacing: 0.09em; text-transform: uppercase;
+  color: var(--ink); opacity: 0.62; border-bottom: 2px solid rgba(43, 32, 28, 0.18);
+}
+.mk-hint {
+  margin: 2px 0 8px; font-size: 12.5px; line-height: 1.45;
+  color: var(--ink); opacity: 0.7;
+}
+.mk-hint.said { opacity: 1; font-weight: 700; }
 .mk-bind button.listening { background: #f4a259; color: #3a2c2a; }
 .mk-name-input {
   width: 100%; box-sizing: border-box; margin-bottom: 10px;
@@ -255,13 +272,26 @@ const STYLE = `
 export interface BindingRow {
   action: string;
   label: string;
-  key: string;
+  /** One entry per slot, already made readable. `null` is an empty slot. */
+  keys: ReadonlyArray<string | null>;
+}
+
+export interface BindingGroup {
+  title: string;
+  rows: ReadonlyArray<BindingRow>;
 }
 
 export interface MenuCallbacks {
-  listBindings(): BindingRow[];
-  /** Returns false if the key could not be bound. */
-  rebind(action: string, code: string): boolean;
+  listBindings(): BindingGroup[];
+  /**
+   * Put `code` in one of `action`'s slots.
+   *
+   * Returns the *label* of whatever action lost that key, or null if it was
+   * free — a code can only mean one thing, so this screen has to be able to say
+   * which control it just took away.
+   */
+  rebind(action: string, slot: number, code: string): string | null;
+  clearBinding(action: string, slot: number): void;
   resetBindings(): void;
   onPlayMode(id: string): void;
   /** The modes the title screen should offer, in the order to show them. */
@@ -993,33 +1023,61 @@ export class Menu {
   /**
    * Key rebinding.
    *
-   * Clicking a row arms a one-shot capture. The capture listens on the window
+   * Clicking a slot arms a one-shot capture. The capture listens on the window
    * in the capture phase so it sees the key before anything else can act on it
    * — otherwise binding Escape would close the menu, and binding a movement key
    * would walk the player around behind the screen.
+   *
+   * Two buttons a row, because an action holds two keys and the screen has to
+   * be able to address either. One button showing "W / Up Arrow" could display
+   * a pair and never change one of them, which is what it used to do.
    */
   private renderControls(): void {
     this.heading('Controls');
 
-    for (const row of this.callbacks.listBindings()) {
-      const el = document.createElement('div');
-      el.className = 'mk-bind';
+    const hint = document.createElement('p');
+    hint.className = this.bindNote === null ? 'mk-hint' : 'mk-hint said';
+    // The two escape hatches have to be said somewhere. Neither is guessable,
+    // and a player who cannot get out of a capture they opened by accident has
+    // to reload the game to leave this screen.
+    hint.textContent = this.bindNote
+      ?? 'Two keys per control. Click one to change it — Esc cancels, Backspace clears it.';
+    this.card.appendChild(hint);
+    this.bindNote = null;
 
-      const label = document.createElement('label');
-      label.textContent = row.label;
-      el.appendChild(label);
+    for (const group of this.callbacks.listBindings()) {
+      const title = document.createElement('div');
+      title.className = 'mk-group';
+      title.textContent = group.title;
+      this.card.appendChild(title);
 
-      const btn = document.createElement('button');
-      btn.textContent = row.key;
-      btn.addEventListener('click', () => {
-        if (this.listening !== null) return;
-        btn.classList.add('listening');
-        btn.textContent = 'press a key…';
-        this.beginCapture(row.action, () => this.render());
-      });
-      el.appendChild(btn);
+      for (const row of group.rows) {
+        const el = document.createElement('div');
+        el.className = 'mk-bind';
 
-      this.card.appendChild(el);
+        const label = document.createElement('label');
+        label.textContent = row.label;
+        el.appendChild(label);
+
+        const keys = document.createElement('div');
+        keys.className = 'keys';
+        row.keys.forEach((key, slot) => {
+          const btn = document.createElement('button');
+          btn.textContent = key ?? '—';
+          if (key === null) btn.classList.add('empty');
+          btn.title = slot === 0 ? 'Main key' : 'Second key';
+          btn.addEventListener('click', () => {
+            if (this.listening !== null) return;
+            btn.classList.add('listening');
+            btn.textContent = 'press…';
+            this.beginCapture(row.action, slot, row.label);
+          });
+          keys.appendChild(btn);
+        });
+        el.appendChild(keys);
+
+        this.card.appendChild(el);
+      }
     }
 
     const spacer = document.createElement('div');
@@ -1034,21 +1092,36 @@ export class Menu {
   }
 
   private listening: (() => void) | null = null;
+  /** Said once, on the next render of the controls screen, then cleared. */
+  private bindNote: string | null = null;
 
-  private beginCapture(action: string, done: () => void): void {
+  private beginCapture(action: string, slot: number, label: string): void {
     const finish = (): void => {
       window.removeEventListener('keydown', onKey, true);
       window.removeEventListener('mousedown', onMouse, true);
       this.listening = null;
-      done();
+      this.render();
+    };
+
+    const took = (from: string | null, key: string): void => {
+      // A key can only mean one thing, so binding one somebody else had takes
+      // it. Saying so is the difference between a control the player retired on
+      // purpose and one that mysteriously stopped working.
+      this.bindNote = from === null ? null : `${key} taken from ${from}`;
     };
 
     const onKey = (e: KeyboardEvent): void => {
       e.preventDefault();
       e.stopPropagation();
       // Escape cancels rather than binding; a player who has bound Escape to
-      // something has no way back out of a menu.
-      if (e.code !== 'Escape') this.callbacks.rebind(action, e.code);
+      // something has no way back out of a menu. Backspace and Delete empty the
+      // slot, which is the only way to end up with a control on one key.
+      if (e.code === 'Backspace' || e.code === 'Delete') {
+        this.callbacks.clearBinding(action, slot);
+        this.bindNote = `${label} cleared`;
+      } else if (e.code !== 'Escape') {
+        took(this.callbacks.rebind(action, slot, e.code), describeKey(e.code));
+      }
       finish();
     };
 
@@ -1057,7 +1130,8 @@ export class Menu {
       if (!(e.target instanceof Node) || !this.card.contains(e.target)) return;
       e.preventDefault();
       e.stopPropagation();
-      this.callbacks.rebind(action, `Mouse${e.button}`);
+      const code = `Mouse${e.button}`;
+      took(this.callbacks.rebind(action, slot, code), describeKey(code));
       finish();
     };
 

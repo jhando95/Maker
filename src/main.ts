@@ -60,7 +60,7 @@ import type {
   ActorInput, GameEvent, GameMode, Marker, ModeContext, ModeInput,
 } from './game/gameMode.ts';
 import { SettingsStore, ghostColors, loadBindings, saveBindings, clearBindings } from './app/settings.ts';
-import { BINDABLE, describeKey, type Action } from './core/input.ts';
+import { BINDING_GROUPS, describeKey, labelFor, type Action } from './core/input.ts';
 import { BuildStore } from './app/buildStore.ts';
 import { Menu, type LobbyView } from './ui/menu.ts';
 import { CrashHandler } from './app/crashHandler.ts';
@@ -219,7 +219,7 @@ const hud = new Hud(app);
 const input = new Input(renderer.domElement);
 // Restore saved bindings before anything reads input.
 const savedBindings = loadBindings();
-if (savedBindings !== null) input.setBindings(savedBindings as Record<string, Action>);
+if (savedBindings !== null) input.setBindingSlots(savedBindings);
 
 const gamepad = new GamepadManager(input);
 
@@ -1203,18 +1203,24 @@ const menu = new Menu(app, settings, {
   onDeleteBuild: (id) => buildStore.remove(id),
   listBuilds: () => buildStore.list(),
 
-  listBindings: () => BINDABLE.map(({ action, label }) => {
-    const codes = input.codesFor(action);
-    return {
+  listBindings: () => BINDING_GROUPS.map((group) => ({
+    title: group.title,
+    rows: group.actions.map(({ action, label }) => ({
       action,
       label,
-      key: codes.length > 0 ? codes.map(describeKey).join(' / ') : 'unbound',
-    };
-  }),
-  rebind: (action, code) => {
-    input.setBinding(action as Action, code);
-    saveBindings(input.getBindings());
-    return true;
+      keys: input.slotsFor(action).map((code) => (code === null ? null : describeKey(code))),
+    })),
+  })),
+  rebind: (action, slot, code) => {
+    const took = input.setBinding(action as Action, code, slot);
+    saveBindings(input.getBindingSlots());
+    // The label rather than the action name, because "Turn left" is what the
+    // player just watched lose its key and `rotateCCW` is not.
+    return took === null ? null : labelFor(took);
+  },
+  clearBinding: (action, slot) => {
+    input.clearBinding(action as Action, slot);
+    saveBindings(input.getBindingSlots());
   },
   resetBindings: () => {
     input.resetBindings();
@@ -1802,6 +1808,17 @@ function simulate(dt: number): void {
     if (input.isDown('sprint')) build.cycleColorway(wheel > 0 ? 1 : -1);
     else build.cycleKind(wheel > 0 ? 1 : -1);
   }
+
+  // The same step, from a button rather than a notch of the wheel.
+  //
+  // `nextPart` and `prevPart` have existed since the input layer was written
+  // and nothing has ever read them — so the pad's d-pad, which `gamepad.ts`
+  // binds to exactly these two, has been doing nothing at all. Nobody noticed
+  // because the pad has a part wheel and the wheel is the better way to pick.
+  // Found by listing every action on the controls screen: an action a player
+  // can bind a key to had better do something when they press it.
+  if (input.wasPressed('nextPart')) build.cycleKind(1);
+  if (input.wasPressed('prevPart')) build.cycleKind(-1);
 
   if (input.wasPressed('rotateCW')) build.rotateYaw(1);
   if (input.wasPressed('rotateCCW')) build.rotateYaw(-1);

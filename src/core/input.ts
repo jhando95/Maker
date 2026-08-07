@@ -11,6 +11,24 @@
  * high-refresh display several frames can pass between ticks; sampling edges on
  * frames would let a click fire twice or vanish entirely. Devices write into a
  * pending buffer, and `beginTick()` folds that buffer into the tick's state.
+ *
+ * ## Two keys per action, and why that is the shape rather than a convenience
+ *
+ * An action owns an ordered pair of slots, and both are equal at the point a
+ * key is read — `isDown('jump')` cannot tell you which of Space or the pad's A
+ * button produced it, and should not be able to.
+ *
+ * It has to be *slots* rather than a set, because a player rebinding one of a
+ * pair is choosing which one. The defaults already ship pairs — W and the up
+ * arrow, either Shift — and the old model collapsed them the moment anybody
+ * touched the screen: rebinding "move forward" deleted every code the action
+ * had and wrote one. Somebody who moved forward onto a different letter lost
+ * the arrow key as well, silently, and the only clue was that the arrows
+ * stopped working. So the pair is the unit, and rebinding writes into a slot.
+ *
+ * The lookup that a keydown actually consults is derived from the slots rather
+ * than kept beside them. Two structures that must agree is a bug waiting for a
+ * rebind; one that is rebuilt from the other cannot drift.
  */
 
 export const ACTIONS = [
@@ -153,31 +171,142 @@ interface ActionState {
   released: boolean;
 }
 
-/** Actions a player can rebind, in the order the settings screen lists them. */
-export const BINDABLE: ReadonlyArray<{ action: Action; label: string }> = [
-  { action: 'moveForward', label: 'Move forward' },
-  { action: 'moveBack', label: 'Move back' },
-  { action: 'moveLeft', label: 'Move left' },
-  { action: 'moveRight', label: 'Move right' },
-  { action: 'jump', label: 'Jump' },
-  { action: 'sprint', label: 'Sprint' },
-  { action: 'crouch', label: 'Crouch' },
-  { action: 'placePart', label: 'Place / throw' },
-  { action: 'removePart', label: 'Remove part' },
-  { action: 'freeAim', label: 'Free aim' },
-  { action: 'cycleSnap', label: 'Next snap' },
-  { action: 'repeatPlace', label: 'Repeat step' },
-  { action: 'rotateCCW', label: 'Turn left' },
-  { action: 'rotateCW', label: 'Turn right' },
-  { action: 'rotatePitch', label: 'Tilt' },
-  { action: 'rotateRoll', label: 'Roll' },
-  { action: 'resetRotation', label: 'Reset rotation' },
-  { action: 'partWheel', label: 'Part wheel' },
-  { action: 'toggleCamera', label: 'Camera' },
-  { action: 'interact', label: 'Undo' },
+/**
+ * How many keys one action can carry.
+ *
+ * Two, and the number is here rather than spelled `[a, b]` everywhere so that
+ * a third is a one-line change and not an archaeology exercise. Everything
+ * below indexes slots rather than assuming a pair.
+ */
+export const BINDING_SLOTS = 2;
+
+/** One action as the controls screen shows it. */
+export interface BindableAction {
+  action: Action;
+  label: string;
+}
+
+/**
+ * Every action a player can rebind, grouped the way the screen lists them.
+ *
+ * Grouped rather than one flat list because the list is now thirty-five rows
+ * long: a wall of that many labelled buttons is a thing nobody finds anything
+ * in. The groups are the same five the settings screen already uses.
+ *
+ * The rule this file holds itself to is that **everything is here except the
+ * two debug keys**, and a test asserts it. The previous list covered twenty of
+ * forty-one actions, and the twenty-one it left out were not chosen — they were
+ * whatever had been added since the screen was written. Push-to-talk was among
+ * them, which is the worst possible one to leave fixed: the comment beside its
+ * default spends a paragraph explaining that no good key was available, and a
+ * player on a keyboard where C is somewhere else had no way to move it.
+ */
+export const BINDING_GROUPS: ReadonlyArray<{
+  title: string;
+  actions: ReadonlyArray<BindableAction>;
+}> = [
+  {
+    title: 'Moving',
+    actions: [
+      { action: 'moveForward', label: 'Move forward' },
+      { action: 'moveBack', label: 'Move back' },
+      { action: 'moveLeft', label: 'Move left' },
+      { action: 'moveRight', label: 'Move right' },
+      { action: 'jump', label: 'Jump / mantle' },
+      { action: 'sprint', label: 'Sprint' },
+      { action: 'crouch', label: 'Crouch' },
+    ],
+  },
+  {
+    title: 'Building',
+    actions: [
+      { action: 'placePart', label: 'Place / throw' },
+      { action: 'removePart', label: 'Remove part' },
+      { action: 'freeAim', label: 'Free aim' },
+      { action: 'cycleSnap', label: 'Next snap' },
+      { action: 'repeatPlace', label: 'Repeat step' },
+      { action: 'rotateCCW', label: 'Turn left' },
+      { action: 'rotateCW', label: 'Turn right' },
+      { action: 'rotatePitch', label: 'Tilt' },
+      { action: 'rotateRoll', label: 'Roll' },
+      { action: 'resetRotation', label: 'Reset rotation' },
+      { action: 'interact', label: 'Undo' },
+    ],
+  },
+  {
+    title: 'Choosing a part',
+    actions: [
+      { action: 'partWheel', label: 'Part wheel' },
+      { action: 'nextPart', label: 'Next part' },
+      { action: 'prevPart', label: 'Previous part' },
+      { action: 'hotbar1', label: 'Slot 1' },
+      { action: 'hotbar2', label: 'Slot 2' },
+      { action: 'hotbar3', label: 'Slot 3' },
+      { action: 'hotbar4', label: 'Slot 4' },
+      { action: 'hotbar5', label: 'Slot 5' },
+      { action: 'hotbar6', label: 'Slot 6' },
+      { action: 'hotbar7', label: 'Slot 7' },
+      { action: 'hotbar8', label: 'Slot 8' },
+    ],
+  },
+  {
+    title: 'Blueprints',
+    actions: [
+      { action: 'cycleBlueprint', label: 'Next blueprint' },
+      { action: 'saveBlueprint', label: 'Save what you built' },
+    ],
+  },
+  {
+    title: 'Talking',
+    actions: [
+      { action: 'pushToTalk', label: 'Push to talk' },
+      { action: 'ping', label: 'Ping' },
+      { action: 'chatNear', label: 'Chat' },
+      { action: 'chatTeam', label: 'Team chat' },
+      { action: 'emoteWheel', label: 'Emotes' },
+    ],
+  },
+  {
+    title: 'View',
+    actions: [{ action: 'toggleCamera', label: 'Camera' }],
+  },
 ];
 
-/** Human-readable name for a key code or mouse button. */
+/**
+ * The same list, flattened.
+ *
+ * Derived rather than written twice, because two lists that must contain the
+ * same actions is exactly the arrangement where one of them quietly stops.
+ */
+export const BINDABLE: ReadonlyArray<BindableAction> =
+  BINDING_GROUPS.flatMap((group) => group.actions);
+
+/**
+ * What to call an action out loud.
+ *
+ * Falls back to the action's own name, which is only reachable for the debug
+ * keys — and is better than an empty string if one ever ends up in a message.
+ */
+export function labelFor(action: Action): string {
+  return BINDABLE.find((entry) => entry.action === action)?.label ?? action;
+}
+
+/**
+ * Actions deliberately kept off the controls screen.
+ *
+ * Both are developer keys rather than controls. Listing them would teach every
+ * player that the game has a debug overlay, and a rebindable free camera is a
+ * feature nobody asked for.
+ */
+export const UNBINDABLE: ReadonlyArray<Action> = ['debugToggle', 'debugFreeCam'];
+
+/**
+ * Human-readable name for a key code or mouse button.
+ *
+ * The long tail matters more than it used to. Before, a player could only land
+ * on the twenty keys the screen offered; now they can bind anything, and a
+ * button reading `BracketLeft` is a button reading the wrong thing.
+ */
 export function describeKey(code: string): string {
   if (code.startsWith('Mouse')) {
     const n = Number(code.slice(5));
@@ -185,18 +314,66 @@ export function describeKey(code: string): string {
   }
   if (code.startsWith('Key')) return code.slice(3);
   if (code.startsWith('Digit')) return code.slice(5);
+  if (code.startsWith('Numpad')) return `Num ${code.slice(6)}`;
   if (code.startsWith('Arrow')) return `${code.slice(5)} Arrow`;
   const named: Record<string, string> = {
     Space: 'Space', ShiftLeft: 'L Shift', ShiftRight: 'R Shift',
     ControlLeft: 'L Ctrl', ControlRight: 'R Ctrl',
     AltLeft: 'L Alt', AltRight: 'R Alt',
-    Tab: 'Tab', Backquote: '`', Enter: 'Enter',
+    MetaLeft: 'L Cmd', MetaRight: 'R Cmd',
+    Tab: 'Tab', Backquote: '`', Enter: 'Enter', CapsLock: 'Caps',
+    Backspace: 'Backspace', Delete: 'Del', Insert: 'Ins',
+    Home: 'Home', End: 'End', PageUp: 'Page Up', PageDown: 'Page Down',
+    Minus: '-', Equal: '=', BracketLeft: '[', BracketRight: ']',
+    Backslash: '\\', Semicolon: ';', Quote: "'",
+    Comma: ',', Period: '.', Slash: '/',
   };
   return named[code] ?? code;
 }
 
+/** An empty pair, for an action nothing is bound to. */
+function emptySlots(): (string | null)[] {
+  return new Array<string | null>(BINDING_SLOTS).fill(null);
+}
+
+/**
+ * Turn a flat code-to-action map into per-action slots.
+ *
+ * Exported because both the store's migration and `Input` itself need it, and
+ * because the rule it encodes is worth stating once: **the order codes appear
+ * in the map is the order they take slots.** `DEFAULT_BINDINGS` lists `KeyW`
+ * before `ArrowUp`, so W is the primary and the arrow is the alternate, and a
+ * test pins that rather than leaving it to whoever edits the literal next.
+ *
+ * Codes past the last slot are dropped, which is why the same test also
+ * asserts no action in the defaults has more than `BINDING_SLOTS` of them —
+ * otherwise adding a third would silently lose one.
+ */
+export function slotsFromMap(map: Record<string, Action | string>): Record<string, (string | null)[]> {
+  const out: Record<string, (string | null)[]> = {};
+  for (const [code, action] of Object.entries(map)) {
+    const slots = (out[action] ??= emptySlots());
+    const free = slots.indexOf(null);
+    if (free !== -1) slots[free] = code;
+  }
+  return out;
+}
+
 export class Input {
-  private bindings: Record<string, Action>;
+  /**
+   * The source of truth: an ordered pair of codes per action, either of which
+   * may be null. Nothing reads this on a keypress — see `lookup`.
+   */
+  private readonly slots = new Map<Action, (string | null)[]>();
+  /**
+   * Code to action, rebuilt from `slots` whenever they change.
+   *
+   * A keydown happens far more often than a rebind, so the fast direction gets
+   * the plain object. Derived rather than maintained, because a lookup that can
+   * disagree with the slots is a key that does nothing and a screen that says
+   * it should.
+   */
+  private lookup: Record<string, Action> = {};
   private readonly state = new Map<Action, ActionState>();
 
   /** Device events land here and are folded in at the next tick boundary. */
@@ -248,10 +425,11 @@ export class Input {
 
   constructor(element: HTMLElement, bindings: Record<string, Action> = DEFAULT_BINDINGS) {
     this.element = element;
-    this.bindings = { ...bindings };
     for (const action of ACTIONS) {
       this.state.set(action, { down: false, pressed: false, released: false });
+      this.slots.set(action, emptySlots());
     }
+    this.setBindings(bindings);
     this.attach();
   }
 
@@ -269,15 +447,15 @@ export class Input {
   private attach(): void {
     this.on(window, 'keydown', (e) => {
       // Tab would move focus off the canvas and Space would scroll the page.
-      if (this.bindings[e.code]) e.preventDefault();
+      if (this.lookup[e.code]) e.preventDefault();
       if (e.repeat) return; // auto-repeat is not a new press
       this.useDevice('keyboard');
-      this.queueDown(this.bindings[e.code]);
+      this.queueDown(this.lookup[e.code]);
     });
 
     this.on(window, 'keyup', (e) => {
-      if (this.bindings[e.code]) e.preventDefault();
-      this.queueUp(this.bindings[e.code]);
+      if (this.lookup[e.code]) e.preventDefault();
+      this.queueUp(this.lookup[e.code]);
     });
 
     this.on(this.element, 'mousedown', (e) => {
@@ -288,11 +466,11 @@ export class Input {
         return;
       }
       this.useDevice('keyboard');
-      this.queueDown(this.bindings[`Mouse${e.button}`]);
+      this.queueDown(this.lookup[`Mouse${e.button}`]);
     });
 
     this.on(window, 'mouseup', (e) => {
-      this.queueUp(this.bindings[`Mouse${e.button}`]);
+      this.queueUp(this.lookup[`Mouse${e.button}`]);
     });
 
     this.on(this.element, 'contextmenu', (e) => e.preventDefault());
@@ -525,34 +703,126 @@ export class Input {
     if (!enabled) this.releaseAll();
   }
 
-  /** Every code currently bound to an action. */
+  /**
+   * Rebuild the code-to-action lookup, and let go of anything held.
+   *
+   * The release is not housekeeping. A key whose meaning changed while it was
+   * down never sends a keyup for the action it *used* to be, so without this a
+   * player who rebinds forward while leaning on W walks off across the lawn
+   * with no way to stop.
+   */
+  private reindex(): void {
+    const lookup: Record<string, Action> = {};
+    for (const action of ACTIONS) {
+      for (const code of this.slots.get(action)!) {
+        if (code !== null) lookup[code] = action;
+      }
+    }
+    this.lookup = lookup;
+    this.releaseAll();
+  }
+
+  /** Both slots for an action, in order, `null` where nothing is bound. */
+  slotsFor(action: Action): (string | null)[] {
+    return [...this.slots.get(action)!];
+  }
+
+  /** Every code currently bound to an action, in slot order. */
   codesFor(action: Action): string[] {
-    return Object.keys(this.bindings).filter((code) => this.bindings[code] === action);
+    return this.slots.get(action)!.filter((code): code is string => code !== null);
   }
 
   /**
-   * Bind a key to an action, replacing whatever that action was on.
+   * Put a key in one of an action's slots.
    *
-   * A code already used by a *different* action is released first: two actions
-   * on one key means pressing it does both, which is never what someone
-   * rebinding intended and is invisible until they hit the key.
+   * Returns the action the key was taken from, or null if it was free. That
+   * return is the whole reason this is not void: a code can only mean one
+   * thing, so binding a key somebody else already had *has* to take it, and a
+   * silent theft is a control that stops working with no explanation. The
+   * screen says which one lost it.
+   *
+   * Moving a key onto the same action's other slot swaps them rather than
+   * duplicating: a pair holding the same code twice is an action with one key
+   * that looks like it has two.
    */
-  setBinding(action: Action, code: string): void {
-    for (const existing of this.codesFor(action)) delete this.bindings[existing];
-    delete this.bindings[code];
-    this.bindings[code] = action;
-    // Whatever was held under the old binding must not stay stuck down.
-    this.releaseAll();
+  setBinding(action: Action, code: string, slot = 0): Action | null {
+    if (slot < 0 || slot >= BINDING_SLOTS) return null;
+    const mine = this.slots.get(action)!;
+
+    const already = mine.indexOf(code);
+    if (already !== -1) {
+      if (already === slot) return null;
+      mine[already] = mine[slot] ?? null;
+      mine[slot] = code;
+      this.reindex();
+      return null;
+    }
+
+    let took: Action | null = null;
+    const owner = this.lookup[code];
+    if (owner !== undefined && owner !== action) {
+      const theirs = this.slots.get(owner)!;
+      theirs[theirs.indexOf(code)] = null;
+      took = owner;
+    }
+    mine[slot] = code;
+    this.reindex();
+    return took;
   }
 
-  /** The full map, for persistence. */
+  /**
+   * Empty one slot.
+   *
+   * Worth having as its own verb: without it the only way out of a binding is
+   * to put something else there, and a player who wants "no alternate" has to
+   * park a key they will never press on it.
+   */
+  clearBinding(action: Action, slot: number): void {
+    if (slot < 0 || slot >= BINDING_SLOTS) return;
+    this.slots.get(action)![slot] = null;
+    this.reindex();
+  }
+
+  /** Every action's slots, for persistence. */
+  getBindingSlots(): Record<string, (string | null)[]> {
+    const out: Record<string, (string | null)[]> = {};
+    for (const action of ACTIONS) out[action] = this.slotsFor(action);
+    return out;
+  }
+
+  /**
+   * Restore slots, keeping only what still makes sense.
+   *
+   * Everything here is defensive because the input is a blob out of a player's
+   * localStorage that may have been written by an older build: an action that
+   * no longer exists is dropped, a code claimed twice goes to whoever the
+   * iteration reaches first, and anything missing simply stays unbound rather
+   * than reverting to the default. Silently reverting would be worse — a
+   * player would rebind, and the next time the shape of this file changed some
+   * of their keys would quietly come back.
+   */
+  setBindingSlots(slots: Record<string, (string | null)[] | undefined>): void {
+    const claimed = new Set<string>();
+    for (const action of ACTIONS) {
+      const want = slots[action];
+      const mine = this.slots.get(action)!;
+      for (let i = 0; i < BINDING_SLOTS; i++) {
+        const code = Array.isArray(want) ? want[i] : null;
+        mine[i] = typeof code === 'string' && code.length > 0 && !claimed.has(code) ? code : null;
+        if (mine[i] !== null) claimed.add(mine[i]!);
+      }
+    }
+    this.reindex();
+  }
+
+  /** The flat code-to-action map. Read-only; `setBindingSlots` is the way in. */
   getBindings(): Record<string, Action> {
-    return { ...this.bindings };
+    return { ...this.lookup };
   }
 
+  /** Take a flat map, in the shape `DEFAULT_BINDINGS` is written in. */
   setBindings(bindings: Record<string, Action>): void {
-    this.bindings = { ...bindings };
-    this.releaseAll();
+    this.setBindingSlots(slotsFromMap(bindings));
   }
 
   resetBindings(): void {

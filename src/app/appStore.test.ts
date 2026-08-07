@@ -220,32 +220,70 @@ describe('BuildStore', () => {
 describe('key bindings', () => {
   beforeEach(() => installStorage());
 
-  it('round-trips through storage', () => {
+  it('round-trips through storage, slots and all', () => {
     expect(loadBindings()).toBeNull();
-    saveBindings({ KeyK: 'moveForward', Mouse0: 'placePart' });
-    expect(loadBindings()).toEqual({ KeyK: 'moveForward', Mouse0: 'placePart' });
+    saveBindings({ moveForward: ['KeyK', 'ArrowUp'], placePart: ['Mouse0', null] });
+    expect(loadBindings()).toEqual({
+      moveForward: ['KeyK', 'ArrowUp'],
+      placePart: ['Mouse0', null],
+    });
+  });
+
+  it('keeps which key is the main one, which is the reason for the format', () => {
+    // The old shape was code-to-action, and an object's key order is the only
+    // thing that could have carried this. Storing the slots says it outright.
+    saveBindings({ jump: ['Space', 'KeyJ'] });
+    expect(loadBindings()?.jump).toEqual(['Space', 'KeyJ']);
+    saveBindings({ jump: ['KeyJ', 'Space'] });
+    expect(loadBindings()?.jump).toEqual(['KeyJ', 'Space']);
   });
 
   it('survives a corrupt blob', () => {
     const map = installStorage();
-    map.set('maker.bindings.v1', 'not json');
+    map.set('maker.bindings.v2', 'not json');
     expect(loadBindings()).toBeNull();
   });
 
   it('rejects a non-object blob rather than handing back nonsense', () => {
     const map = installStorage();
-    map.set('maker.bindings.v1', JSON.stringify(['KeyW']));
+    map.set('maker.bindings.v2', JSON.stringify(['KeyW']));
     expect(loadBindings()).toBeNull();
   });
 
-  it('drops entries that are not string pairs', () => {
+  it('drops slot entries that are not codes, and actions left with nothing', () => {
     const map = installStorage();
-    map.set('maker.bindings.v1', JSON.stringify({ KeyK: 'moveForward', KeyJ: 42 }));
-    expect(loadBindings()).toEqual({ KeyK: 'moveForward' });
+    map.set('maker.bindings.v2', JSON.stringify({
+      moveForward: ['KeyK', 42],
+      jump: 'Space',        // not an array at all
+      crouch: [null, ''],   // nothing in either slot
+    }));
+    expect(loadBindings()).toEqual({ moveForward: ['KeyK', null] });
   });
 
-  it('clearing removes the stored map', () => {
-    saveBindings({ KeyK: 'moveForward' });
+  it('reads the pre-slots format, so an upgrade does not reset somebody', () => {
+    // Anybody who rebound a key before actions had two slots has this shape in
+    // their browser. Dropping it would silently put the defaults back.
+    const map = installStorage();
+    map.set('maker.bindings.v1', JSON.stringify({
+      KeyK: 'moveForward', ArrowUp: 'moveForward', Mouse0: 'placePart',
+    }));
+    expect(loadBindings()).toEqual({
+      moveForward: ['KeyK', 'ArrowUp'],
+      placePart: ['Mouse0'],
+    });
+  });
+
+  it('prefers the current format when both are present', () => {
+    const map = installStorage();
+    map.set('maker.bindings.v1', JSON.stringify({ KeyK: 'moveForward' }));
+    map.set('maker.bindings.v2', JSON.stringify({ moveForward: ['KeyJ', null] }));
+    expect(loadBindings()).toEqual({ moveForward: ['KeyJ', null] });
+  });
+
+  it('clearing removes both formats, or the old keys come back next launch', () => {
+    const map = installStorage();
+    map.set('maker.bindings.v1', JSON.stringify({ KeyK: 'moveForward' }));
+    saveBindings({ moveForward: ['KeyJ', null] });
     clearBindings();
     expect(loadBindings()).toBeNull();
   });

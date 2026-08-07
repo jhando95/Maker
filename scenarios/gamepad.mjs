@@ -223,6 +223,41 @@ export default async function (page) {
   // The edge detection is what stops a released trigger from placing forever.
   assert(later === atRelease, `releasing must stop placement; ${atRelease} -> ${later}`);
 
+  // ── The d-pad changes what you are holding ─────────────────────────────────
+  //
+  // `gamepad.ts` has bound d-pad left and right to `prevPart`/`nextPart` since
+  // it was written, and nothing anywhere read those two actions — so both
+  // buttons did nothing at all, silently, for as long as the pad has existed.
+  // Nobody noticed because the pad also has a part wheel and the wheel is the
+  // better way to pick. Found by putting every action on the controls screen:
+  // an action somebody can bind a key to had better do something.
+  await clearPad(page);
+  await frames(page, 3);
+  const heldBefore = await page.evaluate(() => window.__maker.getSelectedPart());
+  await setPad(page, { buttons: { 15: 1 } }); // D→
+  await page
+    .waitForFunction(
+      (was) => window.__maker.getSelectedPart() !== was,
+      heldBefore, { timeout: 20_000 },
+    )
+    .catch(() => { throw new Error('gamepad scenario: d-pad right should pick the next part'); });
+  const heldAfter = await page.evaluate(() => window.__maker.getSelectedPart());
+
+  // And back, so this is a step rather than a one-way door.
+  await clearPad(page);
+  await frames(page, 3);
+  await setPad(page, { buttons: { 14: 1 } }); // D←
+  await page
+    .waitForFunction(
+      (was) => window.__maker.getSelectedPart() === was,
+      heldBefore, { timeout: 20_000 },
+    )
+    .catch(() => {
+      throw new Error(`gamepad scenario: d-pad left should step back from ${heldAfter}`);
+    });
+  await clearPad(page);
+  await frames(page, 3);
+
   // ── Unplugging must not leave anything held ────────────────────────────────
   //
   // Checked on the input itself, not on the player's feet, and both halves of

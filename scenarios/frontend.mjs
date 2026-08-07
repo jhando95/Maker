@@ -29,6 +29,64 @@ const show = (page, screen) => page.evaluate((s) => {
   window.__maker.menu.show(s);
 }, screen);
 
+/** Every row on the controls screen, as a player sees it. */
+const bindRows = (page) => page.evaluate(() => [...document.querySelectorAll('.mk-bind')].map((el) => ({
+  label: el.querySelector('label')?.textContent ?? '',
+  keys: [...el.querySelectorAll('.keys button')].map((b) => b.textContent ?? ''),
+})));
+
+const bindRow = async (page, label) => {
+  const row = (await bindRows(page)).find((r) => r.label === label);
+  assert(row !== undefined, `there is no "${label}" row on the controls screen`);
+  return row;
+};
+
+/**
+ * Arm one slot and press something into it.
+ *
+ * The click has to go through the page rather than through Playwright's mouse,
+ * because the capture the click arms *also* listens for mousedown anywhere in
+ * the card — that is how a mouse button gets bound — and a synthetic click
+ * lands before the listener exists while a driver-level one races it.
+ */
+async function captureInto(page, label, slot, press) {
+  await page.evaluate(([wanted, index]) => {
+    const row = [...document.querySelectorAll('.mk-bind')]
+      .find((el) => el.querySelector('label')?.textContent === wanted);
+    if (row === undefined) throw new Error(`no row called ${wanted}`);
+    row.querySelectorAll('.keys button')[index].click();
+  }, [label, slot]);
+  // The capture is armed synchronously by that click, so the key can go now.
+  await press();
+  await page.waitForFunction(
+    () => document.querySelector('.mk-bind button.listening') === null,
+    undefined, { timeout: 4000, polling: 'raf' },
+  );
+}
+
+/**
+ * Hold a key until the game agrees the action is down.
+ *
+ * Same shape as `wheel.mjs`, and for the same reason: headless Chromium drops a
+ * key sent while the renderer is taking focus back, and input is folded at a
+ * tick boundary rather than on the frame the key arrived.
+ */
+async function heldDown(page, key, action) {
+  for (let attempt = 0; attempt < 6; attempt++) {
+    await page.keyboard.down(key);
+    try {
+      await page.waitForFunction(
+        (a) => window.__maker.actionDown(a) === true,
+        action, { timeout: 3000, polling: 'raf' },
+      );
+      return;
+    } catch {
+      await page.keyboard.up(key);
+    }
+  }
+  throw new Error(`frontend scenario: ${key} never drove ${action} — the rebind did not reach the game`);
+}
+
 export default async function (page) {
   // ── The title screen fits ───────────────────────────────────────────────────
 
@@ -85,6 +143,97 @@ export default async function (page) {
     `and the first of them should be the picture, got ${sections.join(', ')}`,
   );
 
+  // ── The controls screen ─────────────────────────────────────────────────────
+  //
+  // Everything here is a claim about a chain that only exists in a browser: a
+  // click arms a capture, a real keydown is caught in the capture phase before
+  // the game can act on it, and what comes out the far end is what the game
+  // responds to. The unit suite checks the binding rules; nothing but this can
+  // check that pressing the key you just chose does the thing.
+
+  await show(page, 'controls');
+  const rows = await bindRows(page);
+  assert(rows.length >= 30, `every control should be listed, saw ${rows.length}`);
+  for (const row of rows) {
+    assert(
+      row.keys.length === 2,
+      `"${row.label}" should offer two keys, drew ${row.keys.length}`,
+    );
+  }
+  // The specific regression. The old screen listed twenty of forty-one actions,
+  // and the ones it left out were not chosen — they were whatever had been
+  // added since it was written. Push-to-talk was among them, which is the worst
+  // one to leave fixed: it has to be held while moving, so it is the binding
+  // most likely to be wrong for somebody's hands.
+  for (const wanted of ['Push to talk', 'Ping', 'Next blueprint', 'Slot 1', 'Crouch']) {
+    assert(
+      rows.some((r) => r.label === wanted),
+      `"${wanted}" cannot be rebound by anybody — it is not on the screen`,
+    );
+  }
+  const groups = await page.evaluate(
+    () => [...document.querySelectorAll('.mk-group')].map((e) => e.textContent),
+  );
+  assert(groups.length >= 5, `thirty-five rows need grouping, saw ${groups.length} headings`);
+
+  // ── Changing the second key leaves the first alone ──────────────────────────
+  //
+  // The bug the whole slot model exists for: rebinding used to wipe every key
+  // an action had, so somebody moving forward onto another letter silently lost
+  // the arrow key too.
+  await captureInto(page, 'Jump / mantle', 1, () => page.keyboard.press('h'));
+  const jump = await bindRow(page, 'Jump / mantle');
+  assert(jump.keys[1] === 'H', `the second key should be H, drew "${jump.keys[1]}"`);
+  assert(jump.keys[0] === 'Space', `and the first should be untouched, drew "${jump.keys[0]}"`);
+  const boundTo = await page.evaluate(() => window.__maker.bindingFor('KeyH'));
+  assert(boundTo === 'jump', `the game should read KeyH as jump, it reads ${boundTo}`);
+
+  // And the key actually works. Reading the binding map proves the screen wrote
+  // somewhere; this proves it wrote to the thing a keypress consults.
+  await page.evaluate(() => {
+    window.__maker.menu.show('none');
+    window.__maker.hideOverlay();
+  });
+  await heldDown(page, 'h', 'jump');
+  await page.keyboard.up('h');
+
+  // ── Backspace empties a slot ────────────────────────────────────────────────
+  await show(page, 'controls');
+  await captureInto(page, 'Jump / mantle', 1, () => page.keyboard.press('Backspace'));
+  const cleared = await bindRow(page, 'Jump / mantle');
+  assert(cleared.keys[1] === '—', `a cleared slot should read as empty, drew "${cleared.keys[1]}"`);
+  assert(cleared.keys[0] === 'Space', 'and clearing one must not take the other');
+  const afterClear = await page.evaluate(() => window.__maker.bindingFor('KeyH'));
+  assert(afterClear === null, `KeyH should mean nothing now, it means ${afterClear}`);
+
+  // ── Taking a key says whose it was ──────────────────────────────────────────
+  //
+  // A code can only mean one thing, so binding one somebody else has *must*
+  // take it. Doing that silently is a control that stops working with no
+  // explanation attached.
+  await captureInto(page, 'Jump / mantle', 1, () => page.keyboard.press('w'));
+  const note = await page.evaluate(
+    () => document.querySelector('.mk-hint')?.textContent ?? '',
+  );
+  assert(
+    /taken from Move forward/i.test(note),
+    `the screen should say which control lost W, it said "${note}"`,
+  );
+  const robbed = await bindRow(page, 'Move forward');
+  assert(robbed.keys[0] === '—', `and show it gone, Move forward still reads "${robbed.keys[0]}"`);
+  assert(robbed.keys[1] === 'Up Arrow', 'while keeping the key it did not lose');
+
+  // ── Reset puts it all back ──────────────────────────────────────────────────
+  await page.evaluate(() => {
+    const buttons = [...document.querySelectorAll('.mk-card button')];
+    buttons.find((b) => /reset controls/i.test(b.textContent ?? ''))?.click();
+  });
+  const restored = await bindRow(page, 'Move forward');
+  assert(
+    restored.keys[0] === 'W' && restored.keys[1] === 'Up Arrow',
+    `reset should restore both keys, drew "${restored.keys.join(' / ')}"`,
+  );
+
   // ── The frame-rate readout ──────────────────────────────────────────────────
 
   // Off by default: a permanent number in the corner is a thing the player
@@ -125,5 +274,7 @@ export default async function (page) {
 
   console.log(`[frontend] verified: ${modes.length} mode cards on a title screen that fits,`
     + ` no relay address on it, ${sections.length} settings sections, four screens inside`
-    + ` the window, and a frame-rate readout that stays off until asked: "${stats.text}"`);
+    + ` the window, ${rows.length} rebindable controls in ${groups.length} groups with two`
+    + ` keys each — rebound, cleared, stolen and reset, and the new key drove the game —`
+    + ` and a frame-rate readout that stays off until asked: "${stats.text}"`);
 }

@@ -213,35 +213,80 @@ export class SettingsStore {
   }
 }
 
-const BINDINGS_KEY = 'maker.bindings.v1';
+const BINDINGS_KEY = 'maker.bindings.v2';
+/** What a player who last ran the game before actions had two slots has. */
+const BINDINGS_KEY_V1 = 'maker.bindings.v1';
+
+/** An action's keys, in slot order. `null` is an empty slot. */
+export type BindingSlots = Record<string, (string | null)[]>;
 
 /**
  * Key bindings persist separately from settings.
  *
- * They are a map of arbitrary key codes rather than a fixed set of fields, so
- * the type-checked key-by-key validation the settings store uses does not
+ * They are keyed by arbitrary action names rather than a fixed set of fields,
+ * so the type-checked key-by-key validation the settings store uses does not
  * apply. Keeping them apart means a bad bindings blob cannot take the settings
  * with it.
+ *
+ * The stored shape is action to slots, which is the shape the game holds them
+ * in. It used to be the inverse — code to action — and that could not express
+ * the thing the format now exists for: which of an action's two keys is the
+ * primary. An object's key order carries it by accident in JavaScript, and a
+ * semantic resting on `Object.keys` ordering is one `delete` away from being
+ * wrong with nothing to show for it.
  */
-export function loadBindings(): Record<string, string> | null {
+export function loadBindings(): BindingSlots | null {
+  const current = read(BINDINGS_KEY, parseSlots);
+  if (current !== null) return current;
+  // Nothing at v2: an existing player's keys are in the old flat map, and
+  // dropping them on an upgrade would silently reset controls somebody chose.
+  return read(BINDINGS_KEY_V1, parseFlatMap);
+}
+
+function read<T>(key: string, parse: (value: object) => T | null): T | null {
   try {
-    const raw = localStorage.getItem(BINDINGS_KEY);
+    const raw = localStorage.getItem(key);
     if (raw === null) return null;
     const parsed: unknown = JSON.parse(raw);
     if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return null;
-    const out: Record<string, string> = {};
-    for (const [code, action] of Object.entries(parsed)) {
-      if (typeof code === 'string' && typeof action === 'string') out[code] = action;
-    }
-    return Object.keys(out).length > 0 ? out : null;
+    return parse(parsed);
   } catch {
+    // Private browsing, a quota error, or malformed JSON. Defaults are fine.
     return null;
   }
 }
 
-export function saveBindings(bindings: Record<string, string>): void {
+function parseSlots(parsed: object): BindingSlots | null {
+  const out: BindingSlots = {};
+  for (const [action, slots] of Object.entries(parsed)) {
+    if (!Array.isArray(slots)) continue;
+    // Entry by entry rather than trusting the array: this blob survives a
+    // version of the game the player is no longer running.
+    const kept = slots.map((code) => (typeof code === 'string' && code.length > 0 ? code : null));
+    if (kept.some((code) => code !== null)) out[action] = kept;
+  }
+  return Object.keys(out).length > 0 ? out : null;
+}
+
+/**
+ * The v1 shape, turned into slots.
+ *
+ * Order is taken from the map as written, which is the same rule
+ * `slotsFromMap` uses — and it is the best available answer, because the old
+ * format never recorded which key was the primary.
+ */
+function parseFlatMap(parsed: object): BindingSlots | null {
+  const out: BindingSlots = {};
+  for (const [code, action] of Object.entries(parsed)) {
+    if (typeof code !== 'string' || typeof action !== 'string' || code.length === 0) continue;
+    (out[action] ??= []).push(code);
+  }
+  return Object.keys(out).length > 0 ? out : null;
+}
+
+export function saveBindings(slots: BindingSlots): void {
   try {
-    localStorage.setItem(BINDINGS_KEY, JSON.stringify(bindings));
+    localStorage.setItem(BINDINGS_KEY, JSON.stringify(slots));
   } catch {
     // Storage unavailable; bindings simply do not persist this session.
   }
@@ -250,6 +295,9 @@ export function saveBindings(bindings: Record<string, string>): void {
 export function clearBindings(): void {
   try {
     localStorage.removeItem(BINDINGS_KEY);
+    // The old key too, or "reset controls" would put the pre-upgrade bindings
+    // back the next time the game started.
+    localStorage.removeItem(BINDINGS_KEY_V1);
   } catch {
     /* nothing useful to do */
   }

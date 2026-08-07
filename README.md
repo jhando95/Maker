@@ -21,10 +21,10 @@ npm run dev      # http://localhost:5173
 
 | | |
 |---|---|
-| `WASD` | move |
+| `WASD` / arrows | move |
 | `Space` | jump — and, against a ledge you can reach, haul yourself over it |
 | `Shift` | sprint |
-| `Ctrl` / `C` | crouch (also fine-placement mode while building) |
+| `Ctrl` | crouch (also fine-placement mode while building) |
 | `LMB` | place part — hold to keep placing; throw or soak once the fighting starts |
 | `RMB` | remove the part under the crosshair |
 | `Alt` | free aim — suspend snapping entirely |
@@ -35,13 +35,22 @@ npm run dev      # http://localhost:5173
 | `Tab` (hold) | part wheel — flick a direction, let go; picks your water kit during a fight |
 | `1`–`8`, scroll | choose a part |
 | `Shift` + wheel | change colour |
-| `V` | first ⇄ third person |
 | `G` | repeat the last step — hold to run a chain |
-| `Esc` | pause |
+| `M` / `N` | next blueprint / save what you are looking at |
+| `V` | first ⇄ third person |
 | `F` | undo |
+| `C` (hold) | push to talk |
+| `MMB` | ping whatever you are looking at |
+| `Enter` / `Y` | say something / say it to your team only |
+| `B` | emotes |
+| `Esc` | pause |
 | `` ` `` | debug overlay |
 
-Every binding above is remappable in Settings → Controls.
+**Every control has two keys and both are yours.** Settings → Controls lists all
+thirty-seven of them in six groups; click either key to change it, `Backspace`
+to leave a control on one key, `Esc` to back out. Binding a key something else
+already has takes it, and the screen says which control lost it rather than
+letting a binding quietly stop working.
 
 ### Controller
 
