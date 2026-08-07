@@ -156,3 +156,45 @@ that had not been established** — a frame budget standing in for the game's ow
 clock. The honest read is that `scenarios/voice.mjs` is the most expensive check
 here and has been the least trustworthy; it earns its place because nothing else
 can prove one browser can hear another.
+
+## Every bug that was planted on purpose
+
+Each of these was introduced deliberately, to watch one assertion fail, and then
+taken out again. An assertion that survives its own bug is not a check — and the
+only way to know which kind you have written is to try it. The list is here
+rather than in a pull request description because it only grows.
+
+guests building for free, the outcome withheld, markers not sent, wetness
+dropped from the snapshot, a networked menu pausing the world, black grass, a
+missing horizon, a shared tank, an un-slowed soaked guest, a reverted bot id
+range, a sign flip in the aim vector, an un-ghosted slide, a trampoline parked by
+a tap, a launch speed raised past its ceiling, a slide pushed backwards, a mantle
+without its ground check, a tag with no height check and no cooldown, both halves
+of the thaw rule, a host that broadcasts instead of filtering, pings sent to
+everybody, a removed rate limit, a team channel that ignores teams, a splash with
+no spray, a burst that spawns dead, a microphone never added to the call, voice
+that ignores distance, a falloff of the wrong shape, walls that never muffle, an
+analyser tapped off nothing, marks that never reach the DOM, a staircase with its
+blocks spread apart, a ladder whose rails miss its rungs, a wall with gaps, a
+rebind that wipes the pair it was meant to change one key of, an alternate key
+that never reaches the game, a d-pad restored to doing nothing, the
+un-normalised eye offsets, an eye that ignores head size, a missing neck, a kid
+who does not breathe, a breath that reaches the feet, everybody inhaling
+together, one build for everybody, per-kid state that is never pruned, one mouth
+for every mood, a clamp that lets a slider past its stated range, a host that
+repeats a costume without checking it, an appearance that does not survive its
+own codec, paint that never leaves the wardrobe, a ponytail drawn on a shaved
+head, a height rule instead of the lava raycast, lava checkpoints counted out of
+order, a finish placed back inside the respawn, a lawn that never takes anybody,
+a dunk that wipes the checkpoints you earned, a sun that never moves, a sun that
+never swings, an evening fill that dims with the key, a sun that moves without
+invalidating the shadow map, and a day clock unquantised enough to rebuild that
+map every frame.
+
+And since: a lamp mesh culled against a bound measured while it was off; a glow
+drawn with normal blending instead of additive; each map light deleted in turn;
+an instanced count parked instead of lowered; a `canStamp` guard dropped so a
+blueprint places whatever fits; the support cascade disabled so a tower reports
+one part down instead of three; a house light removed to see whether the check
+was really looking at the house; a collapse-volume clamp removed; a collapse
+falloff halved to a placement's; and a collapse pitch flattened.
