@@ -54,6 +54,7 @@ import { BlueprintStore } from './app/blueprintStore.ts';
 import {
   blueprintCost, connectedFrom, normalize, stampAt, type Blueprint,
 } from './build/blueprint.ts';
+import { encodeBlueprint, decodeBlueprint } from './build/shareCode.ts';
 import { VoiceChat } from './voice/voiceChat.ts';
 import { transmitting } from './voice/voiceRules.ts';
 import { IdentityStore } from './app/identity.ts';
@@ -1779,6 +1780,17 @@ const menuCallbacks: MenuCallbacks = {
     if (gone && heldBlueprint?.id === id) heldBlueprint = null;
     return gone;
   },
+  onBlueprintExport: (id) => {
+    const bp = blueprints.get(id);
+    return bp === undefined ? null : encodeBlueprint(bp.name, bp.parts);
+  },
+  onBlueprintImport: (code) => {
+    const shared = decodeBlueprint(code);
+    if (shared === null) return 'invalid';
+    // Through the same save path a captured structure uses, so the imported
+    // blueprint obeys the same limits — a full list refuses it the same way.
+    return blueprints.save(shared.name, shared.parts) === null ? 'full' : 'saved';
+  },
 };
 
 const menu = new Menu(app, settings, menuCallbacks);
@@ -3480,6 +3492,20 @@ window.__maker = {
         buttons: Array.from(el.querySelectorAll('button'), (b) => b.textContent ?? ''),
       }),
     ),
+    /** Press Copy code on a row. Where the code lands is the clipboard's business. */
+    copy: (id: string) => pressBlueprint(id, 'Copy code'),
+    /** Paste into the import field and press Import, the way a player does. */
+    importCode: (code: string): boolean => {
+      const field = menu.root.querySelector('[data-bp-import]');
+      const go = menu.root.querySelector('[data-bp-import-go]');
+      if (!(field instanceof HTMLInputElement) || !(go instanceof HTMLButtonElement)) return false;
+      field.value = code;
+      go.click();
+      return true;
+    },
+    /** What the import row is telling the player, so a refusal can be asserted. */
+    importNote: () =>
+      (menu.root.querySelector('[data-bp-import-note]')?.textContent ?? '').trim(),
   },
   /**
    * The map in the corner, for the harness.

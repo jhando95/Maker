@@ -251,8 +251,16 @@ export function cleanBlueprintName(raw: string): string | null {
 // matching the grid.
 
 const FLAT = { qx: 0, qy: 0, qz: 0, qw: 1 };
-/** A quarter turn about Z: takes a part's long axis from +X to +Y. */
-const ON_END = { qx: 0, qy: 0, qz: -Math.SQRT1_2, qw: Math.SQRT1_2 };
+/**
+ * A quarter turn about Z: takes a part's long axis from +X to +Y.
+ *
+ * Quantized to 1e-4 like every rotation the placement path produces — these
+ * used to be raw Math.SQRT1_2, which made the built-ins the only records in
+ * the game carrying a rotation off that grid. Nothing geometric noticed, but
+ * the share codes did: their wire step is the same 1e-4, so a built-in was the
+ * one blueprint that came back from its own code very slightly not itself.
+ */
+const ON_END = { qx: 0, qy: 0, qz: q(-Math.SQRT1_2, 1e-4), qw: q(Math.SQRT1_2, 1e-4) };
 
 /**
  * Steps in the staircase, and the height of the ladder in modules.

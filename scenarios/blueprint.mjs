@@ -307,6 +307,66 @@ export default async function (page) {
   assert(!worked.stillDrawn, 'and take its row off the screen');
   assert(worked.nothingHeld, 'and nobody should be left holding what was deleted');
 
+  // ── Share codes ─────────────────────────────────────────────────────────────
+  //
+  // Copy is pressed on a real row and import goes through the real field,
+  // because the seam here is the whole feature: encode and decode agree in
+  // unit tests, but only the browser can prove the button reaches the encoder
+  // and the paste reaches the store. The clipboard itself is stubbed — what is
+  // under test is this game's path to it, not Chromium's permission prompts.
+  const share = await page.evaluate(async () => {
+    const m = window.__maker;
+    const frame = () => new Promise((r) => requestAnimationFrame(r));
+    const captured = [];
+    navigator.clipboard.writeText = (t) => { captured.push(t); return Promise.resolve(); };
+
+    const builtIn = m.blueprintScreen.list().find((b) => b.builtIn);
+    const before = m.blueprintScreen.list().length;
+    const pressedCopy = m.blueprintScreen.copy(builtIn.id);
+    await frame();
+    const code = captured[0] ?? null;
+
+    // Garbage first: it must be refused with a sentence, and save nothing.
+    m.blueprintScreen.importCode('MKR1.notacode');
+    await frame();
+    const refusal = m.blueprintScreen.importNote();
+    const afterGarbage = m.blueprintScreen.list().length;
+
+    m.blueprintScreen.importCode(code);
+    await frame();
+    const list = m.blueprintScreen.list();
+    const imported = list.find((b) => !b.builtIn && b.name === builtIn.name);
+    return {
+      pressedCopy, code, refusal, afterGarbage, before,
+      count: list.length, imported, original: builtIn,
+    };
+  });
+
+  assert(share.pressedCopy, 'the screen should offer Copy code on a row');
+  assert(
+    typeof share.code === 'string' && share.code.startsWith('MKR1.'),
+    `pressing it should hand the clipboard a code, got: ${share.code}`,
+  );
+  assert(
+    share.afterGarbage === share.before,
+    'a mangled code must not save anything',
+  );
+  assert(
+    share.refusal.includes('not a blueprint'),
+    `and the player should be told so, saw: "${share.refusal}"`,
+  );
+  assert(
+    share.count === share.before + 1 && share.imported !== undefined,
+    'importing the real code should add it as a saved blueprint',
+  );
+  assert(
+    share.imported.parts === share.original.parts
+      && share.imported.wood === share.original.wood,
+    `the import should be the same shape at the same price: `
+      + `${share.imported.parts}/${share.original.parts} parts, `
+      + `${share.imported.wood}/${share.original.wood} wood`,
+  );
+
   await page.evaluate(() => window.__maker.hideOverlay());
   await frames(page, 4);
 
@@ -323,5 +383,7 @@ export default async function (page) {
     + ' refused without leaving a partial one behind, a flood fill off the real world saves'
     + ' the connected group, four quarter turns land exactly where they started, and'
     + ' a picker screen holds, renames and deletes them — refusing to offer either on a'
-    + ' built-in, and leaving nobody holding what it just threw away');
+    + ' built-in, and leaving nobody holding what it just threw away. A share code copied'
+    + ' off a row imports as the same shape at the same price, and a mangled one is'
+    + ' refused with a sentence rather than half a fort');
 }

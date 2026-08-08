@@ -464,6 +464,14 @@ export interface MenuCallbacks {
   onBlueprintHold(id: string | null): void;
   onBlueprintRename(id: string, name: string): boolean;
   onBlueprintDelete(id: string): boolean;
+  /** The blueprint as a pasteable share code, or null if it no longer exists. */
+  onBlueprintExport(id: string): string | null;
+  /**
+   * A pasted code, decoded and saved. Three answers rather than a boolean,
+   * because the player needs to be told *which* thing went wrong: a mangled
+   * code and a full list have different remedies.
+   */
+  onBlueprintImport(code: string): 'saved' | 'invalid' | 'full';
   onSaveBuild(name: string): boolean;
   onLoadBuild(id: string): boolean;
   onDeleteBuild(id: string): void;
@@ -1953,6 +1961,26 @@ export class Menu {
         row.appendChild(hold);
       }
 
+      // Every blueprint can be shared, built-ins included — copying 'Stairs'
+      // is pointless but refusing it would be a rule to remember.
+      const share = document.createElement('button');
+      share.textContent = 'Copy code';
+      share.dataset.bpCopy = slot.id;
+      share.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const code = this.callbacks.onBlueprintExport(slot.id);
+        if (code === null) return;
+        // The clipboard needs a secure context and can still refuse; the
+        // fallback shows the code in place so it can be copied by hand. Either
+        // way the player is never told "copied" about a copy that failed.
+        navigator.clipboard?.writeText(code).then(() => {
+          share.textContent = 'Copied!';
+          setTimeout(() => { share.textContent = 'Copy code'; }, 1200);
+        }).catch(() => this.showCodeInPlace(row, code))
+          ?? this.showCodeInPlace(row, code);
+      });
+      row.appendChild(share);
+
       // The ones that ship with the game keep their names and cannot be thrown
       // away, so the two buttons that would fail are not offered.
       if (!slot.builtIn) {
@@ -1995,6 +2023,63 @@ export class Menu {
 
       this.card.appendChild(row);
     }
+
+    // ── Import ────────────────────────────────────────────────────────────────
+    //
+    // A code from a friend, pasted here, becomes a saved blueprint. The three
+    // failure answers get three different sentences, because "didn't work"
+    // sends somebody to re-paste a code when the actual problem is a full
+    // list.
+    const importRow = document.createElement('div');
+    importRow.className = 'mk-preset';
+    const field = document.createElement('input');
+    field.className = 'mk-name-input';
+    field.placeholder = 'Paste a share code…';
+    field.dataset.bpImport = '';
+    field.addEventListener('keydown', (ev) => ev.stopPropagation());
+    importRow.appendChild(field);
+    const go = document.createElement('button');
+    go.textContent = 'Import';
+    go.dataset.bpImportGo = '';
+    const note = document.createElement('span');
+    note.className = 'mk-hint';
+    note.dataset.bpImportNote = '';
+    go.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const result = this.callbacks.onBlueprintImport(field.value);
+      if (result === 'saved') {
+        this.render();
+        return;
+      }
+      note.textContent = result === 'full'
+        ? 'No room — delete a blueprint first.'
+        : 'That is not a blueprint code.';
+    });
+    importRow.appendChild(go);
+    importRow.appendChild(note);
+    this.card.appendChild(importRow);
+  }
+
+  /**
+   * The share code, shown in the row itself for copying by hand.
+   *
+   * The fallback for when the clipboard says no — file:// pages and denied
+   * permissions both land here. An input rather than a span so it can be
+   * selected, and selected already so the remaining gesture is one keystroke.
+   */
+  private showCodeInPlace(row: HTMLElement, code: string): void {
+    const field = document.createElement('input');
+    field.className = 'mk-name-input';
+    field.value = code;
+    field.readOnly = true;
+    field.addEventListener('keydown', (ev) => {
+      ev.stopPropagation();
+      if (ev.key === 'Escape' || ev.key === 'Enter') this.render();
+    });
+    field.addEventListener('blur', () => this.render());
+    row.replaceChildren(field);
+    field.focus();
+    field.select();
   }
 
   private renderBuilds(): void {
