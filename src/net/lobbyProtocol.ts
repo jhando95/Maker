@@ -44,10 +44,55 @@
  */
 
 /** Bumped when a message below changes shape. Independent of the game's. */
-export const LOBBY_VERSION = 1;
+export const LOBBY_VERSION = 2;
 
 /** What somebody is doing, as far as their friends can see. */
 export type Presence = 'offline' | 'online' | 'queued' | 'playing';
+
+/**
+ * Enough of somebody's outfit to tell them apart in a list.
+ *
+ * Three colours rather than an `Appearance`, and that is a boundary decision
+ * rather than laziness. This file is a matchmaker: it deliberately knows
+ * nothing about the game, to the point of refusing to carry a player id.
+ * Handing it the character model would tie the thing that pairs strangers up
+ * to the thing that draws hair, so that the next slider added to the Locker
+ * would be a lobby protocol change. A row in a list can show three colours;
+ * that is what it gets.
+ */
+export interface Look {
+  shirt: number;
+  skin: number;
+  hair: number;
+}
+
+/**
+ * A neutral kid, for anybody who has never opened the Locker.
+ *
+ * A default rather than an optional field, so no list has to decide what to
+ * draw for somebody who has not chosen — a hole in a row is a thing people ask
+ * about, and there is nothing to explain.
+ */
+export const PLAIN_LOOK: Look = { shirt: 0x6e8bd8, skin: 0xe8b98a, hair: 0x4a3728 };
+
+/** Colours arrive over a socket, so they are cleaned rather than trusted. */
+export function cleanLook(raw: unknown): Look {
+  const l = (raw ?? {}) as Partial<Look>;
+  return {
+    shirt: cleanColour(l.shirt, PLAIN_LOOK.shirt),
+    skin: cleanColour(l.skin, PLAIN_LOOK.skin),
+    hair: cleanColour(l.hair, PLAIN_LOOK.hair),
+  };
+}
+
+function cleanColour(raw: unknown, fallback: number): number {
+  // Anything that is not a number at all keeps the default, rather than being
+  // coerced — `Number('red')` is NaN and `Number(null)` is black, and a list of
+  // players who all went black because somebody sent a string is worse than a
+  // list where one of them is the default blue.
+  if (typeof raw !== 'number' || !Number.isFinite(raw)) return fallback;
+  return Math.max(0, Math.min(0xffffff, Math.floor(raw)));
+}
 
 /** A person, as everyone else sees them. Never carries a player id. */
 export interface PublicPlayer {
@@ -55,6 +100,8 @@ export interface PublicPlayer {
   code: string;
   name: string;
   presence: Presence;
+  /** Three colours, so a list of names is a list of people. */
+  look: Look;
 }
 
 /**
@@ -105,6 +152,14 @@ export type LobbyClientMessage =
   | { t: 'hello'; v: number; id: string; name: string }
   /** Change what everyone calls you. */
   | { t: 'rename'; name: string }
+  /**
+   * What I look like, for other people's lists.
+   *
+   * Sent rather than derived, because the lobby has no idea what a Locker is
+   * and should not learn. Cleaned on arrival like every other thing a client
+   * says about itself.
+   */
+  | { t: 'look'; look: Look }
   | { t: 'friend.add'; code: string }
   | { t: 'friend.remove'; code: string }
   /** Ask somebody to join your party. Creates one if you are not in a party. */

@@ -14,6 +14,7 @@ import { SettingsStore, type Settings } from '../app/settings.ts';
 import { formatCode, MAX_NAME } from '../app/identity.ts';
 import type { BuildSlot } from '../app/buildStore.ts';
 import { installTheme } from './theme.ts';
+import type { Look } from '../net/lobbyProtocol.ts';
 import { describeKey } from '../core/input.ts';
 import {
   BROWS, CLOTH_COLOURS, EYE_COLOURS, HAIR_COLOURS, HAIR_STYLES, MARK_SHAPES,
@@ -212,6 +213,15 @@ const STYLE = `
    people whose whole purpose is knowing which of them you can play with. */
 .mk-row .state { font-size: 11px; opacity: 0.65; text-transform: uppercase;
   letter-spacing: 0.5px; }
+/* A kid, at the size a list row can spare: a shirt with a head on it and a
+   fringe across the top. Three colours is all the lobby is told, which is all a
+   row can show — a rendered face here would mean a canvas and a camera per
+   person in a list that scrolls. */
+.mk-face { width: 18px; height: 18px; border-radius: 5px; flex: 0 0 auto;
+  position: relative; overflow: hidden; }
+.mk-face i { position: absolute; display: block; }
+.mk-face .head { left: 4px; top: 3px; width: 10px; height: 9px; border-radius: 4px; }
+.mk-face .hair { left: 4px; top: 2px; width: 10px; height: 4px; border-radius: 3px 3px 0 0; }
 .mk-dot { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto; }
 .mk-dot.online { background: var(--go); }
 .mk-dot.queued { background: var(--warn); }
@@ -444,8 +454,11 @@ export interface LobbyView {
   connected: boolean;
   code: string | null;
   name: string;
-  friends: ReadonlyArray<{ code: string; name: string; presence: string }>;
-  party: { leaderCode: string; members: ReadonlyArray<{ code: string; name: string }> } | null;
+  friends: ReadonlyArray<{ code: string; name: string; presence: string; look: Look }>;
+  party: {
+    leaderCode: string;
+    members: ReadonlyArray<{ code: string; name: string; look: Look }>;
+  } | null;
   invitations: ReadonlyArray<{ party: string; from: { name: string } }>;
   queue: { mode: string; waiting: number; needed: number; seconds: number } | null;
   problem: string | null;
@@ -878,6 +891,34 @@ export class Menu {
     }
   }
 
+  /**
+   * A kid, at the size a list row can spare.
+   *
+   * Three coloured boxes: a shirt, a head on it, a fringe across the top. Not a
+   * rendered character, which would mean a canvas and a camera per person in a
+   * list that scrolls — and would tie the lobby screen to the character rig,
+   * which is exactly the coupling the protocol refuses by sending three
+   * colours instead of an appearance.
+   *
+   * Static so it cannot reach for anything on the screen, and so the two lists
+   * that draw one cannot drift apart.
+   */
+  private static face(look: Look): HTMLElement {
+    const hex = (c: number): string => `#${c.toString(16).padStart(6, '0')}`;
+    const el = document.createElement('span');
+    el.className = 'mk-face';
+    el.style.background = hex(look.shirt);
+    const head = document.createElement('i');
+    head.className = 'head';
+    head.style.background = hex(look.skin);
+    const hair = document.createElement('i');
+    hair.className = 'hair';
+    hair.style.background = hex(look.hair);
+    // The head first, so the fringe sits on top of it rather than behind.
+    el.append(head, hair);
+    return el;
+  }
+
   private renderParty(lobby: LobbyView): void {
     const party = lobby.party;
     if (party === null || party.members.length < 2) return;
@@ -892,6 +933,7 @@ export class Menu {
       const who = document.createElement('span');
       who.className = 'who';
       who.textContent = member.code === party.leaderCode ? `${member.name} (leader)` : member.name;
+      row.insertBefore(Menu.face(member.look), row.firstChild);
       row.appendChild(who);
       // Only the leader can remove somebody, and never themselves — a leader
       // kicking themselves is just leaving, which has its own button.
@@ -952,7 +994,10 @@ export class Menu {
       const state = document.createElement('span');
       state.className = 'state';
       state.textContent = friend.presence === 'playing' ? 'in a yard' : friend.presence;
-      item.append(dot, who, state);
+      // The face goes before the presence dot: who somebody is comes before
+      // whether they are free, and a list you scan for a friend is scanned by
+      // the thing that identifies them.
+      item.append(Menu.face(friend.look), dot, who, state);
 
       if (friend.presence !== 'offline') {
         item.appendChild(this.mini('invite', () => { lobby.invite(friend.code); this.render(); }));

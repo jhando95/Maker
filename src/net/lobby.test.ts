@@ -17,7 +17,9 @@ import { describe, it, expect, vi } from 'vitest';
 import { LobbyClient, lobbyUrl, type Link, type Matched } from './lobby.ts';
 import { Lobby } from '../../server/lobbyCore.ts';
 import { IdentityStore } from '../app/identity.ts';
-import { decodeLobby, encodeLobby, LOBBY_VERSION } from './lobbyProtocol.ts';
+import {
+  decodeLobby, encodeLobby, LOBBY_VERSION, PLAIN_LOOK, type Look,
+} from './lobbyProtocol.ts';
 
 function fakeStorage(): Storage {
   const raw = new Map<string, string>();
@@ -128,8 +130,59 @@ describe('connecting', () => {
     expect(sent, 'the client spoke before the socket opened').toHaveLength(0);
 
     link.onOpen?.();
-    expect(sent).toHaveLength(1);
+    // The hello is *first*, which is the claim — not that it is the only thing.
+    // A count of one was standing in for that and stopped meaning it the moment
+    // the look started going out behind the hello.
     expect(decodeLobby(sent[0]!)).toMatchObject({ t: 'hello', v: LOBBY_VERSION });
+  });
+
+  it('says what it looks like straight after the hello', () => {
+    // The server keeps a player across sockets but has no reason to remember an
+    // outfit through a restart, so this is resent on every connect — a friend
+    // list of default blue kids after a deploy is a bug nobody would report.
+    const sent: string[] = [];
+    const identity = (() => {
+      vi.stubGlobal('localStorage', fakeStorage());
+      return new IdentityStore('id.look');
+    })();
+    const client = new LobbyClient(identity, () => {}, () => {});
+    const link: Link = {
+      send: (t) => sent.push(t), close: () => {},
+      onMessage: null, onOpen: null, onClose: null,
+    };
+    client.setLook({ shirt: 0x112233, skin: 0x445566, hair: 0x778899 });
+    client.connect(link);
+    link.onOpen?.();
+
+    expect(decodeLobby(sent[1]!)).toMatchObject({
+      t: 'look', look: { shirt: 0x112233, skin: 0x445566, hair: 0x778899 },
+    });
+  });
+
+  it('cleans a look on the way out as well as on the way in', () => {
+    // Both ends clean it. The server has to, because a client can send
+    // anything; this one does because a colour picked up from a saved outfit
+    // written by an older build is untrusted input too.
+    const sent: string[] = [];
+    const identity = (() => {
+      vi.stubGlobal('localStorage', fakeStorage());
+      return new IdentityStore('id.dirty');
+    })();
+    const client = new LobbyClient(identity, () => {}, () => {});
+    const link: Link = {
+      send: (t) => sent.push(t), close: () => {},
+      onMessage: null, onOpen: null, onClose: null,
+    };
+    // `null` rather than `NaN`, because NaN fails every check and proves
+    // nothing; a coercible non-number is what a weak clean would let through.
+    client.setLook({ shirt: 1e9, skin: null, hair: -5 } as never);
+    client.connect(link);
+    link.onOpen?.();
+
+    const out = decodeLobby(sent[1]!) as { t: 'look'; look: Look };
+    expect(out.look.shirt).toBeLessThanOrEqual(0xffffff);
+    expect(out.look.skin).toBe(PLAIN_LOOK.skin);
+    expect(out.look.hair).toBeGreaterThanOrEqual(0);
   });
 
   it('says what went wrong in words rather than in a code', () => {

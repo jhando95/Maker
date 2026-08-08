@@ -32,7 +32,8 @@
 import {
   LOBBY_VERSION, MAX_FRIENDS, MAX_PARTY, QUEUE_MODES, targetFor,
   type LobbyClientMessage, type LobbyServerMessage, type PartyView,
-  type Presence, type PublicPlayer, type Refusal,
+  cleanLook, PLAIN_LOOK,
+  type Look, type Presence, type PublicPlayer, type Refusal,
 } from '../src/net/lobbyProtocol.ts';
 import { CODE_ALPHABET, CODE_LENGTH, cleanName } from '../src/app/identity.ts';
 
@@ -58,6 +59,8 @@ interface Player {
   lastSeen: number;
   /** Set while in a match, so friends see `playing` rather than `online`. */
   playing: boolean;
+  /** Three colours, so a friend list is a list of people rather than names. */
+  look: Look;
 }
 
 interface Party {
@@ -136,7 +139,7 @@ export class Lobby {
       player = {
         id, code, name: cleanName(name),
         friends: new Set(), partyId: null, invites: new Set(),
-        send, lastSeen: now, playing: false,
+        send, lastSeen: now, playing: false, look: PLAIN_LOOK,
       };
       this.players.set(id, player);
       this.byCode.set(code, id);
@@ -188,6 +191,15 @@ export class Lobby {
     switch (message.t) {
       case 'ping': player.send?.({ t: 'pong' }); break;
       case 'rename': this.rename(player, message.name); break;
+      case 'look': {
+        player.look = cleanLook(message.look);
+        // Everybody who has this player in a list, for the same reason a rename
+        // does it: a friend who changed their shirt while you were looking at
+        // them should not stay the old colour until one of you reconnects.
+        this.announcePresence(player);
+        this.broadcastParty(player.partyId);
+        break;
+      }
       case 'friend.add': this.addFriend(player, message.code); break;
       case 'friend.remove': this.removeFriend(player, message.code); break;
       case 'party.invite': this.invite(player, message.code); break;
@@ -550,7 +562,12 @@ export class Lobby {
   }
 
   private publicOf(player: Player): PublicPlayer {
-    return { code: player.code, name: player.name, presence: this.presenceOf(player) };
+    return {
+      code: player.code,
+      name: player.name,
+      presence: this.presenceOf(player),
+      look: player.look,
+    };
   }
 
   private presenceOf(player: Player): Presence {

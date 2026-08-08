@@ -14,7 +14,9 @@
 
 import { describe, it, expect } from 'vitest';
 import { Lobby, IDLE_TIMEOUT_MS } from './lobbyCore.ts';
-import { LOBBY_VERSION, MAX_PARTY, targetFor } from '../src/net/lobbyProtocol.ts';
+import {
+  LOBBY_VERSION, MAX_PARTY, PLAIN_LOOK, targetFor,
+} from '../src/net/lobbyProtocol.ts';
 import type { LobbyServerMessage, PartyView, PublicPlayer } from '../src/net/lobbyProtocol.ts';
 
 /** A connected player, with everything the lobby has ever said to them. */
@@ -57,6 +59,86 @@ function makeLobby(): Lobby {
     return n / 0x7fffffff;
   });
 }
+
+describe('what everybody looks like', () => {
+  /** Two friends, so one can watch the other change their shirt. */
+  function pair(): { lobby: Lobby; mia: Client; sam: Client } {
+    const lobby = makeLobby();
+    const mia = new Client(lobby, 'id-mia', 'mia');
+    const sam = new Client(lobby, 'id-sam', 'sam');
+    lobby.handle(mia.id, { t: 'friend.add', code: sam.code }, 0);
+    return { lobby, mia, sam };
+  }
+
+  const seenBySam = (r: { mia: Client; sam: Client }) =>
+    r.sam.friends.find((f) => f.code === r.mia.code)!.look;
+
+  it('shows a friend the colours they chose', () => {
+    // The gap this closes: the lobby knew friend codes and names and drew a
+    // list of strings, so the screen where you decide who to play with was the
+    // one screen where nobody had a face.
+    const r = pair();
+    r.lobby.handle(r.mia.id, {
+      t: 'look', look: { shirt: 0x112233, skin: 0x445566, hair: 0x778899 },
+    }, 0);
+    expect(seenBySam(r)).toEqual({ shirt: 0x112233, skin: 0x445566, hair: 0x778899 });
+  });
+
+  it('starts everybody as a plain kid rather than as a hole in the row', () => {
+    // A default rather than an optional field, so no list has to decide what to
+    // draw for somebody who has never opened the Locker.
+    expect(seenBySam(pair())).toEqual(PLAIN_LOOK);
+  });
+
+  it('cleans what a client sends', () => {
+    // Same rule as every other thing a client says about itself, and the value
+    // that matters is one which *coerces* rather than one that fails to.
+    // `Number('red')` is NaN and would be caught by any check at all; the
+    // dangerous ones are `null`, `true` and `[]`, which come out as 0 and 1 —
+    // a whole friend list gone black because somebody sent a null.
+    const r = pair();
+    r.lobby.handle(r.mia.id, {
+      t: 'look', look: { shirt: 1e12, skin: null, hair: true } as never,
+    }, 0);
+    const look = seenBySam(r);
+    expect(look.shirt).toBeLessThanOrEqual(0xffffff);
+    expect(look.skin).toBe(PLAIN_LOOK.skin);
+    expect(look.hair).toBe(PLAIN_LOOK.hair);
+  });
+
+  it('survives a client sending no look at all', () => {
+    const r = pair();
+    expect(() => r.lobby.handle(r.mia.id, { t: 'look', look: null as never }, 0)).not.toThrow();
+    expect(seenBySam(r)).toEqual(PLAIN_LOOK);
+  });
+
+  it('tells a friend when somebody changes their shirt', () => {
+    // Announced rather than left until the next reconnect, for the same reason
+    // a rename is: somebody looking at the list right now is looking at the old
+    // colour.
+    const r = pair();
+    r.lobby.handle(r.mia.id, {
+      t: 'look', look: { shirt: 0x010203, skin: 0x040506, hair: 0x070809 },
+    }, 0);
+    expect(seenBySam(r).shirt).toBe(0x010203);
+    r.lobby.handle(r.mia.id, {
+      t: 'look', look: { shirt: 0xaabbcc, skin: 0x040506, hair: 0x070809 },
+    }, 0);
+    expect(seenBySam(r).shirt).toBe(0xaabbcc);
+  });
+
+  it('carries the look into a party view as well as a friend list', () => {
+    // Two lists draw a face and both are fed from `publicOf`, so this is really
+    // a check that there is one place that decides rather than two.
+    const r = pair();
+    r.lobby.handle(r.mia.id, {
+      t: 'look', look: { shirt: 0xc0ffee, skin: 0x445566, hair: 0x778899 },
+    }, 0);
+    r.lobby.handle(r.mia.id, { t: 'party.invite', code: r.sam.code }, 0);
+    const invite = r.sam.last('party.invited');
+    expect(invite?.from.look.shirt).toBe(0xc0ffee);
+  });
+});
 
 describe('joining', () => {
   it('mints a code and hands it back', () => {

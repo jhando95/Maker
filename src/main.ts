@@ -835,10 +835,16 @@ const locker = new LockerStore();
 let myAppearance: Appearance | null = locker.worn();
 
 function applyLook(): void {
+  const look = myAppearance ?? wearing(actors.local.id);
   dress(actors.local.id, myAppearance);
   // The wire only when there is one. `wear` on a client sends; on a host it
   // broadcasts and remembers, so a guest who joins later is told.
-  net?.wear(myAppearance ?? wearing(actors.local.id));
+  net?.wear(look);
+  // And the lobby, which gets three colours rather than an appearance — it is
+  // a matchmaker and has no business knowing what a hair style is. Sent from
+  // here rather than from the Locker screen, so it cannot be forgotten by
+  // whichever of the four ways an outfit changes is added next.
+  lobbyClient?.setLook({ shirt: look.shirt, skin: look.skin, hair: look.hair });
 }
 
 function wearAppearance(appearance: Appearance | null): void {
@@ -1250,8 +1256,12 @@ function connectLobby(url = lobbyAddress): LobbyClient {
   lobbyAddress = url;
   lobbyClient?.disconnect();
   const client = new LobbyClient(identity, () => menu.refresh(), (m) => enterMatch(m));
-  client.connect(socketLink(lobbyUrl(url)));
   lobbyClient = client;
+  // Before connecting, so the look is on the client when its socket opens and
+  // goes out with the hello rather than a frame after it.
+  const look = myAppearance ?? wearing(actors.local.id);
+  client.setLook({ shirt: look.shirt, skin: look.skin, hair: look.hair });
+  client.connect(socketLink(lobbyUrl(url)));
   return client;
 }
 

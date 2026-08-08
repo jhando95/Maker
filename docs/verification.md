@@ -574,6 +574,39 @@ Six planted, four caught immediately, and both survivors were worth the time:
   It collapses a six-metre jet to zero length now and demands the droplet count
   is unmoved, which only a copy can manage.
 
+## A face in the lobby, and a claim in the PR body that was wrong
+
+The description had been carrying "a locker outfit does not follow you into the
+lobby's player list — the appearance is on the wire; the list simply does not
+read it". The first half was wrong. The appearance is on the *session* wire, in
+the game; the lobby protocol had no appearance at all, so this was a protocol
+change rather than a reading omission. Worth recording because the sentence made
+a five-file job sound like a one-line one, and it was written by whoever is
+writing this.
+
+**Three colours, not an `Appearance`,** and that is the decision. `lobbyProtocol`
+is a matchmaker that deliberately knows nothing about the game — it refuses to
+carry a player id on the grounds that "a party list is shown on a screen".
+Handing it the character model would tie the thing that pairs strangers up to
+the thing that draws hair, so the next slider added to the Locker would be a
+lobby protocol change. A row in a list can show a shirt, a face and a fringe;
+that is what it gets, and `PLAIN_LOOK` is a default rather than an optional
+field so no list has to decide what to draw for somebody who never opened the
+Locker.
+
+The chip is three coloured boxes in CSS rather than a rendered head, for the
+same reason: a canvas and a camera per person in a list that scrolls, to show
+what three rectangles already show.
+
+Six planted, five caught at once. The survivor was the interesting one again:
+**a clean that coerced instead of checking the type.** The test sent
+`skin: 'red'`, and `Number('red')` is `NaN`, which every version of the check
+rejects — so replacing `typeof raw !== 'number'` with a coercion changed
+nothing. The values that matter are the ones that coerce *successfully*:
+`Number(null)` is 0 and `Number(true)` is 1, so a weak clean turns a whole
+friend list black because somebody sent a null. The test sends `null` and `true`
+now, which is what the comment beside the code had said all along.
+
 ## Every bug that was planted on purpose
 
 Each of these was introduced deliberately, to watch one assertion fail, and then
@@ -624,6 +657,11 @@ negative result trusted; a result read without asking whether it is ready — th
 one that would stall the whole pipeline; a second query opened while one is
 active; a tainted result recorded anyway; and a timer that claims to work on a
 machine with no extension.
+
+And on the lobby's faces, six: the look never reaching a friend's list; the look
+stored unclamped; nobody starting with a look at all; the party view dropping it
+while the friend list kept it; a colour coerced rather than type-checked; and a
+colour never clamped to one a screen can show.
 
 And on drawing everybody's water, six: only the first hose drawn; unused slots
 parked instead of the count lowered; hoses past the cap squeezed in rather than

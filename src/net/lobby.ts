@@ -31,6 +31,7 @@ import type { IdentityStore } from '../app/identity.ts';
 import {
   LOBBY_VERSION, decodeLobby, encodeLobby,
   type LobbyClientMessage, type PartyView, type PublicPlayer, type Refusal,
+  cleanLook, PLAIN_LOOK, type Look,
 } from './lobbyProtocol.ts';
 
 /** Whatever carries text both ways. A WebSocket satisfies this; so does a queue. */
@@ -106,6 +107,9 @@ function explain(why: Refusal, about?: string): string {
 }
 
 export class LobbyClient {
+  /** What this player looks like, resent on every connect. */
+  private look: Look = PLAIN_LOOK;
+
   private link: Link | null = null;
   private timer: ReturnType<typeof setInterval> | null = null;
 
@@ -151,6 +155,11 @@ export class LobbyClient {
       link.send(encodeLobby({
         t: 'hello', v: LOBBY_VERSION, id: this.identity.playerId, name: this.identity.name,
       }));
+      // Straight after the hello, every time. The server keeps a player record
+      // across sockets but has no reason to remember an outfit through a
+      // restart, and a friend list of default blue kids after a deploy is a bug
+      // nobody would think to report.
+      link.send(encodeLobby({ t: 'look', look: this.look }));
     };
     link.onMessage = (text): void => this.receive(text);
     link.onClose = (): void => {
@@ -183,6 +192,19 @@ export class LobbyClient {
   }
 
   // ── Things the screen asks for ──────────────────────────────────────────────
+
+  /**
+   * What this player looks like, for other people's lists.
+   *
+   * Sent whenever it changes and again on every connect, because the lobby
+   * keeps a player record across sockets but has no reason to remember an
+   * outfit through a server restart — and a friend list of default blue kids
+   * after a deploy is a bug nobody would think to report.
+   */
+  setLook(look: Look): void {
+    this.look = cleanLook(look);
+    this.say({ t: 'look', look: this.look });
+  }
 
   rename(name: string): void {
     this.identity.setName(name);
