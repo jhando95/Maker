@@ -1,7 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import {
-  BUTTON, commandToIntent, makeCommand, packCommand, pressed, unpackCommand, withButton,
+  aimOf, BUTTON, commandToIntent, makeCommand, packCommand, pressed, unpackCommand, withButton,
 } from './command.ts';
+import { CollisionWorld } from '../physics/collisionWorld.ts';
+import { CameraRig } from '../player/cameraRig.ts';
 
 describe('buttons', () => {
   it('sets and clears without touching its neighbours', () => {
@@ -94,5 +96,45 @@ describe('packing', () => {
     c.yaw = Math.PI;
     const there = JSON.parse(JSON.stringify(packCommand(c)));
     expect(unpackCommand(there)).toEqual(c);
+  });
+});
+
+describe('aim', () => {
+  it('points exactly where the camera points', () => {
+    // Two expressions for one thing, and they must not drift. The camera's is
+    // read for the person at this keyboard; this one is read by a host firing
+    // on behalf of somebody in another house. If they disagreed, a guest would
+    // aim at one thing and hit another — and only a guest, so it would look
+    // like lag rather than like a maths error.
+    const world = new CollisionWorld();
+    const camera = new CameraRig(world, 1.6);
+
+    for (const [yaw, pitch] of [
+      [0, 0], [Math.PI / 2, 0], [-1.3, 0.4], [2.7, -0.9], [Math.PI, 1.2],
+    ]) {
+      camera.yaw = yaw!;
+      camera.pitch = pitch!;
+      const look = camera.getLookDirection();
+      const command = makeCommand(0);
+      command.yaw = yaw!;
+      command.pitch = pitch!;
+      const aim = aimOf(command);
+
+      expect(aim.x, `x at yaw ${yaw} pitch ${pitch}`).toBeCloseTo(look.x, 10);
+      expect(aim.y, `y at yaw ${yaw} pitch ${pitch}`).toBeCloseTo(look.y, 10);
+      expect(aim.z, `z at yaw ${yaw} pitch ${pitch}`).toBeCloseTo(look.z, 10);
+    }
+  });
+
+  it('survives the round trip a command takes to get to a host', () => {
+    // The slot rides along with it. A weapon choice that did not survive
+    // packing would leave every guest holding the starting soaker.
+    const command = makeCommand(9);
+    command.yaw = 1.1;
+    command.pitch = -0.3;
+    command.slot = 2;
+    const there = unpackCommand(packCommand(command));
+    expect(there).toEqual(command);
+    expect(aimOf(there)).toEqual(aimOf(command));
   });
 });

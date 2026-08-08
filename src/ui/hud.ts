@@ -84,6 +84,22 @@ const STYLE = `
 .maker-status { left: 16px; bottom: 16px; }
 .maker-help { right: 16px; bottom: 16px; text-align: right; }
 .maker-debug { left: 16px; top: 16px; font-family: ui-monospace, monospace; font-size: 11px; }
+.maker-stats { right: 16px; top: 16px; font-family: ui-monospace, monospace; font-size: 12px;
+  line-height: 1.45; text-align: right; min-width: 128px; }
+.maker-stats b { font-size: 16px; }
+.maker-stats .dim { opacity: 0.62; }
+/* Bottom centre, above the help line and clear of the crosshair: captions are
+   read at a glance while looking at something else, and anything in the middle
+   of the screen is in the way of the game they are describing. */
+.maker-captions { left: 50%; bottom: 96px; transform: translateX(-50%);
+  display: flex; flex-direction: column; align-items: center; gap: 4px;
+  pointer-events: none; }
+.maker-caption { padding: 3px 10px; border-radius: var(--r-sm); font-size: 13px;
+  background: rgba(0, 0, 0, 0.55); color: #fff; white-space: nowrap; }
+.maker-caption .where { opacity: 0.7; }
+/* Behind you is the one worth a second of attention, and the only one a player
+   cannot simply look at to check. */
+.maker-caption.behind { box-shadow: inset 0 0 0 1px rgba(255, 214, 102, 0.85); }
 .maker-key { display: inline-block; padding: 1px 5px; border-radius: var(--r-sm);
   background: var(--card); color: var(--ink);
   font-weight: 800; font-size: 11px; margin-right: 3px;
@@ -102,6 +118,103 @@ const STYLE = `
 .maker-lock p { margin: 0; font-size: 15px; font-weight: 700;
   text-shadow: var(--text-edge); }
 .maker-hidden { display: none !important; }
+
+/*
+ * Chat, pings and emotes.
+ *
+ * Bottom left, above the build status, because that is the corner the eye is
+ * least often in during play — a conversation must be readable without being
+ * something you have to look past to aim.
+ */
+.maker-chat {
+  position: absolute; left: 16px; bottom: 74px;
+  display: flex; flex-direction: column; gap: 3px;
+  max-width: 42vw; pointer-events: none;
+}
+.maker-chat .line {
+  align-self: flex-start;
+  padding: 3px 9px; border-radius: var(--r-sm);
+  background: rgba(20,16,14,0.62);
+  font-size: 13px; font-weight: 700; line-height: 1.35;
+  text-shadow: 0 1px 2px rgba(0,0,0,0.6);
+  animation: mk-pop-in 0.18s var(--pop);
+}
+/* The channel is a colour and a word, not a colour alone: this is a list of
+   who may hear you, and it has to be readable to somebody who cannot tell the
+   two from each other. */
+.maker-chat .ch { font-size: 10px; font-weight: 900; letter-spacing: 0.7px;
+  text-transform: uppercase; margin-right: 5px; }
+.maker-chat .line.team .ch { color: var(--go); }
+.maker-chat .line.near .ch { color: var(--sun); }
+.maker-chat .who { opacity: 0.82; margin-right: 5px; }
+
+/* The box you type in. Takes the keyboard, so it is the one thing here that
+   is not pointer-events: none. */
+.maker-say {
+  position: absolute; left: 16px; bottom: 46px;
+  display: flex; align-items: center; gap: 7px;
+  padding: 6px 10px; border-radius: var(--r-md);
+  background: rgba(20,16,14,0.86); border: var(--edge);
+  pointer-events: auto; min-width: 34vw;
+}
+.maker-say .ch { font-size: 10px; font-weight: 900; letter-spacing: 0.7px;
+  text-transform: uppercase; }
+.maker-say.team .ch { color: var(--go); }
+.maker-say.near .ch { color: var(--sun); }
+.maker-say input {
+  flex: 1; min-width: 0; font: inherit; font-size: 14px; font-weight: 700;
+  color: var(--text); background: transparent; border: none; outline: none;
+}
+
+/* Emote bubbles ride over somebody's head, projected by the shell. */
+.maker-emotes { position: absolute; inset: 0; overflow: hidden; }
+.maker-emote {
+  position: absolute; transform: translate(-50%, -100%);
+  padding: 4px 10px; border-radius: 12px;
+  background: var(--card); color: var(--ink);
+  border: 2px solid var(--ink);
+  font-size: 15px; font-weight: 900; white-space: nowrap;
+  box-shadow: 0 3px 0 var(--ink);
+  animation: mk-pop-in 0.2s var(--pop);
+}
+
+/*
+ * Who is talking, over their head, on the same projection the emotes use.
+ *
+ * Only ever a glyph and never a name, and that is a limit rather than a choice:
+ * a guest is told other guests' names on a chat line and nowhere else, so the
+ * roster to caption this with does not exist on their machine. A mark over the
+ * right head answers the question that actually matters mid-round — *which of
+ * these people is the voice I am hearing* — and the corner list that would need
+ * names can wait until there is a roster to build it from.
+ */
+.maker-voice {
+  position: absolute; transform: translate(-50%, -100%);
+  width: 26px; height: 26px; border-radius: 50%;
+  display: grid; place-items: center;
+  background: var(--go); color: var(--ink);
+  border: 2px solid var(--ink);
+  font-size: 13px; box-shadow: 0 2px 0 var(--ink);
+  animation: mk-voice 0.9s ease-in-out infinite;
+}
+@keyframes mk-voice {
+  0%, 100% { transform: translate(-50%, -100%) scale(1); }
+  50% { transform: translate(-50%, -100%) scale(1.14); }
+}
+
+/* Your own microphone, so nobody transmits without knowing it. */
+.maker-mic {
+  /* Above the snap readout, which also lives bottom-left and is taller than it
+     looks: at 96px the two overlapped whenever building was allowed. */
+  position: absolute; left: 16px; bottom: 148px;
+  display: flex; align-items: center; gap: 6px;
+  padding: 5px 10px; border-radius: 999px;
+  background: var(--card); color: var(--muted);
+  border: 2px solid var(--ink); box-shadow: 0 2px 0 var(--ink);
+  font-size: 12px; font-weight: 800; letter-spacing: 0.04em;
+}
+.maker-mic.live { background: var(--go); color: var(--ink); }
+.maker-mic.off { opacity: 0.55; }
 
 /*
  * The objective banner.
@@ -280,8 +393,34 @@ const STYLE = `
 `;
 
 import type { Loadout, ModeHud } from '../game/gameMode.ts';
+import type { FrameSummary } from '../app/frameStats.ts';
+import type { SectionTime } from '../app/frameProfile.ts';
+import type { Caption } from './captions.ts';
+import {
+  EMOTE_COLORS, EMOTE_LABELS, EMOTE_ORDER, MAX_CHAT, type ChatLine,
+} from '../game/comms.ts';
+
+/** Bubbles on screen at once. More than this and they are a wall, not a face. */
+const MAX_EMOTES = 8;
+
+/** Names and messages come from other people, so they are never markup. */
+function escapeHtml(raw: string): string {
+  return raw.replace(/[&<>"']/g, (c) => (
+    c === '&' ? '&amp;' : c === '<' ? '&lt;' : c === '>' ? '&gt;'
+      : c === '"' ? '&quot;' : '&#39;'
+  ));
+}
 
 export interface HudState {
+  /**
+   * The blueprint in the player's hands, or null for a single part.
+   *
+   * On the chip rather than in a corner of its own, because the chip is the one
+   * place a player already looks to answer "what am I holding" — and while a
+   * blueprint is held, the part chip would be answering a question nobody is
+   * asking.
+   */
+  blueprint: { name: string; parts: number; cost: number } | null;
   selectedKind: number;
   colorway: number;
   validPlacement: boolean;
@@ -293,6 +432,17 @@ export interface HudState {
   climbing: boolean;
   /** True when a repeat step is available, so the hint can be offered. */
   canRepeat: boolean;
+  /**
+   * Whether a part can be placed at all right now.
+   *
+   * Its own field rather than inferred from the mode, and it was inferred until
+   * Tag arrived. The rule used to be "there is ammo, so you are throwing rather
+   * than building", which happened to be true of all three modes and is a
+   * coincidence — it says a mode with no ammo is a mode with a plank in your
+   * hands. Tag has neither, and got the snap readout, the part chip and a row of
+   * rotate-and-place key hints, every one of which is a key that does nothing.
+   */
+  canBuild: boolean;
   /** Null when no mode is running. */
   mode: ModeHud | null;
   /** Seconds, for expiring timed cues without a second clock to keep in step. */
@@ -371,6 +521,28 @@ const HELP_FIGHT_GAMEPAD = [
   `${key('L3')} sprint &nbsp; ${key('R3')} camera`,
 ];
 
+/**
+ * And what it says with nothing in your hands at all.
+ *
+ * Tag is the first mode where there is no plank and no soaker, and the corner
+ * had been a two-way switch on the assumption that there is always one or the
+ * other. Left as it was, a mode about running told the player to hold the left
+ * mouse button to soak somebody and to stand in water to fill up — neither of
+ * which is a thing that exists in it.
+ *
+ * These are the verbs that are left, and they are the ones this mode is made
+ * of: a jump against a ledge is a pull-up, and a sprint is most of the game.
+ */
+const HELP_RUN_KEYBOARD = [
+  `${key('Shift')} sprint &nbsp; ${key('Space')} jump &nbsp; hold ${key('Space')} at a ledge to climb it`,
+  `${key('V')} camera &nbsp; ${key('`')} debug`,
+];
+
+const HELP_RUN_GAMEPAD = [
+  `${key('L3')} sprint &nbsp; ${key('A')} jump &nbsp; hold ${key('A')} at a ledge to climb it`,
+  `${key('R3')} camera`,
+];
+
 export class Hud {
   readonly root: HTMLDivElement;
 
@@ -380,6 +552,18 @@ export class Hud {
   private readonly lock: HTMLDivElement;
   private readonly modePanel: HTMLDivElement;
   private readonly messageEl: HTMLDivElement;
+  private readonly stats: HTMLDivElement;
+  private readonly chatLog: HTMLDivElement;
+  private readonly captions: HTMLDivElement;
+  private readonly sayBox: HTMLDivElement;
+  private readonly sayInput: HTMLInputElement;
+  private readonly sayChannelEl: HTMLSpanElement;
+  private readonly emoteLayer: HTMLDivElement;
+  private readonly emoteEls: HTMLDivElement[] = [];
+  private readonly voiceEls: HTMLDivElement[] = [];
+  private readonly mic: HTMLDivElement;
+  private chatKey = '';
+  private captionKey = '';
   private readonly ammoEl: HTMLDivElement;
   private readonly vignette: HTMLDivElement;
   private readonly pins: HTMLDivElement;
@@ -391,7 +575,17 @@ export class Hud {
   private hitUntil = 0;
   /** True while a mode has building switched off, so the hints follow the phase. */
   private fighting = false;
+  /**
+   * And whether there is anything in your hands while it is.
+   *
+   * The two used to be the same question, because every mode that took the
+   * planks away handed you a soaker in exchange. Tag hands you nothing.
+   */
+  private armed = false;
   private bannerKey = '';
+  /** A shell-owned line that outranks the mode's while it lasts. See `notice`. */
+  private noticeText: string | null = null;
+  private noticeUntil = 0;
   private readonly help: HTMLDivElement;
   private readonly chip: HTMLDivElement;
   private readonly wheel: PartWheel;
@@ -438,6 +632,55 @@ export class Hud {
     this.debug = document.createElement('div');
     this.debug.className = 'maker-panel maker-debug maker-hidden';
     this.root.appendChild(this.debug);
+
+    // Top right, opposite the debug panel, so a player who has both open can
+    // read either without one covering the other.
+    this.stats = document.createElement('div');
+    this.stats.className = 'maker-panel maker-stats maker-hidden';
+    this.root.appendChild(this.stats);
+
+    this.captions = document.createElement('div');
+    this.captions.className = 'maker-captions';
+    this.root.appendChild(this.captions);
+
+    this.chatLog = document.createElement('div');
+    this.chatLog.className = 'maker-chat';
+    this.root.appendChild(this.chatLog);
+
+    this.emoteLayer = document.createElement('div');
+    this.emoteLayer.className = 'maker-emotes';
+    this.root.appendChild(this.emoteLayer);
+    for (let i = 0; i < MAX_EMOTES; i++) {
+      const el = document.createElement('div');
+      el.className = 'maker-emote maker-hidden';
+      this.emoteLayer.appendChild(el);
+      this.emoteEls.push(el);
+    }
+    // Same layer and the same pool discipline as the emotes: both are marks
+    // over a head that the shell has already projected, and the only difference
+    // is what puts them there.
+    for (let i = 0; i < MAX_EMOTES; i++) {
+      const el = document.createElement('div');
+      el.className = 'maker-voice maker-hidden';
+      el.textContent = '🔊';
+      this.emoteLayer.appendChild(el);
+      this.voiceEls.push(el);
+    }
+
+    this.mic = document.createElement('div');
+    this.mic.className = 'maker-mic maker-hidden';
+    this.root.appendChild(this.mic);
+
+    this.sayBox = document.createElement('div');
+    this.sayBox.className = 'maker-say maker-hidden';
+    this.sayChannelEl = document.createElement('span');
+    this.sayChannelEl.className = 'ch';
+    this.sayInput = document.createElement('input');
+    this.sayInput.type = 'text';
+    this.sayInput.maxLength = MAX_CHAT;
+    this.sayInput.setAttribute('aria-label', 'chat message');
+    this.sayBox.append(this.sayChannelEl, this.sayInput);
+    this.root.appendChild(this.sayBox);
 
     this.modePanel = document.createElement('div');
     this.modePanel.className = 'maker-mode maker-hidden';
@@ -500,9 +743,11 @@ export class Hud {
 
   private paintHelp(): void {
     const pad = this.device === 'gamepad';
-    const lines = this.fighting
-      ? (pad ? HELP_FIGHT_GAMEPAD : HELP_FIGHT_KEYBOARD)
-      : (pad ? HELP_GAMEPAD : HELP_KEYBOARD);
+    const lines = !this.fighting
+      ? (pad ? HELP_GAMEPAD : HELP_KEYBOARD)
+      : this.armed
+        ? (pad ? HELP_FIGHT_GAMEPAD : HELP_FIGHT_KEYBOARD)
+        : (pad ? HELP_RUN_GAMEPAD : HELP_RUN_KEYBOARD);
     this.help.innerHTML = lines.join('<br>');
   }
 
@@ -531,7 +776,7 @@ export class Hud {
       this.hitUntil = 0;
       this.crosshair.classList.remove('hit');
     }
-    this.updateMode(state.mode, costOf(state.selectedKind));
+    this.updateMode(state.mode, costOf(state.selectedKind), state.canBuild);
 
     const swatch = COLORWAYS[state.colorway % COLORWAYS.length]!
       .toString(16)
@@ -560,15 +805,23 @@ export class Hud {
     const cost = costOf(state.selectedKind);
 
     // Only rewritten when it would actually differ; this runs every frame.
-    const chipKey = `${state.selectedKind}:${state.colorway}:${metered ? cost : ''}`;
+    const bp = state.blueprint;
+    const chipKey = bp !== null
+      ? `bp:${bp.name}:${bp.parts}:${metered ? bp.cost : ''}`
+      : `${state.selectedKind}:${state.colorway}:${metered ? cost : ''}`;
     if (chipKey !== this.chipKey) {
       this.chipKey = chipKey;
-      this.chip.innerHTML =
-        `<span class="maker-swatch" style="background:#${swatch}"></span>` +
-        `<b>${PART_KINDS[state.selectedKind]!.name}</b>` +
-        `<span class="dims">${dims(state.selectedKind)}</span>` +
-        (metered ? `<span class="cost">${cost} wood</span>` : '') +
-        `<span class="hint">Tab</span>`;
+      this.chip.innerHTML = bp !== null
+        ? `<span class="maker-swatch" style="background:#8fe3a0"></span>`
+          + `<b>${escapeHtml(bp.name)}</b>`
+          + `<span class="dims">${bp.parts} parts</span>`
+          + (metered ? `<span class="cost">${bp.cost} wood</span>` : '')
+          + `<span class="hint">M</span>`
+        : `<span class="maker-swatch" style="background:#${swatch}"></span>`
+          + `<b>${PART_KINDS[state.selectedKind]!.name}</b>`
+          + `<span class="dims">${dims(state.selectedKind)}</span>`
+          + (metered ? `<span class="cost">${cost} wood</span>` : '')
+          + `<span class="hint">Tab</span>`;
     }
   }
 
@@ -622,6 +875,209 @@ export class Hud {
    * looked identical from behind the crosshair, and the meter that moved was on
    * a body forty metres away.
    */
+  /**
+   * The frame-rate readout, or nothing.
+   *
+   * Two numbers and two counts, in that order of importance. The frame rate is
+   * what anybody looks for; the low beside it is the one that actually explains
+   * how the game feels, because a stutter is what you notice and an average is
+   * exactly the statistic that hides one. The draws and triangles are for
+   * somebody deciding what to turn down, which is the other reason to open this.
+   *
+   * Written only when the numbers change — four times a second rather than
+   * sixty — because a readout that rewrote itself every frame would be both
+   * unreadable and a measurable part of what it is measuring.
+   */
+  setStats(
+    summary: FrameSummary | null,
+    drawCalls: number,
+    triangles: number,
+    /**
+     * Where the frame went, heaviest first.
+     *
+     * Optional, because the fps line is worth having on its own and this is a
+     * second question. A frame rate says the game got slower; this says which
+     * part of it did, which is the difference between a number and a lead.
+     */
+    sections: readonly SectionTime[] = [],
+    /**
+     * Milliseconds the GPU spent, or null where it will not say.
+     *
+     * Null rather than zero, because zero is a legitimate reading on a scene
+     * that is cheap and "we cannot measure this" is not a small number — it is
+     * a different statement, and showing it as 0.0 would be the readout lying
+     * about the one machine where the answer matters most.
+     */
+    gpuMs: number | null = null,
+  ): void {
+    this.stats.classList.toggle('maker-hidden', summary === null);
+    if (summary === null) return;
+    const k = (n: number): string => (n >= 1000 ? `${(n / 1000).toFixed(0)}k` : `${n}`);
+    let breakdown = '';
+    if (sections.length > 0) {
+      // Sorted by cost and cut to the top three. The whole list is five rows of
+      // mostly zeroes, and a readout somebody has to scan is a readout they
+      // stop reading.
+      const top = sections.slice().sort((a, b) => b.ms - a.ms).slice(0, 3);
+      breakdown = `<br><span class="dim">${top
+        .map((s) => `${s.name} ${s.ms.toFixed(1)}`)
+        .join(' · ')}</span>`;
+    }
+    this.stats.innerHTML =
+      `<b>${summary.fps.toFixed(0)}</b> fps<span class="dim"> · ${summary.ms.toFixed(1)} ms</span>`
+      + `<br><span class="dim">low</span> ${summary.low.toFixed(0)}`
+      + `<span class="dim"> · ${drawCalls} draws · ${k(triangles)} tris</span>`
+      // Beside the draws and the triangles rather than beside the CPU sections:
+      // it is the third fact about the same thing, and the question a draw count
+      // raises is always "and did that cost anything".
+      + (gpuMs === null ? '' : `<span class="dim"> · gpu </span>${gpuMs.toFixed(1)}`)
+      + breakdown;
+  }
+
+  /**
+   * Say something that is not about the round.
+   *
+   * Every line on this banner has come from a mode until now, which was fine
+   * while the only things worth saying were phases and objectives. The shell
+   * has its own: it is the shell that puts a body back on the lawn after it
+   * falls out of the world, and a player teleported without a word learns that
+   * the game moves them at random.
+   *
+   * It borrows the mode's message line rather than opening a second one,
+   * because two lines of large text in the middle of the screen is not twice
+   * the communication — it is a paragraph nobody reads. A notice wins for as
+   * long as it lasts and then the mode has its line back.
+   */
+  notice(text: string, seconds = 3): void {
+    this.noticeText = text;
+    this.noticeUntil = performance.now() / 1000 + seconds;
+  }
+
+  /**
+   * Draw the chat log.
+   *
+   * Rebuilt only when the set of lines changes, which is rare — a log that
+   * re-rendered every frame would be sixty DOM writes a second to show text
+   * that changes once in ten seconds.
+   */
+  /**
+   * Say what the garden sounds like.
+   *
+   * Rebuilt only when the lines change, which is rare — the same rule the chat
+   * log follows, and for the same reason: this is text that changes a few times
+   * a round being drawn by a loop that runs sixty times a second.
+   */
+  setCaptions(lines: readonly Caption[]): void {
+    const key = lines.map((l) => `${l.kind}${l.count}${l.where}${l.at}`).join('|');
+    if (key === this.captionKey) return;
+    this.captionKey = key;
+    this.captions.replaceChildren();
+    for (const line of lines) {
+      const el = document.createElement('div');
+      el.className = `maker-caption ${line.where}`;
+      const count = line.count > 1 ? ` ×${line.count}` : '';
+      // The direction is dimmed rather than dropped: it is the part a hearing
+      // player gets for free from the pan, and the part that is useless once
+      // you have already turned to look.
+      el.innerHTML = `${line.text}${count} <span class="where">${line.where}</span>`;
+      this.captions.appendChild(el);
+    }
+  }
+
+  setChat(lines: readonly ChatLine[]): void {
+    const key = lines.map((l) => l.seq).join(',');
+    if (key === this.chatKey) return;
+    this.chatKey = key;
+    this.chatLog.innerHTML = lines.map((l) => (
+      `<div class="line ${l.channel}">`
+      + `<span class="ch">${l.channel === 'team' ? 'team' : 'near'}</span>`
+      + `<span class="who">${escapeHtml(l.name)}</span>`
+      + `${escapeHtml(l.text)}</div>`
+    )).join('');
+  }
+
+  /**
+   * Open or close the box you type in.
+   *
+   * The HUD owns the element and the shell owns what happens to the text,
+   * which is the same split as everywhere else here: this knows how a chat box
+   * looks and nothing about who is entitled to read it.
+   */
+  openSay(channel: 'team' | 'near' | null): void {
+    this.sayBox.classList.toggle('maker-hidden', channel === null);
+    if (channel === null) {
+      this.sayInput.value = '';
+      this.sayInput.blur();
+      return;
+    }
+    this.sayBox.classList.toggle('team', channel === 'team');
+    this.sayBox.classList.toggle('near', channel === 'near');
+    this.sayChannelEl.textContent = channel === 'team' ? 'team' : 'near';
+    this.sayInput.value = '';
+    this.sayInput.focus();
+  }
+
+  get sayText(): string {
+    return this.sayInput.value;
+  }
+
+  /** Which channel the open box is on, or null when it is shut. */
+  get sayChannel(): 'team' | 'near' | null {
+    if (!this.saying) return null;
+    return this.sayBox.classList.contains('team') ? 'team' : 'near';
+  }
+
+  get saying(): boolean {
+    return !this.sayBox.classList.contains('maker-hidden');
+  }
+
+  /** Bubbles over people's heads, already projected to the screen by the shell. */
+  setEmotes(bubbles: ReadonlyArray<{ x: number; y: number; label: string }>): void {
+    for (let i = 0; i < this.emoteEls.length; i++) {
+      const el = this.emoteEls[i]!;
+      const b = bubbles[i];
+      if (b === undefined) {
+        el.classList.add('maker-hidden');
+        continue;
+      }
+      el.classList.remove('maker-hidden');
+      el.textContent = b.label;
+      el.style.left = `${b.x}px`;
+      el.style.top = `${b.y}px`;
+    }
+  }
+
+  /** A speaker mark over each person currently audible, projected by the shell. */
+  setVoices(marks: ReadonlyArray<{ x: number; y: number }>): void {
+    for (let i = 0; i < this.voiceEls.length; i++) {
+      const el = this.voiceEls[i]!;
+      const m = marks[i];
+      if (m === undefined) {
+        el.classList.add('maker-hidden');
+        continue;
+      }
+      el.classList.remove('maker-hidden');
+      el.style.left = `${m.x}px`;
+      el.style.top = `${m.y}px`;
+    }
+  }
+
+  /**
+   * Your own microphone.
+   *
+   * Shown whenever voice is on, not only while transmitting. A badge that
+   * appears the instant you start talking is a badge you never see, because you
+   * are looking at the game — and the question it exists to answer is "is this
+   * thing on", which is asked before you speak rather than during.
+   */
+  setMic(on: boolean, live: boolean, label: string): void {
+    this.mic.classList.toggle('maker-hidden', !on);
+    if (!on) return;
+    this.mic.classList.toggle('live', live);
+    this.mic.classList.toggle('off', !live);
+    this.mic.textContent = label;
+  }
+
   hitMarker(now: number): void {
     this.hitUntil = now + HIT_MARKER_TIME;
     this.crosshair.classList.add('hit');
@@ -652,6 +1108,26 @@ export class Hud {
   }
 
   /**
+   * Point the wheel at the things you can say.
+   *
+   * The third content set on one wheel. `partWheel.ts` never knew what a part
+   * was — a `WheelEntry` is a label, a line of detail and a colour — so this is
+   * a second use rather than a second wheel, and the gesture somebody already
+   * learned for parts is the gesture for this.
+   *
+   * The detail line is deliberately empty. Parts have a size and weapons have a
+   * reason they are greyed; "wave" has nothing to add, and a second line
+   * repeating the first is noise in a menu that is open for half a second.
+   */
+  showEmotes(): void {
+    this.wheel.setEntries(EMOTE_ORDER.map((kind) => ({
+      label: EMOTE_LABELS[kind],
+      detail: '',
+      color: EMOTE_COLORS[kind],
+    })));
+  }
+
+  /**
    * Point the wheel at a mode's weapons.
    *
    * Anything not currently usable — out of water, or a hose away from a tap —
@@ -667,20 +1143,32 @@ export class Hud {
   }
 
   /** Render the running mode's banner, message and ammo, or hide them all. */
-  private updateMode(mode: ModeHud | null, heldCost: number): void {
+  private updateMode(mode: ModeHud | null, heldCost: number, canBuild: boolean): void {
     const active = mode !== null;
     this.modePanel.classList.toggle('maker-hidden', !active);
-    this.messageEl.classList.toggle('maker-hidden', !active || mode!.message === null);
+    // A shell notice outranks the mode's line while it lasts, and is shown even
+    // with no mode running — falling out of the world is not a thing that only
+    // happens during a round.
+    const notice = this.noticeText !== null && performance.now() / 1000 < this.noticeUntil
+      ? this.noticeText
+      : null;
+    if (notice !== null) this.messageEl.textContent = notice;
+    this.messageEl.classList.toggle(
+      'maker-hidden',
+      notice === null && (!active || mode!.message === null),
+    );
     this.ammoEl.classList.toggle('maker-hidden', !active || mode!.ammo === null);
-    // The part chip is meaningless while throwing, so it goes with the build
-    // controls rather than sitting there inert.
-    const fighting = active && mode!.ammo !== null;
+    // The part chip is meaningless when you cannot place one, so it goes with
+    // the build controls rather than sitting there inert. So do the snap
+    // readout and the rotate-and-place hints: keys that do nothing right now
+    // read as keys that are broken.
+    const fighting = active && !canBuild;
+    const armed = active && mode!.ammo !== null;
     this.chip.classList.toggle('maker-hidden', fighting);
-    // So do the snap readout and the rotate-and-place hints: keys that do
-    // nothing right now read as keys that are broken.
     this.status.classList.toggle('maker-hidden', fighting);
-    if (fighting !== this.fighting) {
+    if (fighting !== this.fighting || armed !== this.armed) {
       this.fighting = fighting;
+      this.armed = armed;
       this.paintHelp();
     }
     if (!active) return;
@@ -737,7 +1225,7 @@ export class Hud {
     // reliably catches while looking at what they are building.
     this.modePanel.classList.toggle('urgent', m.timer !== null && m.timer <= 10);
 
-    if (m.message !== null) this.messageEl.textContent = m.message;
+    if (m.message !== null && notice === null) this.messageEl.textContent = m.message;
 
     // The vignette runs off wetness whether or not the mode shows ammo, so
     // being soaked reads the same during a lull as it does mid-raid.

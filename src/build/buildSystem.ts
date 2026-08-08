@@ -12,13 +12,20 @@
 
 import * as THREE from 'three';
 import { CollisionWorld } from '../physics/collisionWorld.ts';
-import { PART_KINDS, COLORWAYS, getPartKind, halfExtents, collisionProxy } from './partKit.ts';
+import {
+  PART_KINDS, COLORWAYS, getPartKind, halfExtents, collisionProxy, worldAabb,
+} from './partKit.ts';
 import { Snapper, type Candidate, type SnapResult, ROT_STEP_DEG } from './snapping.ts';
 import { PartRenderer } from '../render/partRenderer.ts';
 import { chamferedBox, wedge } from '../render/geometry.ts';
 import { damp } from '../core/mathUtils.ts';
 import { Lumber, costOf } from './lumber.ts';
 import type { PartId } from '../physics/types.ts';
+import { boxInBounds } from '../world/bounds.ts';
+import { MAX_BLUEPRINT_PARTS } from './blueprint.ts';
+import { collapseAfter, wouldStand, type Box, type Structure } from './support.ts';
+
+export { worldAabb } from './partKit.ts';
 
 /** A committed placement. This is the wire format and the save format. */
 export interface PlacementRecord {
@@ -39,6 +46,15 @@ export const GHOST_INVALID = 0xff6b6b;
 
 /** Beyond this the ghost teleports instead of easing — damping reads as lag. */
 const GHOST_TELEPORT_DISTANCE = 0.6;
+
+/**
+ * How fast an unsupported preview pulses, in radians a second.
+ *
+ * About one and a third cycles a second. Slower reads as a fade somebody might
+ * not notice; faster reads as a fault in the renderer rather than as a warning
+ * about the plank.
+ */
+const GHOST_PULSE_RATE = 8.4;
 
 /**
  * Caps on one repeat chain.
@@ -101,6 +117,8 @@ export class BuildSystem {
   private readonly ghostPos = new THREE.Vector3();
   private readonly ghostQuat = new THREE.Quaternion();
   private ghostInitialized = false;
+  /** Seconds, for the unsupported preview's pulse. */
+  private ghostPhase = 0;
 
   /** Undo stack of part ids, most recent last. */
   private readonly history: PartId[] = [];
@@ -220,6 +238,62 @@ export class BuildSystem {
       this.chainMeshes.push(mesh);
       this.ghostGroup.add(mesh);
     }
+
+    // The blueprint preview. One shared material rather than one each, unlike
+    // the chain above: the chain fades along its run to say "and it keeps
+    // going", and a blueprint does not keep going — it is a fixed set of parts
+    // that are all equally about to exist, so they are all equally solid.
+    this.stampMaterial = new THREE.MeshBasicMaterial({
+      color: GHOST_VALID,
+      transparent: true,
+      opacity: 0.42,
+      depthWrite: false,
+    });
+    for (let i = 0; i < MAX_BLUEPRINT_PARTS; i++) {
+      const mesh = new THREE.Mesh(this.ghostGeometries[0], this.stampMaterial);
+      mesh.frustumCulled = false;
+      mesh.visible = false;
+      this.stampMeshes.push(mesh);
+      this.ghostGroup.add(mesh);
+    }
+  }
+
+  private readonly stampMeshes: THREE.Mesh[] = [];
+  private readonly stampMaterial: THREE.MeshBasicMaterial;
+
+  /**
+   * Draw where a blueprint would land, or nothing.
+   *
+   * Tinted as a whole rather than per part, because the answer is about the
+   * whole: a blueprint half green and half red would say "this bit will go
+   * down", which is exactly what `stamp` refuses to do.
+   */
+  showStampPreview(records: readonly PlacementRecord[] | null): void {
+    if (records === null || records.length === 0) {
+      for (const mesh of this.stampMeshes) mesh.visible = false;
+      return;
+    }
+    const ok = this.canStamp(records);
+    this.stampMaterial.color.setHex(ok ? this.ghostValidColor : this.ghostInvalidColor);
+    for (let i = 0; i < this.stampMeshes.length; i++) {
+      const mesh = this.stampMeshes[i]!;
+      const r = records[i];
+      if (r === undefined) {
+        mesh.visible = false;
+        continue;
+      }
+      mesh.geometry = this.ghostGeometries[r.kind] ?? this.ghostGeometries[0]!;
+      mesh.position.set(r.x, r.y, r.z);
+      mesh.quaternion.set(r.qx, r.qy, r.qz, r.qw);
+      mesh.visible = true;
+    }
+  }
+
+  /** How many blueprint parts the preview is drawing, for scenarios. */
+  get stampPreviewLength(): number {
+    let n = 0;
+    for (const mesh of this.stampMeshes) if (mesh.visible) n++;
+    return n;
   }
 
   selectKind(index: number): void {
@@ -392,6 +466,19 @@ export class BuildSystem {
     return n;
   }
 
+  /**
+   * Show or hide every aiming preview at once — ghost, edges, chain, stamp.
+   *
+   * One flag on the group they all live under, because they are one thing from
+   * the player's side: furniture that describes where you are pointing. Added
+   * for a scenario that photographs a light and had the ghost sitting a hand's
+   * width under the lamp, chasing the aim ray, moving a couple of thousand
+   * pixels between every pair of frames it tried to difference.
+   */
+  setPreviewVisible(on: boolean): void {
+    this.ghostGroup.visible = on;
+  }
+
   private updateGhost(dt: number, candidate: Candidate | null): void {
     // Only the aimed ghost is hidden, not the whole group. The chain preview
     // describes the last part placed, not where the player is currently
@@ -399,6 +486,9 @@ export class BuildSystem {
     if (candidate === null) {
       this.ghostMesh.visible = false;
       this.ghostEdges.visible = false;
+      // Nothing to place is not the same as something that will fall.
+      this.previewSupported = true;
+      this.previewPlaceable = false;
       return;
     }
     this.ghostMesh.visible = true;
@@ -434,10 +524,75 @@ export class BuildSystem {
     const placeable = candidate.valid && this.canAffordSelected;
     const tint = placeable ? this.ghostValidColor : this.ghostInvalidColor;
     this.ghostMaterial.color.setHex(tint);
-    this.ghostMaterial.opacity = placeable ? 0.34 : 0.24;
     // The outline carries the colour now, so the fill can be fainter — enough
     // to say which side is solid without hiding what is behind it.
     this.ghostEdgeMaterial.color.setHex(tint);
+
+    // Legal, affordable, and standing on nothing.
+    //
+    // The third state the ghost needed, and the reason it needs one: taking a
+    // leg out can no longer strand a part, because whatever it was holding
+    // comes down with it — but *placing* still can, and a plank hung in open
+    // air stays there. Warned rather than refused, because "find out if it
+    // holds" is the game and a rule that never lets you try is not that.
+    //
+    // Said with a **pulse rather than a third colour**. Two hues are already
+    // spoken for and one of the two palettes is the colourblind pair, where a
+    // third would have to sit between blue and orange. Motion is a channel
+    // nobody is missing, and it reads as "careful" rather than as "stop",
+    // which is exactly the difference between this state and an illegal one.
+    this.ghostPhase += dt;
+    // Worked out once, here, and read from a field afterwards — the HUD and the
+    // preview have to be answering about the same box, and a getter that
+    // recomputed would also pay for the query twice a frame.
+    this.previewPlaceable = placeable;
+    this.previewSupported = placeable
+      ? wouldStand(this.structure, worldAabb(this.recordFor(candidate)))
+      : true;
+    const floating = placeable && !this.previewSupported;
+    const pulse = floating
+      ? 0.35 + 0.65 * (0.5 + 0.5 * Math.sin(this.ghostPhase * GHOST_PULSE_RATE))
+      : 1;
+    this.ghostMaterial.opacity = (placeable ? 0.34 : 0.24) * pulse;
+    this.ghostEdgeMaterial.opacity = 0.95 * pulse;
+  }
+
+  private previewSupported = true;
+  private previewPlaceable = false;
+
+  /**
+   * Is there something under the crosshair that a click would place?
+   *
+   * The precondition for reading `previewStands` at all. Without it "would this
+   * hold" reads as *yes* when the ghost is not on screen, which is true and
+   * useless — and would let a check about support pass with no preview in the
+   * world at all.
+   */
+  get previewActive(): boolean {
+    return this.previewPlaceable;
+  }
+
+  /**
+   * Would the part under the crosshair be held up by anything?
+   *
+   * True when there is nothing placeable under the crosshair, so a caller
+   * reading this alone never reports a warning about a preview that is not on
+   * screen or could not go down anyway.
+   */
+  get previewStands(): boolean {
+    return this.previewSupported;
+  }
+
+  /**
+   * How solid the preview is being drawn right now.
+   *
+   * Exposed so a scenario can watch the pulse move without differencing
+   * screenshots — the warning is *motion*, and a number that changes over time
+   * is a far better witness to motion than two pictures with a whole yard
+   * between them.
+   */
+  get ghostOpacity(): number {
+    return this.ghostMaterial.opacity;
   }
 
   /**
@@ -450,7 +605,18 @@ export class BuildSystem {
   place(): PlacementRecord | null {
     const candidate = this.lastResult?.candidate;
     if (candidate === undefined || candidate === null || !candidate.valid) return null;
+    return this.recordFor(candidate);
+  }
 
+  /**
+   * The record a candidate would become.
+   *
+   * Shared with the ghost's support check rather than written twice, because
+   * the two must describe the same box: a preview that says "this will hold"
+   * about a slightly different placement than the one the click makes is worse
+   * than no preview.
+   */
+  private recordFor(candidate: Candidate): PlacementRecord {
     return {
       kind: this.selectedKind,
       colorway: this.selectedColorway,
@@ -551,6 +717,18 @@ export class BuildSystem {
     return this.ghostEdgeMaterial.color.getHex();
   }
 
+  /**
+   * The id the most recent placement was given, or null.
+   *
+   * A host has to tell everyone else *which* part was created, not merely that
+   * one was, so a later removal can name it. The id is the store's, and this is
+   * the only way out of applyPlace that does not make every existing caller
+   * handle a return value they do not want.
+   */
+  get lastPlacedId(): number | null {
+    return this.history.length === 0 ? null : this.history[this.history.length - 1]!;
+  }
+
   /** Where the most recent placement landed, or null. */
   get lastPlacedAt(): { x: number; y: number; z: number } | null {
     const p = this.lastPlacement;
@@ -582,6 +760,69 @@ export class BuildSystem {
     return true;
   }
 
+  /**
+   * Apply somebody else's placement, if the space is free and the pile can pay.
+   *
+   * The authority's version of `tryPlace`, for a request that arrived over the
+   * wire. It has to charge, and charging is easy to leave out: a guest's request
+   * went straight to `applyPlaceIfClear` at first, which reads as correct
+   * because the placement really does get validated — but nobody pays for it,
+   * and a pile two people are drawing from that only one of them spends is not a
+   * shared budget, it is the host's budget with a hole in it.
+   */
+  buyPlacement(record: PlacementRecord): boolean {
+    if (!this.canPlaceAt(record)) return false;
+    return this.buy(record);
+  }
+
+  /**
+   * Could this whole blueprint go down here?
+   *
+   * Every part checked against the world, and the total checked against the
+   * pile. Deliberately **not** using `canPlaceAt`'s `pending` list, which exists
+   * for projecting a repeat chain: the parts of a blueprint were placed legally
+   * beside each other in the first place, so they are flush rather than
+   * overlapping, and the 6mm shrink already covers that. Passing them as pending
+   * would make every blueprint collide with itself.
+   */
+  canStamp(records: readonly PlacementRecord[]): boolean {
+    if (records.length === 0) return false;
+    let cost = 0;
+    for (const r of records) {
+      if (!this.canPlaceAt(r)) return false;
+      cost += costOf(r.kind);
+    }
+    return this.stock.canAfford(cost);
+  }
+
+  /**
+   * Put a whole blueprint down, or none of it.
+   *
+   * All or nothing, and that is the decision worth defending. Placing whichever
+   * parts happen to fit gives a player half a staircase, charges them for half a
+   * staircase, and leaves them to work out which half is missing — while a
+   * refusal is one message and a step to the left. It also makes a stamp one
+   * action over the network rather than N races.
+   *
+   * @returns the id of every part placed, in the order given, or an empty
+   *   array. Ids rather than a count because the host has to tell everybody
+   *   else what went down, and it can only do that by naming the parts.
+   */
+  stamp(records: readonly PlacementRecord[]): PartId[] {
+    if (!this.canStamp(records)) return [];
+    const ids: PartId[] = [];
+    for (const r of records) {
+      if (!this.buy(r)) break;
+      ids.push(this.history[this.history.length - 1]!);
+    }
+    // No repeat chain off a stamp. `applyPlace` leaves the last two placements
+    // as the step to repeat, which for a blueprint is whatever arbitrary offset
+    // its last two parts happen to have — so the HUD would offer "hold G to
+    // repeat that step" for a step the player never took.
+    this.clearRepeat();
+    return ids;
+  }
+
   /** Place what the preview currently shows, if it is legal and affordable. */
   tryPlace(): boolean {
     const record = this.place();
@@ -589,24 +830,94 @@ export class BuildSystem {
     return this.buy(record);
   }
 
-  /** Remove whatever the aim ray is pointing at. */
-  removeAimed(): boolean {
+  /**
+   * Remove whatever the aim ray is pointing at, and whatever it held up.
+   *
+   * @returns every part that came down, aimed one first.
+   */
+  removeAimed(): PartId[] {
     const part = this.lastResult?.hitPart;
-    if (part === undefined || part < 0) return false;
-    return this.applyRemove(part);
+    if (part === undefined || part < 0) return [];
+    return this.demolish(part);
   }
 
+  /**
+   * Take one part away and nothing else.
+   *
+   * The guest's version, and the reason it exists: the host decides what falls
+   * and sends the list, one message per part. A guest that ran its own collapse
+   * off the first of those messages would be a second opinion about the shape
+   * of the world — which is the definition of a desync, and one that only shows
+   * up when a tower comes down.
+   */
   applyRemove(id: PartId): boolean {
-    // The map is not the player's to demolish. Aiming at the house and pressing
-    // remove has to do nothing rather than open a hole in the level.
     if (this.world.isFixture(id)) return false;
     if (!this.world.removePart(id)) return false;
+    this.forget(id);
+    this.snapper.reset();
+    return true;
+  }
+
+  /**
+   * Take a part away, and everything it was holding up.
+   *
+   * The list is the aimed part first and then whatever lost its footing, in id
+   * order — the host sends exactly this, one message per id, so the order is
+   * part of the protocol rather than an implementation detail.
+   *
+   * @returns every part that came down, or an empty array if none did.
+   */
+  demolish(id: PartId): PartId[] {
+    // The map is not the player's to demolish. Aiming at the house and pressing
+    // remove has to do nothing rather than open a hole in the level.
+    if (this.world.isFixture(id)) return [];
+    // Read before the removal, because afterwards there is nothing to read: the
+    // question is what was joined to the space this part used to fill.
+    const hole = this.world.store.readAabb(id);
+    if (!this.world.removePart(id)) return [];
+    this.forget(id);
+
+    const down: PartId[] = [id];
+    for (const stranded of collapseAfter(this.structure, hole)) {
+      if (!this.world.removePart(stranded)) continue;
+      this.forget(stranded);
+      down.push(stranded);
+    }
+    this.snapper.reset();
+    return down;
+  }
+
+  /** Take a part off the renderer, the ledger and the undo stack. */
+  private forget(id: PartId): void {
     this.renderer.remove(id);
     this.reclaim(id);
     const i = this.history.lastIndexOf(id);
     if (i !== -1) this.history.splice(i, 1);
-    this.snapper.reset();
-    return true;
+  }
+
+  /**
+   * The world, as `support.ts` wants to see it.
+   *
+   * A view rather than a copy — `near` hands straight through to the spatial
+   * hash the physics already maintains, so the flood pays for a broadphase
+   * query per part it walks and nothing else.
+   */
+  private structureView: Structure | null = null;
+
+  private get structure(): Structure {
+    if (this.structureView === null) {
+      const world = this.world;
+      this.structureView = {
+        ids: () => world.store.live(),
+        box: (id: PartId) => world.store.readAabb(id),
+        near: (box: Box) => world.queryAabb(box),
+        fixed: (id: PartId) => world.isFixture(id),
+        // Read through rather than copied: the world owns where the lawn is,
+        // and a number captured once would be a second opinion about it.
+        get groundY(): number { return world.groundY; },
+      };
+    }
+    return this.structureView;
   }
 
   /** Undo the most recent placement still standing. */
@@ -723,6 +1034,17 @@ export class BuildSystem {
     const box = worldAabb(record);
     if (box.minY < this.world.groundY - 0.02) return false;
 
+    // Inside the world, and under its ceiling.
+    //
+    // Checked here rather than in the snapper, and that is the whole point of
+    // where it sits: the snapper is the *intent* side, which only ever runs on
+    // the machine of the person holding the plank. This is the apply side, so
+    // it covers the local placement, a saved yard being restored, and — the one
+    // that matters — a guest's placement arriving over the wire. Without it a
+    // guest could hand the host any coordinates at all and the host would
+    // place a part there, four hundred metres away or forty storeys up.
+    if (!boxInBounds(box)) return false;
+
     // Shrunk, because parts placed flush touch exactly and must not read as
     // overlapping — the most common legitimate placement in the game.
     const shrink = 0.006;
@@ -767,6 +1089,25 @@ export class BuildSystem {
   }
 
   /** Serialize every placed part. Same shape the network would carry. */
+  /**
+   * The world with the ids attached.
+   *
+   * A save file does not need ids and a network does. Two machines allocate
+   * part ids independently — the host's store has gaps where things were taken
+   * down, a fresh client's does not — so "remove part 7" means two different
+   * planks on two machines. Sending the pairs is what lets a client keep a
+   * translation table instead of guessing.
+   */
+  serializeWithIds(): Array<[PartId, PlacementRecord]> {
+    const ids = [...this.world.store.live()];
+    const records = this.serialize();
+    // serialize() walks live() in the same order, so the two line up. Zipping is
+    // safe precisely because there is one traversal order, and this asserts it
+    // rather than trusting it.
+    if (ids.length !== records.length) throw new Error('buildSystem: id/record mismatch');
+    return ids.map((id, i) => [id, records[i]!]);
+  }
+
   serialize(): PlacementRecord[] {
     const out: PlacementRecord[] = [];
     const store = this.world.store;
@@ -834,27 +1175,3 @@ export class BuildSystem {
   }
 }
 
-/**
- * World-axis bounding box of a part at a given placement.
- *
- * A rotated box's world extent is the rotation matrix's absolute values applied
- * to its half-extents — the same arithmetic the collision world does when a part
- * is added, done here for parts that do not exist yet.
- */
-function worldAabb(record: PlacementRecord): {
-  minX: number; minY: number; minZ: number;
-  maxX: number; maxY: number; maxZ: number;
-} {
-  const h = halfExtents(getPartKind(record.kind));
-  const q = new THREE.Quaternion(record.qx, record.qy, record.qz, record.qw).normalize();
-  const e = new THREE.Matrix4().makeRotationFromQuaternion(q).elements;
-
-  const ex = Math.abs(e[0]!) * h.hx + Math.abs(e[4]!) * h.hy + Math.abs(e[8]!) * h.hz;
-  const ey = Math.abs(e[1]!) * h.hx + Math.abs(e[5]!) * h.hy + Math.abs(e[9]!) * h.hz;
-  const ez = Math.abs(e[2]!) * h.hx + Math.abs(e[6]!) * h.hy + Math.abs(e[10]!) * h.hz;
-
-  return {
-    minX: record.x - ex, minY: record.y - ey, minZ: record.z - ez,
-    maxX: record.x + ex, maxY: record.y + ey, maxZ: record.z + ez,
-  };
-}

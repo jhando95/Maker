@@ -1,19 +1,90 @@
 name: CI
 
+# Branches are covered by `pull_request`, not by `push`.
+#
+# Both were on, and the two triggers do not cancel each other, so every commit
+# on a branch ran this entire file **twice** on two runners — nine minutes of
+# scenarios, duplicated, and two identically named checks on the pull request.
+#
+# The concurrency group below was supposed to prevent exactly that and could
+# not, for a reason worth writing down: `github.ref` is not the same value for
+# the two events. A push says `refs/heads/<branch>`; a pull_request says
+# `refs/pull/<n>/merge`. Two different groups, so neither run ever cancelled the
+# other, and the comment claiming they did was true only within one event type.
+#
+# The duplication was not merely wasteful. Every run is an independent draw
+# against whatever GitHub Actions is doing that hour, and a red X appears on the
+# pull request if *either* comes up short — three checks were failed in one
+# afternoon by `Failed to resolve action download info`, in jobs that never got
+# as far as checking out the repository. Halving the number of runs halves that
+# exposure.
+#
+# `pull_request` is also the better of the two to keep: it builds the merge
+# commit, which is what merging would actually produce, while a push build tests
+# the branch in isolation from a base that may have moved underneath it.
+#
+# The trade, stated plainly: a branch with no pull request open now gets no run
+# at all. `synchronize` fires on every push to a branch that has one, and
+# `opened` fires the moment one is raised, so the gap is only ever the stretch
+# before a branch is proposed — and nothing merges out of that stretch. This
+# also does nothing to stop the outages themselves; there is no step-level
+# retry that could, because the failure happens in "Prepare all required
+# actions", before any step in this file runs.
+#
+# `workflow_dispatch` is here for a third reason, discovered the hard way. Six
+# consecutive pushes to an open pull request produced **no runs at all** — not
+# queued, not cancelled, not created — over four hours. Nothing in this file
+# causes that and nothing in it fixes it, but without a manual trigger there is
+# no way to ask again, and a branch with no run on it is indistinguishable from
+# a branch whose run failed.
 on:
   push:
-    branches: ['**']
+    branches: [main]
   pull_request:
+  workflow_dispatch:
 
 # A newer push to the same branch makes the older run irrelevant.
+#
+# Keyed on `head_ref` where there is one — that is the branch name on a
+# pull_request event — and on `ref` otherwise, so a push to main groups by
+# itself. Keyed on `ref` alone this never deduplicated across event types.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
   cancel-in-progress: true
 
+# A note about jobs cancelled at fifteen minutes, and what these numbers are not.
+#
+# During a GitHub capacity shortage this repository saw run after run cancelled
+# at exactly 15m 1s having never been assigned a machine — `runner_id: 0`, no
+# runner name, no steps at all. The obvious suspect was `timeout-minutes`, on
+# the theory that its clock covers queue time as well as run time.
+#
+# **That theory is wrong, and it was tested.** The value was raised from 15 to
+# 30 and the very next run was cancelled at 15m 1s again, still unassigned. So
+# the fifteen minutes is a limit on how long a job may wait for a runner, it
+# belongs to the platform, and nothing in this file changes it. Recorded here
+# because it cost an afternoon to find out and the wrong answer is convincing.
+#
+# The numbers below are therefore sized for the work alone, with headroom for a
+# slow machine rather than for a queue. They are still a bound, so a genuinely
+# hung job dies rather than running to the six-hour default.
+#
+# **Measured, and it has moved.** This job took nine minutes for most of the
+# project's life; the run that added proximity voice took **19m 39s**, because
+# `scenarios/voice.mjs` alone is 5m 19s of it — two browser contexts, a real
+# relay, ICE negotiation, and several gain ramps that have to be waited out at
+# four frames a second under software GL. Nine minutes is no longer true and the
+# comment that said so is corrected rather than left to mislead.
+#
+# 45 rather than 30, because 30 left ten minutes of headroom on a twenty-minute
+# job and runner speed varies by more than that. This is not a queue fix — see
+# above — it is a fix for the job genuinely being twice as long as it was.
 jobs:
+  # Typecheck, unit tests, the production build and a smoke boot. Everything
+  # that is fast, and everything a scenario would be pointless without.
   check:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
 
     steps:
       - uses: actions/checkout@v4
@@ -34,6 +105,14 @@ jobs:
       - name: Production build
         run: npx vite build
 
+      # The developer tools are gated by not being in the output, which is a
+      # claim about the artefact rather than about the source — so it is checked
+      # against the artefact. A bundler that stopped folding the constant one
+      # day would produce a build that looks completely normal until somebody
+      # pressed F8.
+      - name: The public build has no developer tools in it
+        run: npm run check:public
+
       # The harness boots the real game in headless Chromium and fails on any
       # console error or uncaught exception. It catches the whole class of bug
       # unit tests cannot see — a shader that will not compile, a module that
@@ -44,73 +123,62 @@ jobs:
       - name: Headless smoke test
         run: node tools/shoot.mjs --out /tmp/ci-smoke.png --settle 3000
 
-      # The crash handler's claim is that a throw inside the render loop is
-      # survivable and visible. Nothing short of a real browser can check that,
-      # so the scenario throws for real and asserts on what a player would see.
-      - name: Crash-handler scenario
-        run: node tools/shoot.mjs --scenario scenarios/crash.mjs --allow-errors --out /tmp/ci-crash.png
+  # ── The scenarios ────────────────────────────────────────────────────────────
+  #
+  # Their own job, sharded, and read off the directory rather than listed here.
+  # Both halves of that are fixes.
+  #
+  # They were twenty-seven steps in this file run strictly one after another, and
+  # each one is an independent process with its own dev server and its own
+  # browser, sharing state with none of the others. Half an hour of embarrassingly
+  # parallel work spent waiting on a scheduler. Four shards balanced by measured
+  # cost put the longest at about five and a half minutes, which is `voice.mjs`
+  # on its own and therefore the floor until that scenario gets cheaper.
+  #
+  # And the list was written down twice — once as a file in `scenarios/` and once
+  # as a step here. Adding the first without the second is silent: the scenario
+  # never runs and nothing says so. `tools/scenarios.mjs` reads the directory, so
+  # this file says only how many pieces to cut it into.
+  #
+  # `fail-fast: false` because four shards are four independent questions, and
+  # cancelling the other three the moment one fails throws away three answers to
+  # save a few minutes of a machine nobody is waiting on.
+  scenarios:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
 
-      # Same reasoning: how a stick maps to intent is unit-tested, but whether
-      # that intent survives the poll, the buffer, the tick and the character
-      # controller is a chain that only exists in a browser.
-      - name: Controller scenario
-        run: node tools/shoot.mjs --scenario scenarios/gamepad.mjs --out /tmp/ci-gamepad.png
+    steps:
+      - uses: actions/checkout@v4
 
-      - name: Part-wheel scenario
-        run: node tools/shoot.mjs --scenario scenarios/wheel.mjs --out /tmp/ci-wheel.png
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
 
-      # The water fight is a loop across the mode, the shell and the HUD: run
-      # dry, find a tap, fill up, hose someone. Each piece is unit-tested and
-      # each seam between them has broken at least once with the suite green.
-      - name: Water-fight scenario
-        run: node tools/shoot.mjs --scenario scenarios/water.mjs --auto-quality --out /tmp/ci-water.png
+      - run: npm ci
 
-      # Multiple people in one world, with no network yet to bring them. The
-      # roster and teams are unit-tested; that a second body reaches the
-      # renderer's instance buffers, wears the right shirt and moves on its own
-      # commands only happens in a browser.
-      - name: Multiple-actor scenario
-        run: node tools/shoot.mjs --scenario scenarios/actors.mjs --auto-quality --out /tmp/ci-actors.png
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
 
-      # The HUD's job is to say what a mode knows, and every part of that is a
-      # seam between two systems rather than logic inside either — so the unit
-      # suite stays green with the objective compass, the hit marker and the
-      # damage cue all broken.
-      - name: HUD scenario
-        run: node tools/shoot.mjs --scenario scenarios/hud.mjs --auto-quality --out /tmp/ci-hud.png
-
-      # The budget is the first rule that can make a legal placement fail. The
-      # arithmetic is unit-tested; whether the player is ever told — a counter
-      # on the banner, a price on the chip, a ghost that turns red — is a chain
-      # from the mode to a pixel that only exists in a browser.
-      - name: Lumber-budget scenario
-        run: node tools/shoot.mjs --scenario scenarios/lumber.mjs --auto-quality --out /tmp/ci-lumber.png
-
-      # A CI runner has no GPU either, so it is a genuine instance of the case
-      # adaptive quality exists for. The decision logic is unit-tested; this
-      # checks the decision reaches the drawing buffer.
-      - name: Adaptive quality scenario
-        run: node tools/shoot.mjs --scenario scenarios/quality.mjs --auto-quality --out /tmp/ci-quality.png
+      - name: Scenarios
+        run: node tools/scenarios.mjs ${{ matrix.shard }} 4
 
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: screenshots
-          path: |
-            /tmp/ci-smoke.png
-            /tmp/ci-crash.png
-            /tmp/ci-gamepad.png
-            /tmp/ci-quality.png
-            /tmp/ci-wheel.png
-            /tmp/ci-water.png
-            /tmp/ci-actors.png
-            /tmp/ci-hud.png
-            /tmp/ci-lumber.png
+          # One artifact per shard, since four jobs cannot write into one.
+          name: screenshots-${{ matrix.shard }}
+          path: ${{ runner.temp }}/ci-*.png
           if-no-files-found: ignore
 
   benchmark:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # Well under a minute of work; the budget is almost entirely queue.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

@@ -248,6 +248,33 @@ export class ProjectileSystem {
     return out;
   }
 
+  /**
+   * Show somebody else's balloons without simulating them.
+   *
+   * A guest never runs this system — `RemoteMode.fixedUpdate` is empty on
+   * purpose — so its pool sits inert and the lawn is silent: kids wind up and
+   * throw, and nothing crosses the yard. That is not a small cosmetic gap. A
+   * balloon in the air is the only warning there is, so a guest was being hit by
+   * something that had never appeared, and could not tell a near miss from a
+   * hit that had not landed yet.
+   *
+   * Positions only. Nothing here integrates, collides or expires, because the
+   * moment it did there would be two machines deciding where a balloon went and
+   * the host would stop being the authority on which one hit you.
+   */
+  mirror(positions: ReadonlyArray<readonly [x: number, y: number, z: number]>): void {
+    for (let i = 0; i < this.balloons.length; i++) {
+      const b = this.balloons[i]!;
+      const from = positions[i];
+      if (from === undefined) {
+        b.active = false;
+        continue;
+      }
+      b.active = true;
+      b.x = from[0]; b.y = from[1]; b.z = from[2];
+    }
+  }
+
   /** Live balloons, for rendering. */
   forEachActive(fn: (index: number, x: number, y: number, z: number, colorway: number) => void): void {
     for (let i = 0; i < this.balloons.length; i++) {

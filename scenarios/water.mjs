@@ -159,11 +159,27 @@ export default async function (page) {
       out: m.playerIsOut,
       tank: m.tankLevel,
       stream: m.stream === null || m.stream === undefined ? null : { ...m.stream },
+      // Read here rather than from a later frame, for the reason written above:
+      // the mode clears the streams at the top of every tick, so the only
+      // moment one exists is the instant the fast-forward stops with the
+      // trigger still held.
+      hoses: window.__maker.streamsPublished(),
     };
   });
   assert(!streaming.out, 'the player should still be in the fight for this check');
   assert(streaming.tank > 0, `and should have water; tank is ${streaming.tank}`);
   assert(streaming.stream !== null, 'holding fire with water in the tank should draw a stream');
+  // Everybody's water, not just yours. `streamFor` has been published per actor
+  // since Water War was written and the renderer took exactly one of them, so a
+  // guest saw their own jet and never the host's — the fight looked one-sided
+  // from both ends. What a browser can say is that the mode publishes them per
+  // person; that the renderer *draws* all of them is arithmetic over a draw
+  // count, and is checked in `modeRenderer.test.ts` where a raid does not have
+  // to be live and a trigger held for there to be anything to look at.
+  assert(
+    streaming.hoses >= 1,
+    `the renderer should be handed a hose per person spraying, and got ${streaming.hoses}`,
+  );
 
   // ── Firing empties the tank ────────────────────────────────────────────────
   const fullTank = streaming.tank;
@@ -242,10 +258,60 @@ export default async function (page) {
   );
   assert(soaked.vignette > 0, `the screen edge should bead up, opacity ${soaked.vignette}`);
 
+  // ── A balloon landing looks like water landing ─────────────────────────────
+  // Both halves of the effect, because they fail differently and either one
+  // alone would cover for the other: the burst says a splash reached the
+  // renderer at all, the spray says the droplets it spawns reached a pool they
+  // could actually use. A burst with no spray is the old single-sphere puff
+  // back, and spray with no burst never happens by accident.
+  //
+  // Driven by dropping a balloon on the player's own head — the one impact this
+  // scenario can guarantee lands, on any machine, in one simulated step.
+  const splashed = await page.evaluate(() => {
+    const before = window.__maker.roundInfo();
+    window.__maker.projectiles.spawn(
+      window.__maker.player.x, window.__maker.player.y + 4, window.__maker.player.z,
+      0, -1, 0, 14, 99,
+    );
+    // Short on purpose. Droplets live about half a second of *rendered* time,
+    // and a long fast-forward would let the balloon land and the spray finish
+    // inside one call, leaving nothing to count.
+    window.__maker.fastForward(0.4);
+    const after = window.__maker.roundInfo();
+    return { before, after };
+  });
+  assert(
+    splashed.after.splashes > 0,
+    `a balloon landing should burst, saw ${splashed.after.splashes} (was ${splashed.before.splashes})`,
+  );
+  assert(
+    splashed.after.droplets > 0,
+    `and throw spray off it, saw ${splashed.after.droplets} droplets`,
+  );
+
+  // ── Everybody's water, not just yours ──────────────────────────────────────
+  //
+  // `streamFor` has been published per actor since Water War was written and
+  // the renderer took exactly one of them, so a guest saw their own jet and not
+  // the host's — the fight looked one-sided from both ends. Measured on the
+  // instance count rather than on a list of streams, because what matters is
+  // what reaches the draw call.
+  // And put one where it can be seen, for the artifact. The drop above lands on
+  // the player's own head, which is the only impact that is certain to happen
+  // and the one place a first-person camera cannot look at.
+  await page.evaluate(() => {
+    window.__maker.setCameraMode('third');
+    window.__maker.lookAt(0, -0.15);
+    const p = window.__maker.player;
+    window.__maker.projectiles.spawn(p.x, p.y + 3.5, p.z - 3.2, 0, -1, 0, 14, 99);
+    window.__maker.fastForward(0.28);
+  });
   await page.screenshot({ path: process.env.WATER_SHOT ?? 'shots/water.png' });
 
   console.log(
     '[water] verified: build phase, raid starts, tank empties and refills from a tap,',
-    'stream draws, wetness shows on the HUD and at the screen edge',
+    'stream draws, wetness shows on the HUD and at the screen edge,',
+    'an impact bursts and throws spray, and the renderer is handed a hose per',
+    `person spraying rather than only the local one (${streaming.hoses} while firing)`,
   );
 }

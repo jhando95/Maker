@@ -29,12 +29,15 @@
 
 import { Bot, BOT_TIERS, type BotConfig } from './bot.ts';
 import { type BalloonTarget } from './projectiles.ts';
-import type { GameMode, Marker, ModeContext, ModeHud, ModeInput, ModeSummary } from './gameMode.ts';
+import type {
+  ActorInput, GameMode, Marker, ModeContext, ModeHud, ModeInput, ModeSelfHud, ModeSummary,
+} from './gameMode.ts';
 import { CAP_HEIGHT, CAP_RADIUS } from '../physics/constants.ts';
 import { NavField } from './navField.ts';
 import { Lumber, STARTING_LUMBER, PHASE_DELIVERY, LUMBER_CAP } from '../build/lumber.ts';
 import { LEFT_FLAG, RIGHT_FLAG, LEFT_SPAWN, RIGHT_SPAWN } from '../world/neighborhood.ts';
-import { LOCAL_ACTOR_ID, opposing, type Actor, type Team } from './actor.ts';
+import { FIRST_BOT_ID, LOCAL_ACTOR_ID, opposing, type Actor, type Team } from './actor.ts';
+import { Fighters, isFighter, type Fighter } from './fighters.ts';
 
 /** Both sides, for rules that are the same whichever one you are on. */
 const TEAMS: readonly Team[] = ['left', 'right'];
@@ -139,13 +142,16 @@ export class CaptureTheFlagMode implements GameMode {
   private message: string | null = null;
   private messageTimer = 0;
 
-  private ammo = PLAYER_AMMO_MAX;
-  private throwCooldown = 0;
-  private charge = 0;
-  private charging = false;
-  private playerSoakedFor = 0;
+  /**
+   * Balloons, wind-up, cooldown and the sent-home timer, one set per person.
+   *
+   * This is the mode where it matters most, because the host and a guest can be
+   * on opposite sides — the alternating team assignment puts them there — so
+   * "the player's ammo" is not even a question with one answer.
+   */
+  private readonly fighters = new Fighters(PLAYER_AMMO_MAX);
 
-  private nextBotId = 1;
+  private nextBotId = FIRST_BOT_ID;
   /** Respawn countdowns, by bot id. */
   private readonly respawns = new Map<number, number>();
   /** Which bots guard rather than run, by id. */
@@ -182,8 +188,7 @@ export class CaptureTheFlagMode implements GameMode {
     this.timer = FIRST_SETUP_TIME;
     this.finished = false;
     this.won = false;
-    this.ammo = PLAYER_AMMO_MAX;
-    this.playerSoakedFor = 0;
+    this.fighters.reset();
     this.bots.length = 0;
     this.respawns.clear();
     this.guards.clear();
@@ -207,11 +212,14 @@ export class CaptureTheFlagMode implements GameMode {
 
     this.messageTimer -= dt;
     if (this.messageTimer <= 0) this.message = null;
-    this.throwCooldown -= dt;
-    this.playerSoakedFor = Math.max(0, this.playerSoakedFor - dt);
+    this.fighters.tick(dt);
 
-    this.updateAmmo(ctx);
-    this.updateThrow(dt, ctx, input);
+    for (const who of ctx.actors.all) {
+      if (!isFighter(who)) continue;
+      const self = this.fighters.of(who.id);
+      this.updateAmmo(who, self);
+      this.updateThrow(dt, ctx, who, self, input.of(who.id));
+    }
 
     switch (this.phase) {
       case 'setup':
@@ -233,7 +241,7 @@ export class CaptureTheFlagMode implements GameMode {
   private startCapture(ctx: ModeContext): void {
     this.phase = 'capture';
     this.timer = 0;
-    this.ammo = PLAYER_AMMO_MAX;
+    for (const f of this.fighters.all) f.ammo = PLAYER_AMMO_MAX;
 
     // Route before the first tick, so nobody spends it walking into a wall.
     this.rebuildNav(ctx);
@@ -253,7 +261,7 @@ export class CaptureTheFlagMode implements GameMode {
     this.resetFlag('left');
     this.resetFlag('right');
     ctx.projectiles.clear();
-    this.ammo = PLAYER_AMMO_MAX;
+    for (const f of this.fighters.all) f.ammo = PLAYER_AMMO_MAX;
     this.setMessage(note, 7);
     ctx.emit({ type: 'phaseChange', phase: 'setup' });
   }
@@ -522,7 +530,7 @@ export class CaptureTheFlagMode implements GameMode {
    * names, and every rule below wants to ask about it once.
    */
   private active(who: Actor): boolean {
-    if (who.id === LOCAL_ACTOR_ID) return this.playerSoakedFor <= 0;
+    if (isFighter(who)) return !this.fighters.isOut(who.id);
     return who.alive !== false;
   }
 
@@ -613,43 +621,54 @@ export class CaptureTheFlagMode implements GameMode {
 
   // ── The player's balloons ──────────────────────────────────────────────────
 
-  /** Ammo refills at your own flag stand, which ties reloading to going home. */
-  private updateAmmo(ctx: ModeContext): void {
-    const ours = this.flags[PLAYER_TEAM];
-    if (near(ctx.player.x, ctx.player.z, ours.homeX, ours.homeZ, FLAG_RADIUS + 1.5)) {
-      this.ammo = PLAYER_AMMO_MAX;
+  /**
+   * Ammo refills at your own flag stand, which ties reloading to going home.
+   *
+   * "Your own" is read off the actor rather than off `PLAYER_TEAM`. On a lawn
+   * where the host is left and a guest is right, the constant would send the
+   * guest across the map to reload at the flag they are trying to steal.
+   */
+  private updateAmmo(who: Actor, self: Fighter): void {
+    const ours = this.flags[who.team];
+    const body = who.controller;
+    if (near(body.x, body.z, ours.homeX, ours.homeZ, FLAG_RADIUS + 1.5)) {
+      self.ammo = PLAYER_AMMO_MAX;
     }
   }
 
-  private updateThrow(dt: number, ctx: ModeContext, input: ModeInput): void {
+  private updateThrow(
+    dt: number, ctx: ModeContext, who: Actor, self: Fighter, input: ActorInput,
+  ): void {
     if (this.phase !== 'capture') {
-      this.charging = false;
-      this.charge = 0;
+      self.charging = false;
+      self.charge = 0;
       return;
     }
 
-    if (input.firePressed && this.ammo > 0 && this.throwCooldown <= 0) {
-      this.charging = true;
-      this.charge = 0;
+    if (input.firePressed && self.ammo > 0 && self.cooldown <= 0) {
+      self.charging = true;
+      self.charge = 0;
     }
-    if (this.charging) {
-      this.charge = Math.min(1, this.charge + dt * 1.7);
-      if (input.fireReleased) this.release(ctx);
+    if (self.charging) {
+      self.charge = Math.min(1, self.charge + dt * 1.7);
+      if (input.fireReleased) this.release(ctx, who, self, input);
     }
   }
 
-  private release(ctx: ModeContext): void {
-    this.charging = false;
-    if (this.ammo <= 0) return;
-    this.ammo--;
-    this.throwCooldown = THROW_COOLDOWN;
+  private release(ctx: ModeContext, who: Actor, self: Fighter, input: ActorInput): void {
+    self.charging = false;
+    if (self.ammo <= 0) return;
+    self.ammo--;
+    self.cooldown = THROW_COOLDOWN;
 
-    const dir = ctx.camera.getLookDirection();
-    const speed = 13 + this.charge * 11;
-    const ox = ctx.player.x + dir.x * 0.6;
-    const oy = ctx.player.y + CAP_HEIGHT * 0.8;
-    const oz = ctx.player.z + dir.z * 0.6;
-    ctx.projectiles.spawn(ox, oy, oz, dir.x, dir.y + 0.06, dir.z, speed, LOCAL_ACTOR_ID);
+    const body = who.controller;
+    const speed = 13 + self.charge * 11;
+    const ox = body.x + input.aimX * 0.6;
+    const oy = body.y + CAP_HEIGHT * 0.8;
+    const oz = body.z + input.aimZ * 0.6;
+    // Owned by the thrower, so the friendly-fire check below can tell whose
+    // side a balloon came from.
+    ctx.projectiles.spawn(ox, oy, oz, input.aimX, input.aimY + 0.06, input.aimZ, speed, who.id);
     ctx.emit({ type: 'throw', x: ox, y: oy, z: oz });
   }
 
@@ -687,8 +706,9 @@ export class CaptureTheFlagMode implements GameMode {
         // mechanic, it is a bug with a story.
         if (ctx.actors.friendly(hit.ownerId, target.id)) continue;
 
-        if (target.id === LOCAL_ACTOR_ID) {
-          this.soakPlayer(ctx, hit);
+        const person = ctx.actors.get(target.id);
+        if (person !== undefined && isFighter(person)) {
+          this.soakFighter(ctx, person, hit);
           continue;
         }
         const bot = this.bots.find((b) => b.id === target.id);
@@ -710,14 +730,23 @@ export class CaptureTheFlagMode implements GameMode {
    * defending worth doing. A carrier who can absorb a hit and keep running
    * turns every defender into scenery.
    */
-  private soakPlayer(ctx: ModeContext, from?: { x: number; y: number; z: number }): void {
-    if (this.playerSoakedFor > 0) return;
-    this.playerSoakedFor = SOAK_PENALTY;
-    const theirs = this.flags.right;
-    if (theirs.carrier === LOCAL_ACTOR_ID) this.dropFlag(theirs, ctx);
-    ctx.player.teleport(LEFT_SPAWN.x, LEFT_SPAWN.y, LEFT_SPAWN.z);
-    ctx.emit({ type: 'playerSoaked', x: from?.x, y: from?.y, z: from?.z });
-    this.setMessage('Soaked! Back to your yard.', 2.5);
+  private soakFighter(
+    ctx: ModeContext, who: Actor, from?: { x: number; y: number; z: number },
+  ): void {
+    const self = this.fighters.of(who.id);
+    if (self.out > 0) return;
+    self.out = SOAK_PENALTY;
+    // Whatever they were carrying falls where they stood — read off their own
+    // side rather than off `right`, which was only ever the flag the local
+    // player could have been holding.
+    const stolen = this.flags[opposing(who.team)];
+    if (stolen.carrier === who.id) this.dropFlag(stolen, ctx);
+    const home = who.team === 'left' ? LEFT_SPAWN : RIGHT_SPAWN;
+    who.controller.teleport(home.x, home.y, home.z);
+    if (who.id === LOCAL_ACTOR_ID) {
+      ctx.emit({ type: 'playerSoaked', x: from?.x, y: from?.y, z: from?.z });
+      this.setMessage('Soaked! Back to your yard.', 2.5);
+    }
   }
 
   // ── Published state ────────────────────────────────────────────────────────
@@ -727,11 +756,15 @@ export class CaptureTheFlagMode implements GameMode {
   }
 
   get playerSpeedScale(): number {
-    return this.playerSoakedFor > 0 ? 0.55 : 1;
+    return this.speedScaleFor(LOCAL_ACTOR_ID);
+  }
+
+  speedScaleFor(actorId: number): number {
+    return this.fighters.isOut(actorId) ? 0.55 : 1;
   }
 
   get ammoCount(): number {
-    return this.ammo;
+    return this.fighters.of(LOCAL_ACTOR_ID).ammo;
   }
 
   /** True when the player is carrying the enemy flag. */
@@ -766,11 +799,25 @@ export class CaptureTheFlagMode implements GameMode {
         : null,
       secondary: null,
       message: this.message,
-      charge: this.charging ? this.charge : null,
-      wetness: null,
-      ammo: this.buildingAllowed ? null : { current: this.ammo, max: PLAYER_AMMO_MAX },
-      refill: null,
+      ...this.selfHud(LOCAL_ACTOR_ID),
       lumber: this.buildingAllowed ? this.lumber.available : null,
+    };
+  }
+
+  /**
+   * Balloons and wind-up, about whoever is asked for.
+   *
+   * No wetness and no refill channel in this mode: a balloon sends you home
+   * outright, and reloading happens by standing on your own flag rather than by
+   * holding still at a bucket.
+   */
+  selfHud(actorId: number): ModeSelfHud {
+    const self = this.fighters.of(actorId);
+    return {
+      charge: self.charging ? self.charge : null,
+      wetness: null,
+      ammo: this.buildingAllowed ? null : { current: self.ammo, max: PLAYER_AMMO_MAX },
+      refill: null,
     };
   }
 

@@ -9,13 +9,14 @@ import {
   CaptureTheFlagMode, FIRST_SETUP_TIME, SETUP_TIME, CAPTURES_TO_WIN,
   FLAG_RETURN_TIME, PLAYER_AMMO_MAX, ENEMY_COUNT, ALLY_COUNT, BOT_RESPAWN_TIME,
 } from './captureTheFlag.ts';
-import type { GameEvent, ModeContext, ModeInput } from './gameMode.ts';
+import { sameForEveryone } from './gameMode.ts';
+import type { GameEvent, ModeContext } from './gameMode.ts';
 import { Rng } from '../core/rng.ts';
 import { ActorRoster, LOCAL_ACTOR_ID } from './actor.ts';
 import { DT } from '../physics/constants.ts';
 import { LEFT_FLAG, RIGHT_FLAG, LEFT_SPAWN } from '../world/neighborhood.ts';
 
-const noInput: ModeInput = { fire: false, firePressed: false, fireReleased: false };
+const noInput = sameForEveryone();
 
 function makeContext(): { ctx: ModeContext; events: GameEvent[]; world: CollisionWorld } {
   // A bare world: the real map's fixtures would make bots walk real routes,
@@ -458,8 +459,8 @@ describe('CaptureTheFlagMode', () => {
       run(mode, ctx, DT);
       // Spend it.
       for (let i = 0; i < PLAYER_AMMO_MAX; i++) {
-        mode.fixedUpdate(DT, ctx, { fire: true, firePressed: true, fireReleased: false });
-        mode.fixedUpdate(DT, ctx, { fire: false, firePressed: false, fireReleased: true });
+        mode.fixedUpdate(DT, ctx, sameForEveryone({ fire: true, firePressed: true, fireReleased: false }));
+        mode.fixedUpdate(DT, ctx, sameForEveryone({ fire: false, firePressed: false, fireReleased: true }));
         run(mode, ctx, 0.5);
       }
       expect(mode.ammoCount).toBeLessThan(PLAYER_AMMO_MAX);

@@ -135,8 +135,10 @@ export default async function (page) {
     // Aim at where the part actually landed rather than at the angle that put
     // it there: placement snaps to a surface, so the two rays differ.
     const at = window.__maker.lastPlacedAt();
-    const ok = at !== null && window.__maker.removeAtPoint(at.x, at.y, at.z);
-    return { ok, after: window.__maker.lumber().available };
+    // A count, not a truthiness test: `removeAtPoint` hands back every part
+    // that came down, and an empty array is as truthy as a full one.
+    const down = at === null ? [] : window.__maker.removeAtPoint(at.x, at.y, at.z);
+    return { ok: down.length === 1, after: window.__maker.lumber().available };
   });
   assert(reclaimed.ok, 'the part just placed should be removable');
   assert(

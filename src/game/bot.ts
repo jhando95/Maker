@@ -26,6 +26,7 @@ import { ProjectileSystem } from './projectiles.ts';
 import type { BalloonTarget } from './projectiles.ts';
 import type { NavField } from './navField.ts';
 import type { Actor, Team } from './actor.ts';
+import { PULL_REACH, pullProgress, pulledFree } from './demolition.ts';
 
 export type BotState = 'approach' | 'divert' | 'attack' | 'stunned' | 'done';
 
@@ -56,6 +57,18 @@ const STUCK_TIME = 0.7;
 const DIVERT_TIME = 1.1;
 /** Headings tried when looking for a way round, in radians off target. */
 const DIVERT_ANGLES = [0.6, -0.6, 1.2, -1.2, 2.0, -2.0];
+/**
+ * How long a kid puts up with getting no closer before it starts pulling.
+ *
+ * Long enough that walking the length of a fort looking for a door is not
+ * mistaken for being thwarted by it, short enough that a sealed fort is a
+ * problem the player has to come and deal with rather than a permanent win.
+ */
+const FRUSTRATION_TIME = 4.5;
+
+/** How much closer counts as getting closer. Below this it is just jostling. */
+const PROGRESS_STEP = 0.35;
+
 /**
  * Inside this range the nav grid is too coarse to steer by — a 0.75m cell is
  * larger than the objective — so the bot goes back to aiming straight at it.
@@ -171,6 +184,15 @@ export class Bot implements Actor {
 
     this.stateTimer -= dt;
     this.fireTimer -= dt;
+    // A pull lapses the moment the kid stops being stuck against that plank.
+    // Checked here, before the behaviour runs, so a tick that finds a way round
+    // drops the effort rather than finishing the pull on its way past.
+    if (!this.pullReached) {
+      this.pullPart = null;
+      this.pullElapsed = 0;
+    }
+    this.pullReached = false;
+    if (this.pullPart !== null) this.pullElapsed += dt;
 
     if (this.state === 'stunned') {
       // Stand still and drip. Gravity still applies, so a stunned bot on a
@@ -183,6 +205,28 @@ export class Bot implements Actor {
     const dx = this.targetX - this.controller.x;
     const dz = this.targetZ - this.controller.z;
     const distance = Math.hypot(dx, dz);
+
+    // Frustration, measured as distance to the objective rather than as speed.
+    //
+    // The first version of this hung the pull off the bot's existing "nowhere
+    // to go" branch, on the reasoning that a kid only starts pulling when every
+    // way round is blocked. Measured against a real ring wall, that branch
+    // never fired once in sixty seconds: the diversion probes go out to two
+    // radians either side, and from outside a round fort those always find open
+    // lawn — so the kid circles it forever, perfectly happy, and the wall is
+    // never touched.
+    //
+    // "Cannot get closer" is the condition that actually means the fort is
+    // working. Circling a wall keeps the distance to what is inside it exactly
+    // the same; a way in reduces it. So an open fort is still beaten by walking
+    // through the gap, which is the design, and a sealed one gets hauled at.
+    if (distance < this.closest - PROGRESS_STEP) {
+      this.closest = distance;
+      this.frustration = 0;
+    } else {
+      this.frustration += dt;
+    }
+    if (this.frustration >= FRUSTRATION_TIME) this.aimPull(Math.atan2(dx, dz));
 
     // The bot keeps advancing whatever else it is doing. Throwing happens on
     // the move, so a fort has to physically stop them rather than merely
@@ -288,12 +332,77 @@ export class Bot implements Actor {
       }
     }
 
-    // Nowhere to go: keep pressing against the obstacle. A bot bunched against
-    // a wall it genuinely cannot pass reads as thwarted, which is the point of
-    // having built the wall. With the nav field routing, this is now only
-    // reached when the fort really is sealed.
+    // Nowhere to go. A bot bunched against a wall it genuinely cannot pass
+    // reads as thwarted, which is the point of having built the wall — and it
+    // is also the one honest moment to start pulling the wall apart. Every way
+    // round has been tried and blocked, so this cannot trivialise a bad fort:
+    // a bad fort is beaten by walking round it and never reaches here.
+    //
+    // The part is only *named* here. The mode does the demolishing, because
+    // the mode is what the host runs, and a bot reaching into the build system
+    // itself would be a second authority over the shape of the world.
     this.state = 'approach';
     void distance;
+  }
+
+  /**
+   * What this kid has both hands on, and how far through it is.
+   *
+   * Null unless it is stuck against something somebody built. Read by the mode
+   * after `update`, which is the only thing allowed to act on it.
+   */
+  get pulling(): { part: number; progress: number } | null {
+    if (this.pullPart === null) return null;
+    return { part: this.pullPart, progress: pullProgress(this.pullElapsed) };
+  }
+
+  /** True on the tick the part comes away. The mode takes it from there. */
+  get pullDone(): boolean {
+    return this.pullPart !== null && pulledFree(this.pullElapsed);
+  }
+
+  /** Called by the mode once it has acted, so the kid starts on the next one. */
+  clearPull(): void {
+    this.pullPart = null;
+    this.pullElapsed = 0;
+  }
+
+  private pullPart: number | null = null;
+  private pullElapsed = 0;
+  /** Closest this kid has ever got to what it wants, and for how long. */
+  private closest = Infinity;
+  private frustration = 0;
+  /** Set by `aimPull` each tick it runs; cleared at the top of the next. */
+  private pullReached = false;
+
+  /**
+   * Reach for whatever is directly in the way.
+   *
+   * Effort is per-plank rather than a stopwatch: a kid who shuffles along a
+   * wall trying one board after another must not arrive at the fourth with
+   * three seconds of credit, so changing target resets the clock.
+   */
+  private aimPull(heading: number): void {
+    const eye = this.controller.y + CAP_HEIGHT * 0.5;
+    const hit = this.world.raycast(
+      this.controller.x, eye, this.controller.z,
+      Math.sin(heading), 0, Math.cos(heading),
+      CAP_RADIUS + PULL_REACH,
+    );
+    // Fixtures are skipped here for the kid's sake rather than for the map's.
+    // `BuildSystem.demolish` refuses map geometry outright and is the authority
+    // — this second check exists so a kid does not spend two and a half seconds
+    // hauling on the fence, achieve nothing, and immediately start again on the
+    // same fence for the rest of the round.
+    const part = hit === null || hit.isGround || this.world.isFixture(hit.part)
+      ? null
+      : hit.part;
+    if (part === null) return;
+    this.pullReached = true;
+    if (part !== this.pullPart) {
+      this.pullPart = part;
+      this.pullElapsed = 0;
+    }
   }
 
   private throwAt(projectiles: ProjectileSystem): void {

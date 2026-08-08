@@ -9,10 +9,13 @@
 
 import * as THREE from 'three';
 import { Rng } from '../core/rng.ts';
+import { clampDay, daylightAt, type DayTime, type Daylight } from './daylight.ts';
 import { createToonMaterial } from '../render/toonMaterial.ts';
 import { chamferedBox, blob, addOutlineNormals } from '../render/geometry.ts';
-import { PropBatch } from '../render/propBatch.ts';
-import { neighborhoodSlabs, TREEHOUSE, type Slab } from './neighborhood.ts';
+import { PropBatch, chunkInstanced } from '../render/propBatch.ts';
+import { NightLights } from '../render/nightLights.ts';
+import { neighborhoodSlabs, wearPoints, TREEHOUSE, type Slab } from './neighborhood.ts';
+import { buildGround, buildTufts, averageLawnColor, type Paved } from './ground.ts';
 
 /**
  * Palette.
@@ -45,8 +48,24 @@ export const SUN_DIRECTION = new THREE.Vector3(28, 34, 18).normalize();
 export interface SceneBuild {
   scene: THREE.Scene;
   sun: THREE.DirectionalLight;
+  /**
+   * Move the light to a time of day.
+   *
+   * Returns true when anything actually changed, which is the caller's cue to
+   * rebuild the static shadow map — see `applyDaylight` for why that is not
+   * optional.
+   */
+  setDaylight(t: DayTime): boolean;
   /** Scenery batch, so the viewport-dependent outline width can be updated. */
   props: PropBatch;
+  /**
+   * The map's lamps and lit windows, driven by `setDaylight`.
+   *
+   * Handed out so a test can ask how many there are and whether any are being
+   * drawn — "the lights came on" is a claim, and a claim wants an assertion
+   * rather than a screenshot.
+   */
+  lights: NightLights;
   /**
    * The map's solid geometry, as plain numbers.
    *
@@ -70,11 +89,24 @@ export interface SceneBuild {
 class GeometryCache {
   private readonly cache = new Map<string, THREE.BufferGeometry>();
 
+  /**
+   * A box, chamfered or not.
+   *
+   * A chamfer costs a lot more than it looks: `chamferedBox` builds 24 vertices
+   * and 44 triangles where a plain box needs 8 and 12, and it does that whether
+   * the chamfer is a centimetre or a fraction of a millimetre — the topology is
+   * the same, only the inset changes. Nearly four times the geometry, for an
+   * edge treatment.
+   *
+   * That is the right trade on a house and the wrong one on a picket, so asking
+   * for no chamfer now gets a real box rather than a chamfered one with the
+   * bevel set to nothing.
+   */
   box(w: number, h: number, d: number, chamfer: number): { key: string; geometry: THREE.BufferGeometry } {
     const key = `box:${w.toFixed(4)}:${h.toFixed(4)}:${d.toFixed(4)}:${chamfer.toFixed(4)}`;
     let geometry = this.cache.get(key);
     if (geometry === undefined) {
-      geometry = chamferedBox(w, h, d, chamfer);
+      geometry = chamfer > 0 ? chamferedBox(w, h, d, chamfer) : new THREE.BoxGeometry(w, h, d);
       this.cache.set(key, geometry);
     }
     return { key, geometry };
@@ -93,6 +125,26 @@ class GeometryCache {
 /** Yard half-extent in meters. */
 export const YARD_HALF = 24;
 
+/**
+ * Half the opening in the front fence.
+ *
+ * Wide enough for two people abreast. Narrower and it reads as a gap somebody
+ * forgot rather than a gate; wider and the fence stops being a boundary, which
+ * is the one thing the fence is for.
+ */
+const GATE_HALF = 1.4;
+
+/**
+ * Side length of the detailed lawn.
+ *
+ * Exported because it is a constraint on the neighbourhood, not a decoration:
+ * anything standing outside it is standing on the flat plane that fills the
+ * horizon, which has no tone in it and meets the lawn in a straight line that
+ * runs right under the building. `culDeSac.test.ts` checks the street against
+ * this number rather than against a copy of it.
+ */
+export const LAWN_EXTENT = 132;
+
 export function createScene(seed: string | number = 'backyard-01'): SceneBuild {
   const rng = new Rng(seed);
   const scene = new THREE.Scene();
@@ -101,8 +153,9 @@ export function createScene(seed: string | number = 'backyard-01'): SceneBuild {
   addSky(scene);
   addLights(scene);
   const sun = scene.getObjectByName('sun') as THREE.DirectionalLight;
-
-  addGround(scene);
+  const fill = scene.getObjectByName('fill') as THREE.HemisphereLight;
+  const sky = scene.getObjectByName('sky') as THREE.Mesh;
+  let dayTime = -1;
 
   // All repeated scenery goes into one batch. Built as individual meshes the
   // fence alone was several hundred draw calls before any player-built part.
@@ -114,6 +167,12 @@ export function createScene(seed: string | number = 'backyard-01'): SceneBuild {
   // collision fixtures, which is the only way the house you see and the house
   // you walk into stay the same house.
   const slabs = neighborhoodSlabs(rng.fork());
+
+  // Built before the scenery is queued but after the map is described, because
+  // the grass has to know where the paving is. Its own Rng, so the order here
+  // does not change what anything else draws.
+  addGround(scene, new Rng(`${seed}-ground`), slabs);
+
   for (const s of slabs) {
     box(props, cache, s.w, s.h, s.d, s.x, s.y, s.z, s.color, {
       rx: s.rx, ry: s.ry, rz: s.rz,
@@ -125,11 +184,32 @@ export function createScene(seed: string | number = 'backyard-01'): SceneBuild {
   addTrees(scene, props, cache, rng.fork());
   scene.add(props.build());
 
+  // Read off the same list that was just drawn, so a lamp and its light cannot
+  // end up in different places. Off until the afternoon runs out, and off means
+  // a count of zero rather than a matrix scaled to nothing.
+  const lights = new NightLights(slabs);
+  scene.add(lights.mesh);
+
   return {
     scene,
     sun,
     props,
     slabs,
+    lights,
+    setDaylight(t: DayTime): boolean {
+      const want = clampDay(t);
+      // Quantised, because this is called every frame and every change costs a
+      // shadow-map rebuild. A hundredth of an afternoon is finer than anybody
+      // can see move and coarse enough that a five-minute round pays for a
+      // hundred rebuilds rather than eighteen thousand.
+      const stepped = Math.round(want * 100) / 100;
+      if (stepped === dayTime) return false;
+      dayTime = stepped;
+      const light = daylightAt(stepped);
+      applyDaylight(scene, sun, fill, sky, light);
+      lights.setLevel(light.lampGlow);
+      return true;
+    },
     invalidateShadows() {
       sun.shadow.needsUpdate = true;
     },
@@ -237,28 +317,121 @@ function addLights(scene: THREE.Scene): void {
   // The green ground bounce is the single highest-value light here: it tints
   // every downward-facing surface with grass, and the scene immediately reads
   // as outdoors on a lawn rather than in a void.
-  scene.add(new THREE.HemisphereLight(0xbfe6ff, 0x7fa84a, 0.5));
+  const fill = new THREE.HemisphereLight(0xbfe6ff, 0x7fa84a, 0.5);
+  fill.name = 'fill';
+  scene.add(fill);
 }
 
-function addGround(scene: THREE.Scene): void {
+/**
+ * Write a time of day onto the scene.
+ *
+ * The shadow map is the part worth stating. It is deliberately static —
+ * `autoUpdate` is off and it is rebuilt only when the world changes — which is
+ * pure profit while the sun is nailed to one spot and a bug the moment it is
+ * not: the light would go orange and swing west while every shadow on the lawn
+ * went on pointing at the afternoon. So moving the sun invalidates it, in the
+ * same breath, rather than in the caller where somebody will one day forget.
+ */
+export function applyDaylight(
+  scene: THREE.Scene,
+  sun: THREE.DirectionalLight,
+  fill: THREE.HemisphereLight,
+  sky: THREE.Mesh,
+  light: Daylight,
+): void {
+  sun.position.set(light.sun.x, light.sun.y, light.sun.z).multiplyScalar(60);
+  sun.color.setHex(light.sunColor, THREE.SRGBColorSpace);
+  sun.intensity = light.sunIntensity;
+  sun.shadow.needsUpdate = true;
+
+  fill.color.setHex(light.fillSky, THREE.SRGBColorSpace);
+  fill.groundColor.setHex(light.fillGround, THREE.SRGBColorSpace);
+  fill.intensity = light.fillIntensity;
+
+  const material = sky.material as THREE.ShaderMaterial;
+  (material.uniforms.topColor!.value as THREE.Color).setHex(light.skyTop, THREE.SRGBColorSpace);
+  (material.uniforms.horizonColor!.value as THREE.Color)
+    .setHex(light.skyHorizon, THREE.SRGBColorSpace);
+
+  const fog = scene.fog as THREE.Fog | null;
+  if (fog !== null) {
+    fog.color.setHex(light.fog, THREE.SRGBColorSpace);
+    fog.near = light.fogNear;
+    fog.far = light.fogFar;
+  }
+}
+
+/**
+ * The footprints of everything the map lays on the ground.
+ *
+ * Derived from the same slab list that gets drawn and turned into collision,
+ * rather than listed by hand, so paving and grass cannot drift apart. A slab
+ * counts if it straddles ground level at all — the driveway, the deck, the
+ * pool, the sandpit, the house's own floor.
+ */
+function pavedFootprints(slabs: readonly Slab[]): Paved[] {
+  const out: Paved[] = [];
+  for (const s of slabs) {
+    const bottom = s.y - s.h / 2;
+    const top = s.y + s.h / 2;
+    if (bottom > 0.25 || top < 0.01) continue;
+    // Tilted slabs are ramps and roofs; their footprint is not their extent and
+    // grass at the foot of one is correct anyway.
+    if ((s.rx ?? 0) !== 0 || (s.rz ?? 0) !== 0) continue;
+    out.push({ x: s.x, z: s.z, halfW: s.w / 2, halfD: s.d / 2, ry: s.ry });
+  }
+  return out;
+}
+
+function addGround(scene: THREE.Scene, rng: Rng, slabs: readonly Slab[]): void {
+  // The lot's own lawn, with tone variation and the paths worn into it. Laid
+  // over the far plane rather than replacing it: the horizon still needs
+  // something to be, and subdividing four hundred metres to get it would be
+  // most of a megabyte of vertices for ground nobody stands on.
+  const lawn = {
+    // Out past the cul-de-sac, so the neighbourhood stands on ground with tone
+    // in it rather than on the flat plane that fills the horizon. The cell size
+    // is held at about 0.8m by raising the subdivision to match — a coarser
+    // lattice starts showing as triangular banding on open ground, which is
+    // worse than the flat colour it replaced.
+    extent: LAWN_EXTENT,
+    grass: PALETTE.grass,
+    grassDark: PALETTE.grassDark,
+    dirt: PALETTE.dirt,
+    wear: wearPoints(),
+    paved: pavedFootprints(slabs),
+  };
+  scene.add(buildGround(rng, lawn));
+  // Three clumps per square metre, over the lot and a little past it — not over
+  // the whole hundred metres of ground. Grass reads as grass because of how
+  // close together the clumps are, and spreading the same number over four
+  // times the area would thin the yard you actually stand in to make verges
+  // nobody can reach look slightly better. So the tufts keep their own extent.
+  // Split into cells before it goes in, so turning your back on the far side of
+  // the lawn stops paying for it. Sixteen metres is much finer than the scenery
+  // grid because grass is dense and low: a cell holds a few hundred clumps, and
+  // the ones behind you are the majority of them.
+  scene.add(chunkInstanced(buildTufts(rng, { ...lawn, extent: 62, count: 11000 }), 16));
+
   const geometry = new THREE.PlaneGeometry(400, 400, 1, 1);
   geometry.rotateX(-Math.PI / 2);
-  const material = createToonMaterial({ color: PALETTE.grass });
+  // The lawn's average rather than the base green, which is its light end. Get
+  // this wrong and the lot is a visibly different shade from the world around
+  // it — a rug thrown over the ground, with a straight edge where it stops.
+  const material = createToonMaterial({ color: 0xffffff });
+  material.color.copy(averageLawnColor(PALETTE.grass, PALETTE.grassDark));
   const ground = new THREE.Mesh(geometry, material);
   ground.name = 'ground';
   ground.receiveShadow = true;
-  // Sits a hair below y=0 so it never z-fights with a part placed flat on it.
-  ground.position.y = -0.005;
+  // Below the lot's own lawn, which sits above it — this one only fills the
+  // horizon, and two coplanar planes would z-fight across the whole view.
+  ground.position.y = -0.02;
   scene.add(ground);
 
-  // A worn dirt patch, to break up the flat green.
-  const patch = new THREE.Mesh(
-    new THREE.CircleGeometry(3.2, 20).rotateX(-Math.PI / 2),
-    createToonMaterial({ color: PALETTE.dirt }),
-  );
-  patch.position.set(-6, 0.002, 4);
-  patch.receiveShadow = true;
-  scene.add(patch);
+  // There was a flat dirt disc here, hand-placed to break up the green. The
+  // wear field does that job now and does it from the map's own landmarks, so
+  // the disc was both redundant and wrong — a hard-edged circle of one colour
+  // sitting on top of a lawn that has stopped being one colour.
 }
 
 /** Shared helper: a chamfered box mesh with an outline shell. */
@@ -291,12 +464,30 @@ function addFence(props: PropBatch, cache: GeometryCache, rng: Rng): void {
     for (let i = 0; i < count; i++) {
       const t = (i + 0.5) / count;
       const p = run.from.clone().lerp(run.to, t);
+      // The front gate. A fence that goes right round with no way through says
+      // the lot has no relationship to the street it faces, which is a strange
+      // thing to say about a house with a front door and a path to it — and the
+      // gap is what makes the cul-de-sac read as somewhere you came *from*
+      // rather than a painted backdrop.
+      if (p.z < -YARD_HALF + 0.5 && Math.abs(p.x) < GATE_HALF) continue;
       box(
         props, cache,
         0.09, picketHeight, 0.02,
         p.x, picketHeight / 2, p.z,
         jitter(PALETTE.fence, rng, 0.04),
-        { ry: angle, rz: rng.signed(0.014), chamfer: 0.006, outline: 0x5a4432 },
+        // No chamfer, which is the single largest saving in the frame.
+        //
+        // Six hundred and seventy-five pickets at 44 triangles each, plus an
+        // outline shell at 44 more, came to 59,400 — **a fifth of everything
+        // the game drew**, on sticks two centimetres thick. A plain box is 12,
+        // so the fence now costs 16,200.
+        //
+        // The bevel was 6mm on a 20mm face and is invisible at any distance a
+        // player is ever at: diffed against the chamfered version from the
+        // closest you can stand, it moves a handful of pixels along the top
+        // edges. What actually gives a picket its shape in this art style is
+        // the outline shell, and that is untouched.
+        { ry: angle, rz: rng.signed(0.014), chamfer: 0, outline: 0x5a4432 },
       );
     }
 
@@ -339,12 +530,36 @@ function addTrees(scene: THREE.Scene, props: PropBatch, cache: GeometryCache, rn
   // need a shared set of blob shapes reused across trees.
   for (const [x, z, scale] of spots) {
     const trunkHeight = 3.4 * scale;
+    const lean = rng.range(0, Math.PI);
+    // Three stacked sections rather than one box, narrowing as they go up and
+    // alternating tone. A trunk of constant width with parallel sides is the
+    // one shape that reads as a post, and a post in a garden is a fence post —
+    // which is what these looked like at any distance where the canopy was not
+    // obviously attached to them.
+    // Snapped to a quarter, so five trees share three sets of trunk sections
+    // instead of needing fifteen. Scenery is instanced by exact dimensions and
+    // a size used once is a draw call spent on one box; the trees are the same
+    // shape at three sizes, and nobody can tell a 1.35 trunk from a 1.25 one.
+    const step = Math.max(0.5, Math.round(scale * 4) / 4);
+    for (let i = 0; i < 3; i++) {
+      const t = i / 3;
+      const width = 0.42 * step * (1 - t * 0.38);
+      box(
+        props, cache,
+        width, trunkHeight / 3 + 0.02, width,
+        x, trunkHeight / 6 + (i * trunkHeight) / 3, z,
+        i === 1 ? 0x7a5438 : PALETTE.trunk,
+        { ry: lean + i * 0.22, chamfer: 0.02, outline: 0x4a3122 },
+      );
+    }
+    // A flare where it meets the lawn, so the tree grows out of the ground
+    // rather than being stuck into it.
     box(
       props, cache,
-      0.42 * scale, trunkHeight, 0.42 * scale,
-      x, trunkHeight / 2, z,
-      PALETTE.trunk,
-      { ry: rng.range(0, Math.PI), chamfer: 0.02, outline: 0x4a3122 },
+      0.62 * step, 0.22 * step, 0.62 * step,
+      x, 0.1 * step, z,
+      0x7a5438,
+      { ry: lean + 0.5, chamfer: 0.07, outline: 0x4a3122 },
     );
 
     const clusters = rng.int(2, 3);

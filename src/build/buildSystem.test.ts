@@ -5,6 +5,7 @@ import { PartRenderer } from '../render/partRenderer.ts';
 import { BuildSystem } from './buildSystem.ts';
 import { MODULE, PART_KINDS, halfExtents, getPartKind } from './partKit.ts';
 import { Snapper, MAX_REACH } from './snapping.ts';
+import { Lumber } from './lumber.ts';
 
 /** Aim straight ahead from an eye at standing height. */
 function aim(build: BuildSystem, from: [number, number, number], dir: [number, number, number]) {
@@ -123,9 +124,152 @@ describe('BuildSystem placement', () => {
     const id = [...world.store.live()][0]!;
     const box = world.store.readAabb(id);
     aim(build, [(box.minX + box.maxX) / 2, 2.0, (box.minZ + box.maxZ) / 2], [0, -1, 0]);
-    expect(build.removeAimed()).toBe(true);
+    expect(build.removeAimed()).toHaveLength(1);
     expect(world.partCount).toBe(0);
     expect(renderer.instanceCount).toBe(0);
+  });
+
+  describe('and says so before the wood is spent', () => {
+    const kind = getPartKind(0);
+    const half = kind.thickness / 2;
+    /** One plank, exactly where asked, with no aiming in it. */
+    const plankAt = (x: number, y: number, z: number): number =>
+      build.stamp([{ kind: 0, colorway: 0, x, y, z, qx: 0, qy: 0, qz: 0, qw: 1 }])[0]!;
+
+    it('calls a placement on the lawn supported', () => {
+      aim(build, [0, 1.5, 3], [0, -0.55, -1]);
+      expect(build.place()).not.toBeNull();
+      expect(build.previewStands).toBe(true);
+    });
+
+    it('calls one hung in open air unsupported', () => {
+      // Four hundred metres up, aimed at the horizon: the snapper puts a
+      // candidate at arm's length with nothing anywhere near it.
+      aim(build, [0, 400, 0], [0, 0, -1]);
+      const record = build.place();
+      expect(record).not.toBeNull();
+      expect(record!.y).toBeGreaterThan(390);
+      expect(build.previewStands).toBe(false);
+    });
+
+    it('takes support from a plank standing on the lawn', () => {
+      plankAt(0, half, 3);
+      aim(build, [0, 1.5, 3.9], [0, -1.45, -0.9]);
+      expect(build.place()).not.toBeNull();
+      expect(build.previewStands).toBe(true);
+    });
+
+    it('will not take support from a plank that is floating itself', () => {
+      // The whole reason the check floods rather than looking at what it
+      // touches. This is the second storey of a mistake: a player ignored the
+      // warning once, and the part they nail to that one is no better off.
+      plankAt(0, 10, 3);
+      aim(build, [0, 10 + 1.5, 3.9], [0, -1.45, -0.9]);
+      const record = build.place();
+      expect(record).not.toBeNull();
+      expect(record!.y).toBeGreaterThan(9);
+      expect(build.previewStands).toBe(false);
+    });
+
+    it('changes its mind when what was holding it up is taken away', () => {
+      // Same aim, same crosshair, different world.
+      const id = plankAt(0, half, 3);
+      aim(build, [0, 1.5, 3.9], [0, -1.45, -0.9]);
+      expect(build.previewStands).toBe(true);
+
+      build.demolish(id);
+      aim(build, [0, 1.5, 3.9], [0, -1.45, -0.9]);
+      // Now it lands on the lawn instead, which is still supported — so the
+      // claim has to be about a placement the ground cannot rescue.
+      const onLawn = build.place();
+      expect(onLawn).not.toBeNull();
+      expect(onLawn!.y).toBeLessThan(half + 0.05);
+      expect(build.previewStands).toBe(true);
+    });
+  });
+
+  describe('and everything it was holding up', () => {
+    // The rule the title screen has promised since the first commit — *build it
+    // yourself, then find out if it holds* — checked against the real
+    // collision world rather than against boxes in a fixture, because the
+    // interesting half is whether the thing that knows where parts are and the
+    // thing that decides what is standing agree about contact.
+    const stack = (n: number): number[] => {
+      const kind = getPartKind(0);
+      const half = kind.thickness / 2;
+      const records = [];
+      for (let i = 0; i < n; i++) {
+        records.push({
+          kind: 0, colorway: 0,
+          x: 0, y: half + i * kind.thickness, z: 3,
+          qx: 0, qy: 0, qz: 0, qw: 1,
+        });
+      }
+      return build.stamp(records);
+    };
+
+    it('brings a tower down when its bottom plank goes', () => {
+      const ids = stack(5);
+      expect(ids).toHaveLength(5);
+      expect(build.demolish(ids[0]!)).toEqual(ids.slice().sort((a, b) => a - b));
+      expect(world.partCount).toBe(0);
+      expect(renderer.instanceCount).toBe(0);
+    });
+
+    it('takes only the top off when the top goes', () => {
+      const ids = stack(5);
+      expect(build.demolish(ids[4]!)).toEqual([ids[4]!]);
+      expect(world.partCount).toBe(4);
+    });
+
+    it('cuts it in half in the middle', () => {
+      const ids = stack(5);
+      const down = build.demolish(ids[2]!);
+      expect(down).toContain(ids[2]!);
+      expect(down).toHaveLength(3);
+      expect(world.partCount).toBe(2);
+    });
+
+    it('leaves the renderer with exactly what is left standing', () => {
+      // The failure this catches is a part removed from physics and not from
+      // the picture: a plank you can walk through, still there.
+      const ids = stack(4);
+      build.demolish(ids[1]!);
+      expect(renderer.instanceCount).toBe(world.partCount);
+      expect(renderer.instanceCount).toBe(1);
+    });
+
+    it('refuses to demolish the map, and brings nothing down trying', () => {
+      stack(3);
+      const fixture = world.addFixture(0, 0, 0, 1, 0, 0, 0, 0, 1, 1, 1, 1, null, {}).id;
+      // Counted after the fixture exists, because `partCount` counts it too.
+      const before = world.partCount;
+      expect(build.demolish(fixture)).toEqual([]);
+      expect(world.partCount).toBe(before);
+    });
+
+    it('leaves a part alone that never touched the one that went', () => {
+      const ids = stack(2);
+      aim(build, [8, 1.5, 8], [0, -1, 0]);
+      build.tryPlace();
+      const before = world.partCount;
+      expect(build.demolish(ids[0]!)).toHaveLength(2);
+      expect(world.partCount).toBe(before - 2);
+    });
+
+    it('gives back the wood for everything that fell, not just the one aimed at', () => {
+      // Two arguments both defensible — you built it badly, you keep the loss —
+      // and the refund is the one that matches every other rule in the game:
+      // `reclaim` pays back whatever the player paid for a part, and a plank
+      // that fell over is still a plank they own.
+      build.setLumber(new Lumber(200));
+      const spent = build.lumber.available;
+      const ids = stack(4);
+      const afterBuilding = build.lumber.available;
+      expect(afterBuilding).toBeLessThan(spent);
+      build.demolish(ids[0]!);
+      expect(build.lumber.available).toBe(spent);
+    });
   });
 
   it('undo takes back the most recent placement', () => {

@@ -10,7 +10,10 @@
     "shoot": "node tools/shoot.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
-    "bench": "vite-node tools/bench.ts"
+    "bench": "vite-node tools/bench.ts",
+    "server": "vite-node server/serve.ts",
+    "build:tools": "MAKER_DEV_TOOLS=1 vite build --outDir dist-tools",
+    "check:public": "node tools/checkPublicBundle.mjs"
   },
   "repository": {
     "type": "git",

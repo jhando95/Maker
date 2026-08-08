@@ -223,6 +223,41 @@ export default async function (page) {
   // The edge detection is what stops a released trigger from placing forever.
   assert(later === atRelease, `releasing must stop placement; ${atRelease} -> ${later}`);
 
+  // ── The d-pad changes what you are holding ─────────────────────────────────
+  //
+  // `gamepad.ts` has bound d-pad left and right to `prevPart`/`nextPart` since
+  // it was written, and nothing anywhere read those two actions — so both
+  // buttons did nothing at all, silently, for as long as the pad has existed.
+  // Nobody noticed because the pad also has a part wheel and the wheel is the
+  // better way to pick. Found by putting every action on the controls screen:
+  // an action somebody can bind a key to had better do something.
+  await clearPad(page);
+  await frames(page, 3);
+  const heldBefore = await page.evaluate(() => window.__maker.getSelectedPart());
+  await setPad(page, { buttons: { 15: 1 } }); // D→
+  await page
+    .waitForFunction(
+      (was) => window.__maker.getSelectedPart() !== was,
+      heldBefore, { timeout: 20_000 },
+    )
+    .catch(() => { throw new Error('gamepad scenario: d-pad right should pick the next part'); });
+  const heldAfter = await page.evaluate(() => window.__maker.getSelectedPart());
+
+  // And back, so this is a step rather than a one-way door.
+  await clearPad(page);
+  await frames(page, 3);
+  await setPad(page, { buttons: { 14: 1 } }); // D←
+  await page
+    .waitForFunction(
+      (was) => window.__maker.getSelectedPart() === was,
+      heldBefore, { timeout: 20_000 },
+    )
+    .catch(() => {
+      throw new Error(`gamepad scenario: d-pad left should step back from ${heldAfter}`);
+    });
+  await clearPad(page);
+  await frames(page, 3);
+
   // ── Unplugging must not leave anything held ────────────────────────────────
   //
   // Checked on the input itself, not on the player's feet, and both halves of
@@ -273,5 +308,152 @@ export default async function (page) {
   // keyboard help shows and which differs only by case.
   assert(helpText.includes('D←'), `hints should be pad hints while a pad is in use:\n${helpText}`);
 
-  console.log('[gamepad] verified: analog move, rate-based look, trigger place, clean unplug, pad hints');
+  // ── And the menus, which the pad could not reach at all ────────────────────
+  //
+  // Every screen in this project was click-only. There was a gamepad layer and
+  // it drove the game: a player on a controller had to put it down and find the
+  // mouse to change a setting or pick a mode. That is a papercut on a PC and the
+  // whole job for any console build, where there is no mouse to reach for.
+  //
+  // Driven through real keys and a real fake pad rather than by calling the
+  // menu's own methods, because the half most likely to be wrong is the wiring:
+  // a highlight model that works perfectly and is never fed anything is exactly
+  // the bug this cannot be allowed to have.
+
+  await page.evaluate(() => {
+    window.__maker.menu.show('title');
+  });
+
+  // Nothing is highlighted until somebody asks for it. A ring that appears on
+  // load would put a mouse user's attention on a button they are not looking at.
+  const cold = await page.evaluate(() => ({
+    focused: window.__maker.menu.focused,
+    rings: document.querySelectorAll('.mk-focus').length,
+  }));
+  assert(cold.focused === null, `nothing should be highlighted before it is asked for, saw ${cold.focused}`);
+  assert(cold.rings === 0, `and nothing drawn, saw ${cold.rings}`);
+
+  await page.keyboard.press('ArrowDown');
+  await page
+    .waitForFunction(() => window.__maker.menu.focused !== null, null, { timeout: 20_000 })
+    .catch(() => { throw new Error('gamepad scenario: an arrow key never woke the highlight'); });
+
+  const first = await page.evaluate(() => ({
+    focused: window.__maker.menu.focused,
+    rings: document.querySelectorAll('.mk-focus').length,
+  }));
+  assert(first.rings === 1, `exactly one thing should be highlighted, saw ${first.rings}`);
+
+  // Moving is a different thing, not a repaint of the same one — and there is
+  // still exactly one ring afterwards, which is the assertion that catches a
+  // highlight that lights up everything it has ever been on.
+  await page.keyboard.press('ArrowDown');
+  await page
+    .waitForFunction(
+      (was) => window.__maker.menu.focused !== was, first.focused, { timeout: 20_000 },
+    )
+    .catch(() => { throw new Error('gamepad scenario: a second arrow never moved the highlight'); });
+
+  const moved = await page.evaluate(() => document.querySelectorAll('.mk-focus').length);
+  assert(moved === 1, `moving should leave one ring behind it, saw ${moved}`);
+
+  // ── A is confirm, and it is not rebindable ────────────────────────────────
+  //
+  // Walked rather than assumed, and walked in two directions because the title
+  // screen genuinely needs both: the mode cards are a two-column grid and the
+  // five buttons under them — Free Build, Locker, Saved Builds, Blueprints,
+  // Settings — are a single row. A flat next/previous cursor would have made
+  // this one long list; what it actually is is a shape, and the highlight has to
+  // agree with the shape a player can see.
+  const press = async (key, times = 1) => {
+    for (let i = 0; i < times; i++) {
+      await page.evaluate((k) => {
+        window.dispatchEvent(new KeyboardEvent('keydown', { key: k, bubbles: true }));
+      }, key);
+      await frames(page, 1);
+    }
+  };
+
+  const walkTo = async (key, wanted, limit) => {
+    for (let i = 0; i < limit; i++) {
+      const now = await page.evaluate(() => window.__maker.menu.focused ?? '');
+      if (now.includes(wanted)) return true;
+      await press(key);
+    }
+    return await page.evaluate(
+      (w) => (window.__maker.menu.focused ?? '').includes(w), wanted,
+    );
+  };
+
+  // ── The stick moves it too, and means the same thing an arrow does ────────
+  //
+  // Asserted as an equivalence rather than as "something changed", which was the
+  // first version and could not fail: up and down both change the highlight, so
+  // a stick wired upside down passed. From one starting point, a push down and a
+  // press of Down have to land on the same thing.
+  await installFakePad(page);
+  await page
+    .waitForFunction(() => window.__maker.padCount() > 0, null, { timeout: 20_000 })
+    .catch(() => { throw new Error('gamepad scenario: the fake pad was never picked up again'); });
+
+  const focusedNow = () => page.evaluate(() => window.__maker.menu.focused);
+  const startFrom = async (label) => {
+    assert(await walkTo('ArrowDown', label, 24), `the highlight should be able to reach ${label}`);
+  };
+
+  await startFrom('Play With Friends');
+  await press('ArrowDown');
+  const viaKey = await focusedNow();
+  assert(viaKey !== null && !viaKey.includes('Play With Friends'), 'Down should have moved off it');
+
+  await startFrom('Play With Friends');
+  await setPad(page, { axes: [0, 1, 0, 0] });
+  await page
+    .waitForFunction(
+      () => !(window.__maker.menu.focused ?? '').includes('Play With Friends'),
+      null, { timeout: 20_000 },
+    )
+    .catch(() => { throw new Error('gamepad scenario: the left stick never moved the highlight'); });
+  const viaStick = await focusedNow();
+  await clearPad(page);
+  assert(
+    viaStick === viaKey,
+    `pushing the stick down should mean what pressing Down means: key gave "${viaKey}", stick gave "${viaStick}"`,
+  );
+
+  assert(await walkTo('ArrowDown', 'Free Build', 20), 'down should reach the bottom row');
+  assert(await walkTo('ArrowRight', 'Settings', 8), 'and right should run along it to Settings');
+
+  await setPad(page, { buttons: { 0: 1 } });
+  await page
+    .waitForFunction(() => window.__maker.menu.current === 'settings', null, { timeout: 20_000 })
+    .catch(() => { throw new Error('gamepad scenario: A never pressed the highlighted button'); });
+  await clearPad(page);
+
+  // ── And B goes back ────────────────────────────────────────────────────────
+  await new Promise((r) => setTimeout(r, 60));
+  await setPad(page, { buttons: { 1: 1 } });
+  await page
+    .waitForFunction(() => window.__maker.menu.current === 'title', null, { timeout: 20_000 })
+    .catch(() => { throw new Error('gamepad scenario: B never stepped back out of Settings'); });
+  await clearPad(page);
+
+  // The highlight survived the round trip: somebody who put the mouse down does
+  // not get it taken away from them by changing screen.
+  // Survives the round trip, ring and all. The ring is the half that is easy to
+  // lose: a screen is rebuilt from scratch on every render, so the element the
+  // class was on no longer exists, and the index alone would still report a
+  // label while the player saw nothing.
+  const after = await page.evaluate(() => ({
+    focused: window.__maker.menu.focused,
+    rings: document.querySelectorAll('.mk-focus').length,
+  }));
+  assert(after.focused !== null, 'the highlight should survive a change of screen');
+  assert(after.rings === 1, `and still be drawn afterwards, saw ${after.rings} rings`);
+
+  await page.evaluate(() => { window.__maker.menu.show('none'); window.__maker.hideOverlay(); });
+
+  console.log('[gamepad] verified: analog move, rate-based look, trigger place, clean unplug,'
+    + ' pad hints, and a menu a controller can actually drive — arrows and the stick move one'
+    + ' highlight, A presses it, B steps back out');
 }

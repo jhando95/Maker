@@ -11,10 +11,22 @@
  */
 
 import { SettingsStore, type Settings } from '../app/settings.ts';
+import { formatCode, MAX_NAME } from '../app/identity.ts';
 import type { BuildSlot } from '../app/buildStore.ts';
+import type { BlueprintSlot } from '../app/blueprintStore.ts';
 import { installTheme } from './theme.ts';
+import { StepRepeat, nextInDirection, type Direction } from './spatialNav.ts';
+import type { Look } from '../net/lobbyProtocol.ts';
+import { describeKey } from '../core/input.ts';
+import {
+  BROWS, CLOTH_COLOURS, EYE_COLOURS, HAIR_COLOURS, HAIR_STYLES, MARK_SHAPES,
+  MARK_SLOTS, MOUTHS, SKIN_TONES, blankMark,
+  type Appearance, type Mark, type MarkSlot,
+} from '../game/appearance.ts';
 
-export type Screen = 'none' | 'title' | 'settings' | 'builds' | 'pause' | 'result' | 'controls';
+export type Screen =
+  | 'none' | 'title' | 'settings' | 'builds' | 'pause' | 'result' | 'controls' | 'lobby'
+  | 'together' | 'locker' | 'blueprints';
 
 const STYLE = `
 .mk-menu {
@@ -81,6 +93,15 @@ const STYLE = `
 }
 .mk-btn:hover { filter: brightness(1.07); transform: translateY(-1px); }
 .mk-btn:focus-visible { outline: 3px solid var(--water); outline-offset: 3px; }
+
+/* The highlight a stick or an arrow key moves around.
+   Its own class rather than leaning on :focus-visible, which is the browser's
+   guess about whether the focus came from a keyboard — and a gamepad produces no
+   key events at all, so on a controller the guess is always no and the ring
+   never appears. Drawn on top of everything with an offset ring rather than a
+   background change, so it reads the same on a button, a mode card, a slider and
+   a text field without any of them knowing about it. */
+.mk-focus { outline: 3px solid var(--water) !important; outline-offset: 3px; }
 /* Press moves the button onto its own shadow, which is most of what makes a
    flat cartoon button feel physical. */
 .mk-btn:active { transform: translateY(3px); border-bottom-width: 2px; }
@@ -121,9 +142,118 @@ const STYLE = `
   line-height: 1.6; font-weight: 700; }
 
 .mk-hint { text-align: center; font-size: 11.5px; opacity: 0.55; margin-top: 14px; }
+
+/*
+ * The mode grid.
+ *
+ * Two columns, so five modes are three rows rather than ten items. Each card
+ * carries its own blurb, which is the change that actually saved the height:
+ * a full-width button with a line of grey text orphaned underneath it costs
+ * twice the space and reads as two things.
+ */
+.mk-modes { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 14px; }
+.mk-mode-card {
+  display: flex; flex-direction: column; gap: 3px; text-align: left;
+  padding: 11px 13px; font: inherit;
+  color: var(--ink); background: var(--sun);
+  border: 2px solid var(--ink); border-bottom-width: 5px; border-radius: var(--r-md);
+  cursor: pointer;
+  transition: transform 0.06s, filter 0.12s;
+}
+.mk-mode-card b { font-size: 15px; font-weight: 900; letter-spacing: -0.2px; }
+.mk-mode-card span { font-size: 11px; font-weight: 700; line-height: 1.35; color: rgba(43,32,28,0.66); }
+.mk-mode-card:hover { filter: brightness(1.07); transform: translateY(-1px); }
+.mk-mode-card:focus-visible { outline: 3px solid var(--water); outline-offset: 3px; }
+.mk-mode-card:active { transform: translateY(3px); border-bottom-width: 2px; }
+.mk-mode-card.mk-disabled:hover { filter: none; transform: none; }
+
+/* Three equal buttons on one line, for actions that are not the main event. */
+.mk-actions { display: flex; gap: 8px; }
+.mk-actions .mk-btn { margin-bottom: 0; font-size: 14px; padding: 11px 8px; }
+
+/* A labelled rule, for splitting a long screen into sections. */
+.mk-section {
+  display: flex; align-items: center; gap: 10px;
+  margin: 18px 0 6px;
+  font-size: 11px; font-weight: 900; letter-spacing: 1.2px; text-transform: uppercase;
+  color: rgba(43,32,28,0.5);
+}
+.mk-section::after {
+  content: ''; flex: 1; height: 2px; background: rgba(43,32,28,0.16); border-radius: 1px;
+}
 .mk-btn.mk-mode { margin-bottom: 3px; }
-/* Sits directly under its button and is deliberately quiet: the name is the
-   choice, this is the reason. */
+.mk-disabled { opacity: 0.45; cursor: not-allowed; }
+/* Louder than the blurbs it sits among, because it is the one line that
+   explains why the buttons above it do nothing. Quiet here is how somebody
+   concludes the game is broken. */
+.mk-why { color: var(--alarm); font-weight: 700; }
+
+.mk-net { display: flex; gap: 6px; margin: 6px 0 2px; }
+.mk-input {
+  flex: 1; min-width: 0;
+  font: inherit; font-size: 13px; font-weight: 700;
+  padding: 7px 9px;
+  color: var(--ink);
+  background: #fff8ec;
+  border: var(--edge); border-radius: var(--r-sm);
+}
+.mk-input-short { flex: 0 0 88px; }
+
+/* ── The lobby ──────────────────────────────────────────────────────────────
+   Its own block because it is the one screen that is mostly a list rather
+   than a stack of buttons, and a list needs a row that reads left to right:
+   who, what they are doing, and what you can do about it. */
+.mk-code {
+  display: flex; align-items: center; justify-content: center; gap: 10px;
+  margin: 2px 0 14px;
+}
+.mk-code b {
+  font-size: 22px; letter-spacing: 3px; font-family: ui-monospace, monospace;
+  color: var(--ink);
+}
+.mk-list { margin: 0 0 12px; display: flex; flex-direction: column; gap: 4px; }
+.mk-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 9px; border: var(--edge); border-radius: var(--r-sm);
+  background: #fff8ec; font-size: 13px; font-weight: 700;
+}
+.mk-row .who { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; text-align: left; }
+/* Presence as a word, not only a colour: a coloured dot alone is unreadable to
+   anybody who cannot tell the two greens apart, and this screen is a list of
+   people whose whole purpose is knowing which of them you can play with. */
+.mk-row .state { font-size: 11px; opacity: 0.65; text-transform: uppercase;
+  letter-spacing: 0.5px; }
+/* A kid, at the size a list row can spare: a shirt with a head on it and a
+   fringe across the top. Three colours is all the lobby is told, which is all a
+   row can show — a rendered face here would mean a canvas and a camera per
+   person in a list that scrolls. */
+.mk-face { width: 18px; height: 18px; border-radius: 5px; flex: 0 0 auto;
+  position: relative; overflow: hidden; }
+.mk-face i { position: absolute; display: block; }
+.mk-face .head { left: 4px; top: 3px; width: 10px; height: 9px; border-radius: 4px; }
+.mk-face .hair { left: 4px; top: 2px; width: 10px; height: 4px; border-radius: 3px 3px 0 0; }
+.mk-dot { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto; }
+.mk-dot.online { background: var(--go); }
+.mk-dot.queued { background: var(--warn); }
+.mk-dot.playing { background: var(--accent); }
+.mk-dot.offline { background: rgba(43,32,28,0.28); }
+.mk-mini {
+  font: inherit; font-size: 11px; font-weight: 800; cursor: pointer;
+  padding: 4px 8px; border: var(--edge); border-radius: var(--r-sm);
+  background: var(--paper); color: var(--ink);
+}
+.mk-mini:hover { background: #ffe9bd; }
+.mk-empty { font-size: 12px; opacity: 0.5; text-align: center; padding: 8px 0 12px; }
+.mk-invite {
+  border: var(--edge); border-radius: var(--r-sm); background: #fff3d6;
+  padding: 8px 10px; margin-bottom: 6px; font-size: 13px; font-weight: 700;
+}
+.mk-invite .mk-net { margin-top: 6px; }
+.mk-searching { text-align: center; font-size: 13px; font-weight: 800; margin: 4px 0 10px; }
+.mk-searching span { opacity: 0.6; font-weight: 700; }
+.mk-input::placeholder { color: rgba(43, 32, 28, 0.45); font-weight: 600; }
+
 .mk-blurb {
   font-size: 12px; opacity: 0.6; line-height: 1.4;
   margin: 0 0 12px; padding: 0 4px; text-align: center;
@@ -132,6 +262,7 @@ const STYLE = `
   display: flex; align-items: center; gap: 10px;
   padding: 7px 0; border-bottom: 2px solid rgba(43,32,28,0.12);
 }
+.mk-bind label { flex: 1; min-width: 0; }
 .mk-bind label { flex: 1; font-size: 13.5px; }
 .mk-bind button {
   min-width: 108px; padding: 6px 12px;
@@ -140,6 +271,87 @@ const STYLE = `
   background: #e6d3ae; color: var(--ink); border: 2px solid var(--ink);
 }
 .mk-bind button:hover { background: #f0e0bf; }
+.mk-bind button.empty { background: #d8c6a4; color: #8a7a5e; font-weight: 600; }
+/* Fixed, so the two slots line up down the screen. Left to size themselves,
+   "Down Arrow" shunts its pair left and the column reads as a ragged edge. */
+.mk-bind .keys { display: flex; gap: 6px; flex: 0 0 auto; width: 232px; }
+.mk-bind .keys button { flex: 1 1 0; min-width: 0; padding: 6px 4px; }
+.mk-group {
+  margin: 14px 0 4px; padding-bottom: 4px;
+  font-size: 12px; font-weight: 800; letter-spacing: 0.09em; text-transform: uppercase;
+  color: var(--ink); opacity: 0.62; border-bottom: 2px solid rgba(43, 32, 28, 0.18);
+}
+.mk-hint {
+  margin: 2px 0 8px; font-size: 12.5px; line-height: 1.45;
+  color: var(--ink); opacity: 0.7;
+}
+.mk-hint.said { opacity: 1; font-weight: 700; }
+.mk-choice { display: flex; gap: 5px; flex-wrap: wrap; justify-content: flex-end; }
+.mk-choice button {
+  padding: 5px 10px; font: inherit; font-size: 12px; font-weight: 700;
+  border: 2px solid var(--ink); border-radius: 7px; cursor: pointer;
+  background: #e6d3ae; color: var(--ink);
+}
+.mk-choice button:hover { background: #f0e0bf; }
+.mk-choice button.on { background: var(--sun); }
+
+/*
+ * The locker gets out of its own way.
+ *
+ * The preview is not a scene rendered into a panel — it is the player, standing
+ * in the yard behind the menu, drawn by the same rig as everybody else. That is
+ * worth more than any inset viewport could be: what you are looking at is
+ * literally what other people will see, in the light they will see it in. It
+ * only needs the card to move aside and the dimming to lift.
+ */
+.mk-menu.mk-locker {
+  justify-content: flex-start; padding-left: 4vw;
+  background: linear-gradient(90deg, rgba(20,16,14,0.62) 0%, rgba(20,16,14,0.36) 42%, rgba(20,16,14,0) 62%);
+}
+.mk-menu.mk-locker .mk-card { width: min(430px, 44vw); max-height: 88vh; }
+
+.mk-tabs { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 12px; }
+.mk-tabs button {
+  flex: 1 1 auto; padding: 7px 10px;
+  font: inherit; font-size: 12.5px; font-weight: 800;
+  border: 2px solid var(--ink); border-radius: 8px; cursor: pointer;
+  background: #e6d3ae; color: var(--ink);
+}
+.mk-tabs button.on { background: var(--ink); color: #f3e6c8; }
+
+.mk-swatches { display: flex; flex-wrap: wrap; gap: 7px; margin: 2px 0 12px; }
+.mk-swatches button {
+  width: 30px; height: 30px; padding: 0; cursor: pointer;
+  border: 2px solid var(--ink); border-radius: 8px;
+}
+.mk-swatches button.on { outline: 3px solid #f4a259; outline-offset: 2px; }
+
+.mk-chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 2px 0 12px; }
+.mk-chips button {
+  padding: 6px 11px; font: inherit; font-size: 12.5px; font-weight: 700;
+  border: 2px solid var(--ink); border-radius: 999px; cursor: pointer;
+  background: #e6d3ae; color: var(--ink);
+}
+.mk-chips button.on { background: var(--ink); color: #f3e6c8; }
+
+.mk-label {
+  margin: 10px 0 3px; font-size: 12px; font-weight: 800;
+  letter-spacing: 0.07em; text-transform: uppercase; opacity: 0.66;
+}
+.mk-preset {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 0; border-bottom: 2px solid rgba(43,32,28,0.12);
+}
+/* The one in hand. A ring rather than a fill, so the row is still readable and
+   the highlight cannot be mistaken for a disabled state. */
+.mk-preset.mk-held { box-shadow: inset 0 0 0 2px var(--accent); }
+.mk-preset .who { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; font-weight: 700; }
+.mk-preset button {
+  padding: 5px 10px; font: inherit; font-size: 12px; font-weight: 700;
+  border: 2px solid var(--ink); border-radius: 8px; cursor: pointer;
+  background: #e6d3ae; color: var(--ink);
+}
 .mk-bind button.listening { background: #f4a259; color: #3a2c2a; }
 .mk-name-input {
   width: 100%; box-sizing: border-box; margin-bottom: 10px;
@@ -152,25 +364,144 @@ const STYLE = `
 export interface BindingRow {
   action: string;
   label: string;
-  key: string;
+  /** One entry per slot, already made readable. `null` is an empty slot. */
+  keys: ReadonlyArray<string | null>;
+}
+
+export interface BindingGroup {
+  title: string;
+  rows: ReadonlyArray<BindingRow>;
+}
+
+/** The locker, as the screen needs to see it. */
+export interface LockerView {
+  /** What is being edited. Already clamped; the screen never has to check. */
+  appearance: Appearance;
+  presets: ReadonlyArray<{ name: string }>;
+  /** Full, so the Save button can say so rather than silently doing nothing. */
+  full: boolean;
 }
 
 export interface MenuCallbacks {
-  listBindings(): BindingRow[];
-  /** Returns false if the key could not be bound. */
-  rebind(action: string, code: string): boolean;
+  listBindings(): BindingGroup[];
+  /**
+   * The locker.
+   *
+   * A getter rather than state the menu holds, for the same reason the lobby is
+   * one: what somebody is wearing lives in the game, is applied the instant it
+   * changes, and a copy in the screen would be a second thing to keep in step.
+   */
+  locker(): LockerView;
+  /** Wear this now. Every control calls it on every change — see `renderLocker`. */
+  onLockerChange(appearance: Appearance): void;
+  /** Frame the player, or put the camera back. */
+  onLockerView(active: boolean): void;
+  /** Turn on the spot, in radians. */
+  onLockerTurn(delta: number): void;
+  onLockerRandom(): void;
+  /** Back to the look an actor id produces — the "I have not chosen" state. */
+  onLockerReset(): void;
+  onLockerSave(name: string): boolean;
+  onLockerWear(name: string): boolean;
+  onLockerDelete(name: string): boolean;
+  /**
+   * Put `code` in one of `action`'s slots.
+   *
+   * Returns the *label* of whatever action lost that key, or null if it was
+   * free — a code can only mean one thing, so this screen has to be able to say
+   * which control it just took away.
+   */
+  rebind(action: string, slot: number, code: string): string | null;
+  clearBinding(action: string, slot: number): void;
   resetBindings(): void;
   onPlayMode(id: string): void;
   /** The modes the title screen should offer, in the order to show them. */
   listModes(): ReadonlyArray<{ id: string; name: string; blurb: string }>;
   onPlaySandbox(): void;
+  /**
+   * Open the yard to other people, or go and stand in somebody else's.
+   *
+   * The relay address is a text field rather than a lobby browser, because a
+   * lobby browser needs a service to list lobbies and this needs nothing but a
+   * machine both players can reach.
+   */
+  onHost(url: string, room: string): void;
+  onJoin(url: string, room: string): void;
+  onLeaveSession(): void;
+  /**
+   * The lobby, or null when there is no connection to one.
+   *
+   * A getter rather than state the menu keeps, because the lobby changes
+   * underneath the screen — a friend comes online, a queue ticks — and a copy
+   * would be a second thing to keep in step with the first.
+   */
+  lobby(): LobbyView | null;
+  /** Connect to the lobby at this address, so friends and the queue work. */
+  onOpenLobby(url: string): void;
+  /** A line about the connection, or null when playing alone. */
+  sessionStatus(): string | null;
+  /**
+   * Why a mode cannot be started right now, or null when it can.
+   *
+   * A reason rather than a boolean, because the answer the player needs is not
+   * "no" — it is "the person hosting runs the game". A greyed-out button that
+   * says nothing is how somebody concludes the game is broken.
+   */
+  modesBlocked(): string | null;
   onResume(): void;
   onRestart(): void;
   onQuitToTitle(): void;
+  /**
+   * Every blueprint, with what it would cost and whether it is the held one.
+   *
+   * `held` comes back rather than being tracked here, for the reason the whole
+   * menu is written this way: the screen is a view of the game's state and not
+   * a second copy of it. A picker that remembered its own selection would be
+   * wrong the first time a key put the blueprint away behind its back.
+   */
+  listBlueprints(): BlueprintSlot[];
+  /** Hold this one, or `null` to put whatever is held away. */
+  onBlueprintHold(id: string | null): void;
+  onBlueprintRename(id: string, name: string): boolean;
+  onBlueprintDelete(id: string): boolean;
   onSaveBuild(name: string): boolean;
   onLoadBuild(id: string): boolean;
   onDeleteBuild(id: string): void;
   listBuilds(): BuildSlot[];
+}
+
+/**
+ * Everything the lobby screen draws and every button it offers.
+ *
+ * Named apart from `LobbyClient` so the menu depends on a shape rather than on
+ * the network: this screen is the one place a wrong abstraction would be most
+ * annoying to unpick, and a test can hand it a plain object.
+ */
+export interface LobbyView {
+  connected: boolean;
+  code: string | null;
+  name: string;
+  friends: ReadonlyArray<{ code: string; name: string; presence: string; look: Look }>;
+  party: {
+    leaderCode: string;
+    members: ReadonlyArray<{ code: string; name: string; look: Look }>;
+  } | null;
+  invitations: ReadonlyArray<{ party: string; from: { name: string } }>;
+  queue: { mode: string; waiting: number; needed: number; seconds: number } | null;
+  problem: string | null;
+  /** Which modes the queue will take, in the order to offer them. */
+  modes: ReadonlyArray<{ id: string; name: string }>;
+
+  rename(name: string): void;
+  addFriend(code: string): void;
+  removeFriend(code: string): void;
+  invite(code: string): void;
+  accept(party: string): void;
+  decline(party: string): void;
+  leaveParty(): void;
+  kick(code: string): void;
+  joinQueue(mode: string): void;
+  leaveQueue(): void;
 }
 
 export interface ResultInfo {
@@ -180,8 +511,23 @@ export interface ResultInfo {
   lines: ReadonlyArray<{ label: string; value: string }>;
 }
 
+/** The four keys, and nothing else — a menu is not a text editor. */
+const ARROWS: Readonly<Record<string, Direction | undefined>> = {
+  ArrowUp: 'up',
+  ArrowDown: 'down',
+  ArrowLeft: 'left',
+  ArrowRight: 'right',
+};
+
 export class Menu {
-  private readonly root: HTMLDivElement;
+  /**
+   * The menu's own element.
+   *
+   * Readable so a scenario can check what a screen actually rendered rather
+   * than only what the callbacks returned — the two can disagree, and when they
+   * do it is the screen that is wrong.
+   */
+  readonly root: HTMLDivElement;
   private readonly card: HTMLDivElement;
   private readonly settings: SettingsStore;
   private readonly callbacks: MenuCallbacks;
@@ -190,6 +536,21 @@ export class Menu {
   private result: ResultInfo | null = null;
   /** Where Back goes, since settings and builds are reachable from two places. */
   private returnTo: Screen = 'title';
+
+  /**
+   * Which focusable the highlight is on, or -1 for "nobody is driving".
+   *
+   * Starts at -1 and stays there until an arrow key or a stick moves it, so a
+   * player using the mouse never has a ring appear on a button they were not
+   * looking at. Once it exists it survives a re-render and a change of screen,
+   * because somebody on a controller who has put the mouse down has no other way
+   * to get it back.
+   */
+  private focusIndex = -1;
+  private readonly navX = new StepRepeat();
+  private readonly navY = new StepRepeat();
+  private confirmHeld = false;
+  private backHeld = false;
 
   constructor(parent: HTMLElement, settings: SettingsStore, callbacks: MenuCallbacks) {
     this.settings = settings;
@@ -207,7 +568,140 @@ export class Menu {
     this.root.appendChild(this.card);
     parent.appendChild(this.root);
 
+    // On window rather than on the card, because the card is rebuilt on every
+    // render and a listener attached to it would be thrown away with it.
+    window.addEventListener('keydown', (e) => this.onKey(e));
+
     this.show('title');
+  }
+
+  /**
+   * Arrow keys move the highlight. Enter and Space are the browser's business.
+   *
+   * Deliberately not handling activation: the highlight is real DOM focus, so a
+   * focused button already does the right thing on Enter and on Space, already
+   * announces itself to a screen reader, and already cannot be activated twice
+   * by one press — which is exactly what a hand-rolled `click()` on keydown does
+   * beside the browser's own.
+   */
+  private onKey(e: KeyboardEvent): void {
+    if (this.screen === 'none') return;
+    // Not while a rebind is waiting for a key: on that screen an arrow *is* the
+    // answer to the question being asked.
+    if (this.listening !== null) return;
+    // And not inside something somebody is typing in, where left and right move
+    // a caret. Up and down do nothing in a one-line field, so they are taken.
+    const target = e.target;
+    const typing = target instanceof HTMLInputElement && target.type === 'text';
+    if (typing && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) return;
+
+    const direction = ARROWS[e.key];
+    if (direction === undefined) return;
+    e.preventDefault();
+    this.moveFocus(direction);
+  }
+
+  /**
+   * Everything on the current screen that a player can point the highlight at.
+   *
+   * Read off the DOM on every move rather than kept in a list, because the card
+   * is rebuilt from scratch on every render and a kept list would be a second
+   * description of the screen — which is the shape of bug this project has lost
+   * to four times. The filter matters as much as the query: a disabled button
+   * and one that a section is scrolled past are both things the highlight has to
+   * skip, and both are invisible to a selector.
+   */
+  private focusables(): HTMLElement[] {
+    return Array.from(this.card.querySelectorAll<HTMLElement>('button, input, select'))
+      .filter((el) => !el.hasAttribute('disabled') && el.getClientRects().length > 0);
+  }
+
+  private moveFocus(direction: Direction): void {
+    const items = this.focusables();
+    if (items.length === 0) return;
+    // The first press wakes the highlight up rather than moving it, so a player
+    // reaching for a controller does not have to guess where it started.
+    if (this.focusIndex < 0 || this.focusIndex >= items.length) {
+      this.putFocus(items, 0);
+      return;
+    }
+    const rects = items.map((el) => el.getBoundingClientRect());
+    // Wrapping up and down but not left and right: a column of six that stops
+    // dead at both ends makes a player press a key that does nothing twice per
+    // screen, while a row that wrapped would send the highlight from Delete on
+    // one blueprint to the name of the same one, which reads as a bug.
+    const wrap = direction === 'up' || direction === 'down';
+    const next = nextInDirection(rects, this.focusIndex, direction, wrap);
+    if (next !== null) this.putFocus(items, next);
+  }
+
+  private putFocus(items: readonly HTMLElement[], index: number): void {
+    for (const el of items) el.classList.remove('mk-focus');
+    this.focusIndex = index;
+    const el = items[index];
+    if (el === undefined) return;
+    el.classList.add('mk-focus');
+    // Scrolled by the browser rather than by hand, and `nearest` so a highlight
+    // moving down a long settings list nudges rather than recentres.
+    el.focus({ preventScroll: true });
+    el.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  }
+
+  /**
+   * Put the highlight back after a render, which throws the card away.
+   *
+   * By index rather than by element, because the element is gone — every render
+   * builds new ones. Clamped, since a screen can come back shorter: a blueprint
+   * was deleted, a section collapsed.
+   */
+  private restoreFocus(): void {
+    if (this.focusIndex < 0) return;
+    const items = this.focusables();
+    if (items.length === 0) {
+      this.focusIndex = -1;
+      return;
+    }
+    this.putFocus(items, Math.min(this.focusIndex, items.length - 1));
+  }
+
+  /**
+   * Drive the highlight from a pad. Called every frame a menu is up.
+   *
+   * `y` is positive downward, matching the screen rather than the stick, so the
+   * caller does the one flip and this does not have to know which.
+   */
+  padNavigate(x: number, y: number, dt: number, confirm: boolean, back: boolean): void {
+    if (this.screen === 'none' || this.listening !== null) {
+      this.navX.reset();
+      this.navY.reset();
+      return;
+    }
+    const down = this.navY.step(y, dt);
+    if (down !== 0) this.moveFocus(down > 0 ? 'down' : 'up');
+    const across = this.navX.step(x, dt);
+    if (across !== 0) this.moveFocus(across > 0 ? 'right' : 'left');
+
+    // Edges rather than levels, or holding A on the pause screen resumes the
+    // game and then immediately pauses it again on whatever the highlight
+    // landed on.
+    if (confirm && !this.confirmHeld) this.activateFocused();
+    this.confirmHeld = confirm;
+    if (back && !this.backHeld) this.handleEscape();
+    this.backHeld = back;
+  }
+
+  /** Press what the highlight is on. Reports whether there was anything. */
+  activateFocused(): boolean {
+    const el = this.focusables()[this.focusIndex];
+    if (el === undefined) return false;
+    el.click();
+    return true;
+  }
+
+  /** What the highlight is on, for a test and for a status line. */
+  get focused(): string | null {
+    const el = this.focusables()[this.focusIndex];
+    return el === undefined ? null : (el.textContent ?? '').trim();
   }
 
   get current(): Screen {
@@ -218,10 +712,33 @@ export class Menu {
     return this.screen !== 'none';
   }
 
+  /**
+   * Redraw the current screen, if it is one that changes underneath the player.
+   *
+   * The lobby does: a friend comes online, a queue ticks, an invitation
+   * arrives. Everything else here is static once drawn, so this deliberately
+   * repaints nothing unless the lobby is up — a menu that rebuilt itself on
+   * every network message would throw away the text field somebody is typing
+   * a friend code into.
+   */
+  refresh(): void {
+    if (this.screen === 'lobby') this.render();
+  }
+
   show(screen: Screen, result?: ResultInfo): void {
+    const wasLocker = this.screen === 'locker';
+    // A new screen starts at the top — but only for somebody who was already
+    // driving with a stick or the arrows. Waking the highlight up because a
+    // mouse user clicked Settings would put a ring on a button they are not
+    // looking at.
+    if (screen !== this.screen && this.focusIndex >= 0) this.focusIndex = 0;
     this.screen = screen;
     if (result !== undefined) this.result = result;
     this.root.classList.toggle('mk-off', screen === 'none');
+    this.root.classList.toggle('mk-locker', screen === 'locker');
+    // The preview is the player standing in the yard behind this card, so
+    // opening and closing the locker is a camera move rather than a scene.
+    if ((screen === 'locker') !== wasLocker) this.callbacks.onLockerView(screen === 'locker');
     if (screen === 'none') {
       this.card.innerHTML = '';
       return;
@@ -241,8 +758,10 @@ export class Menu {
       case 'controls':
         this.show('settings');
         break;
+      case 'locker':
       case 'settings':
       case 'builds':
+      case 'blueprints':
         this.show(this.returnTo);
         break;
       case 'result':
@@ -256,12 +775,49 @@ export class Menu {
     switch (this.screen) {
       case 'title': this.renderTitle(); break;
       case 'settings': this.renderSettings(); break;
+      case 'together': this.renderTogether(); break;
+      case 'lobby': this.renderLobby(); break;
       case 'builds': this.renderBuilds(); break;
       case 'pause': this.renderPause(); break;
       case 'result': this.renderResult(); break;
       case 'controls': this.renderControls(); break;
+      case 'locker': this.renderLocker(); break;
+      case 'blueprints': this.renderBlueprints(); break;
       case 'none': break;
     }
+    this.restoreFocus();
+  }
+
+  /**
+   * Hosting and joining, on the title screen rather than behind a submenu.
+   *
+   * The whole point of the project is party modes played with other people, and
+   * a feature that is the point should not be two clicks further away than
+   * "Settings". The room name is what lets two pairs of players share one relay
+   * without walking into each other's game.
+   */
+  /**
+   * The two connection fields, made once and kept.
+   *
+   * Built in the constructor rather than per render, so what somebody typed
+   * survives a trip to the lobby and back. They were recreated on every render
+   * before, which meant editing the address and then opening any other screen
+   * silently put it back to the default.
+   */
+  private readonly presetName = Menu.field('', 'outfit name', 'mk-name-input', 'Name this outfit');
+  private readonly relay = Menu.field('ws://localhost:8787', 'relay address');
+  private readonly room = Menu.field('yard', 'room name', 'mk-input-short');
+
+  private static field(
+    value: string, label: string, extra = '', placeholder = value,
+  ): HTMLInputElement {
+    const el = document.createElement('input');
+    el.type = 'text';
+    el.className = `mk-input ${extra}`.trim();
+    el.placeholder = placeholder;
+    el.value = value;
+    el.setAttribute('aria-label', label);
+    return el;
   }
 
   private button(label: string, onClick: () => void, variant = ''): HTMLButtonElement {
@@ -283,6 +839,14 @@ export class Menu {
     this.card.appendChild(h);
   }
 
+  /** A rule with a word on it, for splitting a long screen into things. */
+  private section(text: string): void {
+    const h = document.createElement('div');
+    h.className = 'mk-section';
+    h.textContent = text;
+    this.card.appendChild(h);
+  }
+
   private renderTitle(): void {
     const title = document.createElement('h1');
     title.className = 'mk-title';
@@ -294,32 +858,396 @@ export class Menu {
     tag.textContent = 'Build it yourself. Then find out if it holds.';
     this.card.appendChild(tag);
 
-    // One button per mode, each with a line saying what it is. A menu that
-    // lists two names and no explanation makes the player pick blind and find
-    // out ninety seconds later.
+    // One card per mode, name and blurb together.
+    //
+    // It was a stack: a full-width button, then a line of grey text under it,
+    // then the next button. Five of those plus five more buttons and two text
+    // fields ran off the bottom of a 720-line window with no way to scroll, so
+    // the last thing on the screen — Settings — could not be reached at all.
+    //
+    // A two-column grid halves the height and puts the blurb where it belongs,
+    // which is inside the thing it describes rather than orphaned beneath it.
+    const blocked = this.callbacks.modesBlocked();
+    const grid = document.createElement('div');
+    grid.className = 'mk-modes';
     for (const m of this.callbacks.listModes()) {
-      const button = this.button(m.name, () => this.callbacks.onPlayMode(m.id));
-      const blurb = document.createElement('div');
-      blurb.className = 'mk-blurb';
-      blurb.textContent = m.blurb;
-      this.card.appendChild(blurb);
-      button.classList.add('mk-mode');
+      const card = document.createElement('button');
+      card.className = 'mk-mode-card';
+      card.innerHTML = `<b>${m.name}</b><span>${m.blurb}</span>`;
+      if (blocked !== null) {
+        card.classList.add('mk-disabled');
+        card.setAttribute('aria-disabled', 'true');
+      } else {
+        card.addEventListener('click', (e) => {
+          e.stopPropagation();
+          this.callbacks.onPlayMode(m.id);
+        });
+      }
+      grid.appendChild(card);
+    }
+    this.card.appendChild(grid);
+
+    if (blocked !== null) {
+      const why = document.createElement('div');
+      why.className = 'mk-blurb mk-why';
+      why.textContent = blocked;
+      this.card.appendChild(why);
     }
 
-    this.button('Free Build', () => this.callbacks.onPlaySandbox(), 'mk-secondary');
-    this.button('Saved Builds', () => {
-      this.returnTo = 'title';
-      this.show('builds');
-    }, 'mk-secondary');
-    this.button('Settings', () => {
-      this.returnTo = 'title';
-      this.show('settings');
-    }, 'mk-secondary');
+    // The one thing on this screen that is not a mode, given its own weight.
+    // Everything the project is for happens on the other side of it.
+    this.button('Play With Friends', () => this.show('together'));
+
+    const row = document.createElement('div');
+    row.className = 'mk-actions';
+    this.card.appendChild(row);
+    for (const [label, go] of [
+      ['Free Build', () => this.callbacks.onPlaySandbox()],
+      ['Locker', () => { this.returnTo = 'title'; this.show('locker'); }],
+      ['Saved Builds', () => { this.returnTo = 'title'; this.show('builds'); }],
+      ['Blueprints', () => { this.returnTo = 'title'; this.show('blueprints'); }],
+      ['Settings', () => { this.returnTo = 'title'; this.show('settings'); }],
+    ] as Array<[string, () => void]>) {
+      const b = document.createElement('button');
+      b.className = 'mk-btn mk-secondary';
+      b.textContent = label;
+      b.addEventListener('click', (e) => { e.stopPropagation(); go(); });
+      row.appendChild(b);
+    }
 
     const hint = document.createElement('div');
     hint.className = 'mk-hint';
     hint.textContent = 'Click the game to capture the mouse. Escape to pause.';
     this.card.appendChild(hint);
+  }
+
+  /**
+   * Everything about playing with other people, on a screen of its own.
+   *
+   * The relay address and the room name used to be two text fields on the
+   * title screen, above the fold, on the front page of the game — a websocket
+   * URL is the first thing a new player saw after the mode list. They are here
+   * now, under the lobby that most people will use instead, because "type a
+   * server address" is an answer to a question almost nobody has.
+   */
+  private renderTogether(): void {
+    this.heading('Play With Friends');
+
+    const status = this.callbacks.sessionStatus();
+    if (status !== null) {
+      const line = document.createElement('div');
+      line.className = 'mk-blurb';
+      line.textContent = status;
+      this.card.appendChild(line);
+      this.button('Play Alone Again', () => {
+        this.callbacks.onLeaveSession();
+        this.show('title');
+      }, 'mk-secondary');
+      this.button('Back', () => this.show('title'), 'mk-secondary');
+      return;
+    }
+
+    const blurb = document.createElement('div');
+    blurb.className = 'mk-blurb';
+    blurb.textContent = 'Get a friend code, make a party, and be dropped into a fresh yard together.';
+    this.card.appendChild(blurb);
+
+    this.button('Open the Lobby', () => {
+      this.callbacks.onOpenLobby(this.relay.value.trim());
+      this.show('lobby');
+    });
+
+    this.section('Straight to a yard');
+    const direct = document.createElement('div');
+    direct.className = 'mk-blurb';
+    direct.textContent = 'Two people on one network who would rather not involve a matchmaker.';
+    this.card.appendChild(direct);
+
+    const row = document.createElement('div');
+    row.className = 'mk-net';
+    row.append(this.relay, this.room);
+    this.card.appendChild(row);
+
+    this.button('Host a Yard', () => {
+      this.callbacks.onHost(this.relay.value.trim(), this.room.value.trim() || 'yard');
+      this.show('title');
+    }, 'mk-secondary');
+    this.button('Join a Yard', () => {
+      this.callbacks.onJoin(this.relay.value.trim(), this.room.value.trim() || 'yard');
+      this.show('title');
+    }, 'mk-secondary');
+
+    this.button('Back', () => this.show('title'), 'mk-secondary');
+  }
+
+  /**
+   * The lobby: your code, your friends, your party, and a queue.
+   *
+   * Everything on this screen is a list rather than a stack of buttons, which
+   * is why it has a row style of its own. The order is deliberate and it is
+   * the order somebody uses it in: find out who you are, add somebody, get
+   * them into a party, then go and play.
+   */
+  private renderLobby(): void {
+    const lobby = this.callbacks.lobby();
+    this.heading('Play With Friends');
+    if (lobby === null) {
+      const line = document.createElement('div');
+      line.className = 'mk-blurb';
+      line.textContent = 'Not connected to a lobby.';
+      this.card.appendChild(line);
+      this.button('Back', () => this.show('title'), 'mk-secondary');
+      return;
+    }
+
+    this.renderOwnCode(lobby);
+    if (lobby.problem !== null) {
+      const why = document.createElement('div');
+      why.className = 'mk-blurb mk-why';
+      why.textContent = lobby.problem;
+      this.card.appendChild(why);
+    }
+    this.renderInvitations(lobby);
+    this.renderParty(lobby);
+    this.renderFriends(lobby);
+    this.renderQueue(lobby);
+    this.button('Back', () => this.show('title'), 'mk-secondary');
+  }
+
+  private renderOwnCode(lobby: LobbyView): void {
+    const row = document.createElement('div');
+    row.className = 'mk-code';
+    const label = document.createElement('span');
+    label.className = 'mk-blurb';
+    label.style.margin = '0';
+    label.textContent = lobby.connected ? 'your code' : 'your code (offline)';
+    const code = document.createElement('b');
+    // Grouped for reading aloud. Somebody is going to say this over a table.
+    code.textContent = lobby.code === null ? '……' : formatCode(lobby.code);
+    row.append(label, code);
+
+    if (lobby.code !== null) {
+      const copy = document.createElement('button');
+      copy.className = 'mk-mini';
+      copy.textContent = 'copy';
+      copy.addEventListener('click', (e) => {
+        e.stopPropagation();
+        void navigator.clipboard?.writeText(formatCode(lobby.code ?? ''));
+        copy.textContent = 'copied';
+      });
+      row.appendChild(copy);
+    }
+    this.card.appendChild(row);
+
+    const name = document.createElement('input');
+    name.type = 'text';
+    name.className = 'mk-input';
+    name.value = lobby.name;
+    name.maxLength = MAX_NAME;
+    name.setAttribute('aria-label', 'your name');
+    // Committed on blur and on Enter rather than on every keystroke, or the
+    // lobby gets a message per letter and every friend a redraw per letter.
+    const commit = (): void => {
+      if (name.value.trim() !== lobby.name) lobby.rename(name.value);
+    };
+    name.addEventListener('blur', commit);
+    name.addEventListener('keydown', (e: KeyboardEvent) => {
+      if (e.key === 'Enter') { e.preventDefault(); commit(); }
+    });
+    const nameRow = document.createElement('div');
+    nameRow.className = 'mk-net';
+    nameRow.appendChild(name);
+    this.card.appendChild(nameRow);
+  }
+
+  private renderInvitations(lobby: LobbyView): void {
+    for (const invitation of lobby.invitations) {
+      const card = document.createElement('div');
+      card.className = 'mk-invite';
+      card.textContent = `${invitation.from.name} wants you in their party`;
+
+      const row = document.createElement('div');
+      row.className = 'mk-net';
+      const yes = document.createElement('button');
+      yes.className = 'mk-mini';
+      yes.textContent = 'join them';
+      yes.addEventListener('click', (e) => {
+        e.stopPropagation();
+        lobby.accept(invitation.party);
+        this.render();
+      });
+      const no = document.createElement('button');
+      no.className = 'mk-mini';
+      no.textContent = 'no thanks';
+      no.addEventListener('click', (e) => {
+        e.stopPropagation();
+        lobby.decline(invitation.party);
+        this.render();
+      });
+      row.append(yes, no);
+      card.appendChild(row);
+      this.card.appendChild(card);
+    }
+  }
+
+  /**
+   * A kid, at the size a list row can spare.
+   *
+   * Three coloured boxes: a shirt, a head on it, a fringe across the top. Not a
+   * rendered character, which would mean a canvas and a camera per person in a
+   * list that scrolls — and would tie the lobby screen to the character rig,
+   * which is exactly the coupling the protocol refuses by sending three
+   * colours instead of an appearance.
+   *
+   * Static so it cannot reach for anything on the screen, and so the two lists
+   * that draw one cannot drift apart.
+   */
+  private static face(look: Look): HTMLElement {
+    const hex = (c: number): string => `#${c.toString(16).padStart(6, '0')}`;
+    const el = document.createElement('span');
+    el.className = 'mk-face';
+    el.style.background = hex(look.shirt);
+    const head = document.createElement('i');
+    head.className = 'head';
+    head.style.background = hex(look.skin);
+    const hair = document.createElement('i');
+    hair.className = 'hair';
+    hair.style.background = hex(look.hair);
+    // The head first, so the fringe sits on top of it rather than behind.
+    el.append(head, hair);
+    return el;
+  }
+
+  private renderParty(lobby: LobbyView): void {
+    const party = lobby.party;
+    if (party === null || party.members.length < 2) return;
+    this.heading('Your Party');
+
+    const list = document.createElement('div');
+    list.className = 'mk-list';
+    const youLead = party.leaderCode === lobby.code;
+    for (const member of party.members) {
+      const row = document.createElement('div');
+      row.className = 'mk-row';
+      const who = document.createElement('span');
+      who.className = 'who';
+      who.textContent = member.code === party.leaderCode ? `${member.name} (leader)` : member.name;
+      row.insertBefore(Menu.face(member.look), row.firstChild);
+      row.appendChild(who);
+      // Only the leader can remove somebody, and never themselves — a leader
+      // kicking themselves is just leaving, which has its own button.
+      if (youLead && member.code !== lobby.code) {
+        row.appendChild(this.mini('remove', () => { lobby.kick(member.code); this.render(); }));
+      }
+      list.appendChild(row);
+    }
+    this.card.appendChild(list);
+    this.button('Leave Party', () => { lobby.leaveParty(); this.render(); }, 'mk-secondary');
+  }
+
+  private renderFriends(lobby: LobbyView): void {
+    this.heading('Friends');
+
+    const row = document.createElement('div');
+    row.className = 'mk-net';
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'mk-input';
+    input.placeholder = 'friend code';
+    input.setAttribute('aria-label', 'friend code');
+    const add = (): void => {
+      const typed = input.value.trim();
+      if (typed.length === 0) return;
+      lobby.addFriend(typed);
+      input.value = '';
+      this.render();
+    };
+    input.addEventListener('keydown', (e: KeyboardEvent) => {
+      if (e.key === 'Enter') { e.preventDefault(); add(); }
+    });
+    row.append(input, this.mini('add', add));
+    this.card.appendChild(row);
+
+    if (lobby.friends.length === 0) {
+      const empty = document.createElement('div');
+      empty.className = 'mk-empty';
+      empty.textContent = 'Nobody yet. Swap codes with somebody.';
+      this.card.appendChild(empty);
+      return;
+    }
+
+    const list = document.createElement('div');
+    list.className = 'mk-list';
+    for (const friend of lobby.friends) {
+      const item = document.createElement('div');
+      item.className = 'mk-row';
+
+      const dot = document.createElement('span');
+      dot.className = `mk-dot ${friend.presence}`;
+      const who = document.createElement('span');
+      who.className = 'who';
+      who.textContent = friend.name;
+      // The word as well as the dot, because a colour alone is unreadable to
+      // anybody who cannot tell the two greens apart — and this list exists
+      // precisely to say who you can play with right now.
+      const state = document.createElement('span');
+      state.className = 'state';
+      state.textContent = friend.presence === 'playing' ? 'in a yard' : friend.presence;
+      // The face goes before the presence dot: who somebody is comes before
+      // whether they are free, and a list you scan for a friend is scanned by
+      // the thing that identifies them.
+      item.append(Menu.face(friend.look), dot, who, state);
+
+      if (friend.presence !== 'offline') {
+        item.appendChild(this.mini('invite', () => { lobby.invite(friend.code); this.render(); }));
+      }
+      item.appendChild(this.mini('remove', () => { lobby.removeFriend(friend.code); this.render(); }));
+      list.appendChild(item);
+    }
+    this.card.appendChild(list);
+  }
+
+  private renderQueue(lobby: LobbyView): void {
+    this.heading('Queue');
+    const queue = lobby.queue;
+    if (queue !== null) {
+      const line = document.createElement('div');
+      line.className = 'mk-searching';
+      const named = lobby.modes.find((m) => m.id === queue.mode)?.name ?? queue.mode;
+      line.textContent = `Searching — ${named}  `;
+      const detail = document.createElement('span');
+      detail.textContent = `${queue.waiting}/${queue.needed} · ${queue.seconds}s`;
+      line.appendChild(detail);
+      this.card.appendChild(line);
+      this.button('Cancel', () => { lobby.leaveQueue(); this.render(); }, 'mk-secondary');
+      return;
+    }
+
+    // Only the leader may queue a party, so everybody else is told why rather
+    // than shown buttons that refuse.
+    if (lobby.party !== null && lobby.party.members.length > 1
+      && lobby.party.leaderCode !== lobby.code) {
+      const why = document.createElement('div');
+      why.className = 'mk-blurb';
+      why.textContent = 'Whoever started the party picks the game.';
+      this.card.appendChild(why);
+      return;
+    }
+    for (const mode of lobby.modes) {
+      this.button(mode.name, () => { lobby.joinQueue(mode.id); this.render(); }, 'mk-secondary');
+    }
+  }
+
+  /** A small inline button, for the right-hand end of a list row. */
+  private mini(label: string, onClick: () => void): HTMLButtonElement {
+    const b = document.createElement('button');
+    b.className = 'mk-mini';
+    b.textContent = label;
+    b.addEventListener('click', (e) => {
+      e.stopPropagation();
+      onClick();
+    });
+    return b;
   }
 
   private renderPause(): void {
@@ -328,6 +1256,14 @@ export class Menu {
     this.button('Settings', () => {
       this.returnTo = 'pause';
       this.show('settings');
+    }, 'mk-secondary');
+    this.button('Locker', () => {
+      this.returnTo = 'pause';
+      this.show('locker');
+    }, 'mk-secondary');
+    this.button('Blueprints', () => {
+      this.returnTo = 'pause';
+      this.show('blueprints');
     }, 'mk-secondary');
     this.button('Saved Builds', () => {
       this.returnTo = 'pause';
@@ -361,15 +1297,23 @@ export class Menu {
     this.button('Quit to Title', () => this.callbacks.onQuitToTitle(), 'mk-secondary');
   }
 
+  /**
+   * Settings, in sections.
+   *
+   * Fourteen rows in one undifferentiated column, is what this was: mouse
+   * sensitivity, then shadows, then master volume, then crouch, then the
+   * gamepad deadzone, each looking exactly as important as the last. Somebody
+   * arriving to turn the shadows off had to read the lot.
+   *
+   * The order is by how often a person comes here for it — the picture first,
+   * because that is what somebody with a slow machine is looking for, then
+   * aiming, then sound, then the two that are set once and never again.
+   */
   private renderSettings(): void {
     this.heading('Settings');
     const s = this.settings.current;
 
-    this.slider('Mouse sensitivity', 'sensitivity', s.sensitivity, 0.0004, 0.008, 0.0002,
-      (v) => `${Math.round(v * 10000) / 10}`);
-    this.toggle('Invert vertical look', 'invertY', s.invertY);
-    this.slider('Field of view', 'fov', s.fov, 55, 110, 1, (v) => `${Math.round(v)}°`);
-
+    this.section('Picture');
     this.toggle('Shadows', 'shadows', s.shadows);
     this.toggle('Outlines', 'outlines', s.outlines);
     this.slider(s.autoQuality ? 'Render scale (maximum)' : 'Render scale',
@@ -379,22 +1323,61 @@ export class Menu {
     // only way the ceiling-versus-fixed distinction is visible.
     this.toggle('Lower resolution automatically if frames drop', 'autoQuality', s.autoQuality,
       () => this.render());
+    // Next to the things it would be used to judge, rather than filed under a
+    // heading of its own: somebody turning this on is about to change one of
+    // the four settings above it and wants to see whether it helped.
+    this.toggle('Show frame rate', 'showStats', s.showStats);
+    this.toggle('Minimap', 'showMinimap', s.showMinimap);
+    // Under Picture rather than under Playing, because it changes nothing about
+    // the game and everything about the picture — which is also why it is safe
+    // to offer at all.
+    this.choice('Time of day', 'timeOfDay', s.timeOfDay, [
+      { value: 'round', label: 'Follow the round' },
+      { value: 'afternoon', label: 'Afternoon' },
+      { value: 'golden', label: 'Golden' },
+      { value: 'dusk', label: 'Dusk' },
+    ]);
 
+    this.section('Looking around');
+    this.slider('Mouse sensitivity', 'sensitivity', s.sensitivity, 0.0004, 0.008, 0.0002,
+      (v) => `${Math.round(v * 10000) / 10}`);
+    this.toggle('Invert vertical look', 'invertY', s.invertY);
+    this.slider('Field of view', 'fov', s.fov, 55, 110, 1, (v) => `${Math.round(v)}°`);
+
+    this.section('Talking');
+    this.toggle('Hear team chat', 'muteTeamChat', !s.muteTeamChat, undefined, true);
+    this.toggle('Hear people nearby', 'muteNearChat', !s.muteNearChat, undefined, true);
+    // Voice first among the voice rows, because the three below it do nothing
+    // until it is on — and a row of live-looking controls that are all inert is
+    // how a player concludes the feature is broken rather than off.
+    this.toggle('Voice chat', 'voiceEnabled', s.voiceEnabled, () => this.render());
+    if (s.voiceEnabled) {
+      this.toggle('Hold C to talk', 'voicePushToTalk', s.voicePushToTalk);
+      this.toggle('Mute my microphone', 'micMuted', s.micMuted);
+      this.slider('Voice volume', 'voiceVolume', s.voiceVolume, 0, 1, 0.05,
+        (v) => `${Math.round(v * 100)}%`);
+    }
+
+    this.section('Sound');
     this.slider('Master volume', 'masterVolume', s.masterVolume, 0, 1, 0.05,
       (v) => `${Math.round(v * 100)}%`);
     this.slider('Effects volume', 'sfxVolume', s.sfxVolume, 0, 1, 0.05,
       (v) => `${Math.round(v * 100)}%`);
 
-    this.toggle('Colourblind-friendly build colours', 'colorblindGhost', s.colorblindGhost);
+    this.section('Playing');
     this.toggle('Toggle crouch', 'toggleCrouch', s.toggleCrouch);
     this.toggle('Toggle sprint', 'toggleSprint', s.toggleSprint);
+    this.toggle('Colourblind-friendly build colours', 'colorblindGhost', s.colorblindGhost);
+    this.toggle('Spray can', 'sprayCan', s.sprayCan);
+    this.toggle('Captions for sounds', 'captions', s.captions);
 
+    this.section('Controller');
     this.toggle('Controller', 'gamepadEnabled', s.gamepadEnabled);
     // Shown in degrees per second: radians per second is the right unit for the
     // code and a meaningless one for a player choosing how fast to turn.
-    this.slider('Controller look speed', 'gamepadLookSpeed', s.gamepadLookSpeed, 0.8, 6, 0.1,
+    this.slider('Look speed', 'gamepadLookSpeed', s.gamepadLookSpeed, 0.8, 6, 0.1,
       (v) => `${Math.round((v * 180) / Math.PI)}°/s`);
-    this.slider('Controller deadzone', 'gamepadDeadzone', s.gamepadDeadzone, 0, 0.5, 0.01,
+    this.slider('Deadzone', 'gamepadDeadzone', s.gamepadDeadzone, 0, 0.5, 0.01,
       (v) => `${Math.round(v * 100)}%`);
 
     const spacer = document.createElement('div');
@@ -412,33 +1395,61 @@ export class Menu {
   /**
    * Key rebinding.
    *
-   * Clicking a row arms a one-shot capture. The capture listens on the window
+   * Clicking a slot arms a one-shot capture. The capture listens on the window
    * in the capture phase so it sees the key before anything else can act on it
    * — otherwise binding Escape would close the menu, and binding a movement key
    * would walk the player around behind the screen.
+   *
+   * Two buttons a row, because an action holds two keys and the screen has to
+   * be able to address either. One button showing "W / Up Arrow" could display
+   * a pair and never change one of them, which is what it used to do.
    */
   private renderControls(): void {
     this.heading('Controls');
 
-    for (const row of this.callbacks.listBindings()) {
-      const el = document.createElement('div');
-      el.className = 'mk-bind';
+    const hint = document.createElement('p');
+    hint.className = this.bindNote === null ? 'mk-hint' : 'mk-hint said';
+    // The two escape hatches have to be said somewhere. Neither is guessable,
+    // and a player who cannot get out of a capture they opened by accident has
+    // to reload the game to leave this screen.
+    hint.textContent = this.bindNote
+      ?? 'Two keys per control. Click one to change it — Esc cancels, Backspace clears it.';
+    this.card.appendChild(hint);
+    this.bindNote = null;
 
-      const label = document.createElement('label');
-      label.textContent = row.label;
-      el.appendChild(label);
+    for (const group of this.callbacks.listBindings()) {
+      const title = document.createElement('div');
+      title.className = 'mk-group';
+      title.textContent = group.title;
+      this.card.appendChild(title);
 
-      const btn = document.createElement('button');
-      btn.textContent = row.key;
-      btn.addEventListener('click', () => {
-        if (this.listening !== null) return;
-        btn.classList.add('listening');
-        btn.textContent = 'press a key…';
-        this.beginCapture(row.action, () => this.render());
-      });
-      el.appendChild(btn);
+      for (const row of group.rows) {
+        const el = document.createElement('div');
+        el.className = 'mk-bind';
 
-      this.card.appendChild(el);
+        const label = document.createElement('label');
+        label.textContent = row.label;
+        el.appendChild(label);
+
+        const keys = document.createElement('div');
+        keys.className = 'keys';
+        row.keys.forEach((key, slot) => {
+          const btn = document.createElement('button');
+          btn.textContent = key ?? '—';
+          if (key === null) btn.classList.add('empty');
+          btn.title = slot === 0 ? 'Main key' : 'Second key';
+          btn.addEventListener('click', () => {
+            if (this.listening !== null) return;
+            btn.classList.add('listening');
+            btn.textContent = 'press…';
+            this.beginCapture(row.action, slot, row.label);
+          });
+          keys.appendChild(btn);
+        });
+        el.appendChild(keys);
+
+        this.card.appendChild(el);
+      }
     }
 
     const spacer = document.createElement('div');
@@ -452,22 +1463,288 @@ export class Menu {
     }, 'mk-secondary');
   }
 
-  private listening: (() => void) | null = null;
+  // ── The locker ──────────────────────────────────────────────────────────────
 
-  private beginCapture(action: string, done: () => void): void {
+  /** Which tab is open. Kept across renders, because every control re-renders. */
+  private lockerTab = 0;
+  /** Which mark is being painted. */
+  private lockerSlot: MarkSlot = 'chest';
+
+  /**
+   * Everything you can choose about yourself.
+   *
+   * Every control applies **immediately** rather than on an OK button, and that
+   * is the design rather than a shortcut: the preview is the player standing in
+   * the yard behind this card, drawn by the same rig, in the same light, at the
+   * distance other people will see them from. A change you have to confirm
+   * before you can see it is a change you are guessing at.
+   *
+   * The whole screen re-renders on every change, which for forty-odd small
+   * elements is nothing and removes the entire class of bug where a control
+   * shows one thing and the character wears another.
+   */
+  private renderLocker(): void {
+    const view = this.callbacks.locker();
+    const a = view.appearance;
+    const edit = (change: Partial<Appearance>): void => {
+      this.callbacks.onLockerChange({ ...a, ...change });
+      this.render();
+    };
+
+    this.heading('Locker');
+
+    const hint = document.createElement('p');
+    hint.className = 'mk-hint';
+    hint.textContent = 'That is you, out on the lawn. Everything here is worn the moment you pick it.';
+    this.card.appendChild(hint);
+
+    // Turning on the spot, because half of an outfit is on the back and this is
+    // the only screen where anybody will ever look at it.
+    const spin = document.createElement('div');
+    spin.className = 'mk-chips';
+    for (const [label, delta] of [['↶ Turn', -0.6], ['Turn ↷', 0.6]] as const) {
+      const b = document.createElement('button');
+      b.textContent = label;
+      b.addEventListener('click', (e) => { e.stopPropagation(); this.callbacks.onLockerTurn(delta); });
+      spin.appendChild(b);
+    }
+    this.card.appendChild(spin);
+
+    const tabs = ['Face', 'Hair', 'Clothes', 'Shape', 'Paint', 'Outfits'];
+    const bar = document.createElement('div');
+    bar.className = 'mk-tabs';
+    tabs.forEach((name, i) => {
+      const b = document.createElement('button');
+      b.textContent = name;
+      if (i === this.lockerTab) b.classList.add('on');
+      b.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this.lockerTab = i;
+        this.render();
+      });
+      bar.appendChild(b);
+    });
+    this.card.appendChild(bar);
+
+    switch (tabs[this.lockerTab]) {
+      case 'Face':
+        this.swatches('Skin', SKIN_TONES, a.skin, (i) => edit({ skin: i }));
+        this.swatches('Eyes', EYE_COLOURS, a.eyes, (i) => edit({ eyes: i }));
+        this.chips('Brows', BROWS.map((b) => b.name), a.brows, (i) => edit({ brows: i }));
+        this.chips('Mouth', MOUTHS.map((m) => m.name), a.mouth, (i) => edit({ mouth: i }));
+        break;
+
+      case 'Hair':
+        this.chips('Style', HAIR_STYLES.map((h) => h.name), a.hairStyle,
+          (i) => edit({ hairStyle: i }));
+        this.swatches('Colour', HAIR_COLOURS, a.hair, (i) => edit({ hair: i }));
+        break;
+
+      case 'Clothes': {
+        this.swatches('Shirt', CLOTH_COLOURS, a.shirt, (i) => edit({ shirt: i }));
+        this.swatches('Trousers', CLOTH_COLOURS, a.trousers, (i) => edit({ trousers: i }));
+        this.swatches('Shoes', CLOTH_COLOURS, a.shoes, (i) => edit({ shoes: i }));
+        // The one honest thing to say about a shirt in a game with sides.
+        const note = document.createElement('p');
+        note.className = 'mk-hint';
+        note.textContent = 'In a game with teams you wear your team\u2019s shirt instead, so'
+          + ' everybody can tell who is who. The rest of this is yours all round.';
+        this.card.appendChild(note);
+        break;
+      }
+
+      case 'Shape': {
+        this.range('Head size', a.headSize, (v) => edit({ headSize: v }));
+        this.range('Build', a.build, (v) => edit({ build: v }));
+        // Said out loud, because somebody looking for a height slider deserves
+        // to know it is missing on purpose rather than not built yet.
+        const note = document.createElement('p');
+        note.className = 'mk-hint';
+        note.textContent = 'Both slide inside a fixed range, and there is no height:'
+          + ' everybody has to be the same size to be hit, hidden and climbed over'
+          + ' by the same rules.';
+        this.card.appendChild(note);
+        break;
+      }
+
+      case 'Paint': {
+        this.chips(
+          'Where', ['Chest', 'Back', 'Left arm', 'Right arm'],
+          MARK_SLOTS.indexOf(this.lockerSlot),
+          (i) => { this.lockerSlot = MARK_SLOTS[i]!; this.render(); },
+        );
+        const mark = a.marks[this.lockerSlot];
+        const setMark = (change: Partial<Mark>): void => {
+          edit({ marks: { ...a.marks, [this.lockerSlot]: { ...mark, ...change } } });
+        };
+        this.chips(
+          'Shape',
+          MARK_SHAPES.map((m) => (m === 'none' ? 'None' : m[0]!.toUpperCase() + m.slice(1))),
+          mark.shape, (i) => setMark({ shape: i }),
+        );
+        if (mark.shape !== 0) {
+          this.swatches('Colour', CLOTH_COLOURS, mark.colour, (i) => setMark({ colour: i }));
+          this.range('Size', mark.size, (v) => setMark({ size: v }));
+          this.range('Angle', mark.turn, (v) => setMark({ turn: v }));
+        }
+        this.button('Clear this one', () => {
+          edit({ marks: { ...a.marks, [this.lockerSlot]: blankMark() } });
+        }, 'mk-secondary');
+        break;
+      }
+
+      case 'Outfits': {
+        // One field, held across renders, because every control on this screen
+        // re-renders the card and a fresh input would lose what was typed.
+        this.card.appendChild(this.presetName);
+        this.button(view.full ? 'Locker full' : 'Save outfit', () => {
+          if (this.callbacks.onLockerSave(this.presetName.value)) {
+            this.presetName.value = '';
+            this.render();
+          }
+        });
+        if (view.presets.length === 0) {
+          const empty = document.createElement('p');
+          empty.className = 'mk-hint';
+          empty.textContent = 'Nothing saved yet. Keep an outfit here and you can put it'
+            + ' back on in one click.';
+          this.card.appendChild(empty);
+        }
+        for (const preset of view.presets) {
+          const row = document.createElement('div');
+          row.className = 'mk-preset';
+          const who = document.createElement('span');
+          who.className = 'who';
+          who.textContent = preset.name;
+          row.appendChild(who);
+          for (const [label, act] of [
+            ['Wear', () => this.callbacks.onLockerWear(preset.name)],
+            ['Delete', () => this.callbacks.onLockerDelete(preset.name)],
+          ] as Array<[string, () => boolean]>) {
+            const b = document.createElement('button');
+            b.textContent = label;
+            b.addEventListener('click', (e) => { e.stopPropagation(); act(); this.render(); });
+            row.appendChild(b);
+          }
+          this.card.appendChild(row);
+        }
+        break;
+      }
+
+      default:
+        break;
+    }
+
+    const spacer = document.createElement('div');
+    spacer.style.height = '10px';
+    this.card.appendChild(spacer);
+
+    this.button('Surprise me', () => { this.callbacks.onLockerRandom(); this.render(); }, 'mk-secondary');
+    this.button('Start over', () => { this.callbacks.onLockerReset(); this.render(); }, 'mk-secondary');
+    this.button('Done', () => this.show(this.returnTo));
+  }
+
+  /** A row of colour chips, one of them ringed. */
+  private swatches(
+    label: string, colours: readonly number[], selected: number, pick: (i: number) => void,
+  ): void {
+    this.label(label);
+    const row = document.createElement('div');
+    row.className = 'mk-swatches';
+    colours.forEach((hex, i) => {
+      const b = document.createElement('button');
+      b.style.background = `#${hex.toString(16).padStart(6, '0')}`;
+      b.setAttribute('aria-label', `${label} ${i + 1}`);
+      if (i === selected) b.classList.add('on');
+      b.addEventListener('click', (e) => { e.stopPropagation(); pick(i); });
+      row.appendChild(b);
+    });
+    this.card.appendChild(row);
+  }
+
+  /** A row of named chips, one of them filled. */
+  private chips(
+    label: string, names: readonly string[], selected: number, pick: (i: number) => void,
+  ): void {
+    this.label(label);
+    const row = document.createElement('div');
+    row.className = 'mk-chips';
+    names.forEach((name, i) => {
+      const b = document.createElement('button');
+      b.textContent = name;
+      if (i === selected) b.classList.add('on');
+      b.addEventListener('click', (e) => { e.stopPropagation(); pick(i); });
+      row.appendChild(b);
+    });
+    this.card.appendChild(row);
+  }
+
+  /**
+   * A 0-to-1 slider that is not bound to a setting.
+   *
+   * `slider` writes straight into the settings store, which is right for
+   * everything on the settings screen and wrong for everything here: an
+   * appearance is one record that travels, not nineteen independent fields.
+   */
+  private range(label: string, value: number, onChange: (v: number) => void): void {
+    const row = document.createElement('div');
+    row.className = 'mk-row';
+    const l = document.createElement('label');
+    l.textContent = label;
+    row.appendChild(l);
+
+    const input = document.createElement('input');
+    input.type = 'range';
+    input.min = '0';
+    input.max = '1';
+    input.step = '0.02';
+    input.value = String(value);
+    input.setAttribute('aria-label', label);
+    // `input` rather than `change`, so the character moves under the thumb
+    // rather than when it is let go.
+    input.addEventListener('input', () => onChange(Number(input.value)));
+    row.appendChild(input);
+    this.card.appendChild(row);
+  }
+
+  private label(text: string): void {
+    const el = document.createElement('div');
+    el.className = 'mk-label';
+    el.textContent = text;
+    this.card.appendChild(el);
+  }
+
+  private listening: (() => void) | null = null;
+  /** Said once, on the next render of the controls screen, then cleared. */
+  private bindNote: string | null = null;
+
+  private beginCapture(action: string, slot: number, label: string): void {
     const finish = (): void => {
       window.removeEventListener('keydown', onKey, true);
       window.removeEventListener('mousedown', onMouse, true);
       this.listening = null;
-      done();
+      this.render();
+    };
+
+    const took = (from: string | null, key: string): void => {
+      // A key can only mean one thing, so binding one somebody else had takes
+      // it. Saying so is the difference between a control the player retired on
+      // purpose and one that mysteriously stopped working.
+      this.bindNote = from === null ? null : `${key} taken from ${from}`;
     };
 
     const onKey = (e: KeyboardEvent): void => {
       e.preventDefault();
       e.stopPropagation();
       // Escape cancels rather than binding; a player who has bound Escape to
-      // something has no way back out of a menu.
-      if (e.code !== 'Escape') this.callbacks.rebind(action, e.code);
+      // something has no way back out of a menu. Backspace and Delete empty the
+      // slot, which is the only way to end up with a control on one key.
+      if (e.code === 'Backspace' || e.code === 'Delete') {
+        this.callbacks.clearBinding(action, slot);
+        this.bindNote = `${label} cleared`;
+      } else if (e.code !== 'Escape') {
+        took(this.callbacks.rebind(action, slot, e.code), describeKey(e.code));
+      }
       finish();
     };
 
@@ -476,7 +1753,8 @@ export class Menu {
       if (!(e.target instanceof Node) || !this.card.contains(e.target)) return;
       e.preventDefault();
       e.stopPropagation();
-      this.callbacks.rebind(action, `Mouse${e.button}`);
+      const code = `Mouse${e.button}`;
+      took(this.callbacks.rebind(action, slot, code), describeKey(code));
       finish();
     };
 
@@ -526,9 +1804,16 @@ export class Menu {
    * `afterChange` is for the rare toggle that changes how another row reads.
    * Re-rendering on every toggle would tear the screen out from under whoever
    * is clicking through it.
+   *
+   * `inverted` is for a setting stored as a negative and read as a positive.
+   * The two chat mutes are the case, and it is worth the parameter rather than
+   * relabelling them: a stored `muteTeamChat` says what the code does with it,
+   * while a row reading "Mute team chat" with a tick in it is a double negative
+   * a player has to unpick. "Hear team chat", ticked, is the same fact stated
+   * the way somebody thinks about it.
    */
   private toggle<K extends keyof Settings>(
-    label: string, key: K, value: boolean, afterChange?: () => void,
+    label: string, key: K, value: boolean, afterChange?: () => void, inverted = false,
   ): void {
     const row = document.createElement('div');
     row.className = 'mk-row';
@@ -541,12 +1826,175 @@ export class Menu {
     input.type = 'checkbox';
     input.checked = value;
     input.addEventListener('change', () => {
-      this.settings.set(key, input.checked as Settings[K]);
+      const stored = inverted ? !input.checked : input.checked;
+      this.settings.set(key, stored as Settings[K]);
       afterChange?.();
     });
     row.appendChild(input);
 
     this.card.appendChild(row);
+  }
+
+  /**
+   * A row of words to pick between, for a setting that is not a number and not
+   * a yes/no.
+   *
+   * Chips rather than a `<select>`, because the whole menu is chips and a
+   * native dropdown in the middle of it looks like it belongs to a different
+   * program — and because with four short options there is nothing to gain by
+   * hiding three of them behind a click.
+   */
+  private choice<K extends keyof Settings>(
+    label: string, key: K, value: string,
+    options: ReadonlyArray<{ value: string; label: string }>,
+  ): void {
+    const row = document.createElement('div');
+    row.className = 'mk-row';
+
+    const l = document.createElement('label');
+    l.textContent = label;
+    row.appendChild(l);
+
+    const group = document.createElement('div');
+    group.className = 'mk-choice';
+    for (const option of options) {
+      const btn = document.createElement('button');
+      btn.textContent = option.label;
+      btn.dataset.value = option.value;
+      if (option.value === value) btn.classList.add('on');
+      btn.addEventListener('click', () => {
+        this.settings.set(key, option.value as Settings[K]);
+        this.render();
+      });
+      group.appendChild(btn);
+    }
+    row.appendChild(group);
+
+    this.card.appendChild(row);
+  }
+
+  /**
+   * The blueprints, with somewhere to hold, rename and throw one away.
+   *
+   * `blueprintStore` has had `save(name, parts, id)` and `remove(id)` since the
+   * day it was written and nothing ever called either with intent — renaming
+   * and deleting existed in the model and in no interface at all, and picking
+   * one meant tapping a key until the right name went past. A wheel was the
+   * obvious reach after the emotes went on one, and it is wrong here: the count
+   * is whatever somebody has saved, the names are whatever they typed, and
+   * neither renaming nor deleting is a thing you point at.
+   */
+  private renderBlueprints(): void {
+    this.heading('Blueprints');
+
+    const hint = document.createElement('p');
+    hint.className = 'mk-hint';
+    hint.textContent = 'A blueprint is a shape you saved, stamped down in one go.'
+      + ' Hold one and it follows your aim until you put it away.';
+    this.card.appendChild(hint);
+
+    const slots = this.callbacks.listBlueprints();
+
+    // "Nothing" first and always, because putting the blueprint away is the
+    // thing somebody wants most often and it should not be at the bottom of a
+    // list that grows.
+    const none = document.createElement('div');
+    none.className = 'mk-preset';
+    const noneName = document.createElement('span');
+    noneName.className = 'who';
+    noneName.textContent = slots.some((b) => b.held) ? 'Hold nothing' : 'Holding nothing';
+    none.appendChild(noneName);
+    if (slots.some((b) => b.held)) {
+      const put = document.createElement('button');
+      put.textContent = 'Put away';
+      put.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this.callbacks.onBlueprintHold(null);
+        this.render();
+      });
+      none.appendChild(put);
+    }
+    this.card.appendChild(none);
+
+    if (slots.length === 0) {
+      const empty = document.createElement('p');
+      empty.className = 'mk-hint';
+      empty.textContent = 'Nothing saved yet. Build something, then save it as a'
+        + ' blueprint and you can stamp it down again in one go.';
+      this.card.appendChild(empty);
+      return;
+    }
+
+    for (const slot of slots) {
+      const row = document.createElement('div');
+      row.className = 'mk-preset';
+      // The id on the row is what lets anything outside this file find the
+      // right one — a test harness, and any future keyboard navigation. The
+      // "nothing" row above deliberately carries none, so it is the one row
+      // that can be found by its absence.
+      row.dataset.blueprint = slot.id;
+      if (slot.held) row.classList.add('mk-held');
+
+      const who = document.createElement('span');
+      who.className = 'who';
+      // The cost on the same line as the name, because choosing between two
+      // blueprints is choosing between two prices as much as two shapes.
+      who.textContent = `${slot.name} — ${slot.parts} parts, ${slot.wood} wood`;
+      row.appendChild(who);
+
+      if (!slot.held) {
+        const hold = document.createElement('button');
+        hold.textContent = 'Hold';
+        hold.addEventListener('click', (e) => {
+          e.stopPropagation();
+          this.callbacks.onBlueprintHold(slot.id);
+          this.render();
+        });
+        row.appendChild(hold);
+      }
+
+      // The ones that ship with the game keep their names and cannot be thrown
+      // away, so the two buttons that would fail are not offered.
+      if (!slot.builtIn) {
+        const rename = document.createElement('button');
+        rename.textContent = 'Rename';
+        rename.addEventListener('click', (e) => {
+          e.stopPropagation();
+          // The row becomes the editor rather than opening a dialog: one place
+          // to look, and Escape puts it back.
+          const field = document.createElement('input');
+          field.className = 'mk-name-input';
+          field.value = slot.name;
+          field.maxLength = 40;
+          const commit = (): void => {
+            const wanted = field.value.trim();
+            if (wanted.length > 0) this.callbacks.onBlueprintRename(slot.id, wanted);
+            this.render();
+          };
+          field.addEventListener('keydown', (ev) => {
+            ev.stopPropagation();
+            if (ev.key === 'Enter') commit();
+            else if (ev.key === 'Escape') this.render();
+          });
+          field.addEventListener('blur', commit);
+          row.replaceChildren(field);
+          field.focus();
+          field.select();
+        });
+        row.appendChild(rename);
+
+        const remove = document.createElement('button');
+        remove.textContent = 'Delete';
+        remove.addEventListener('click', (e) => {
+          e.stopPropagation();
+          this.callbacks.onBlueprintDelete(slot.id);
+          this.render();
+        });
+        row.appendChild(remove);
+      }
+
+      this.card.appendChild(row);
+    }
   }
 
   private renderBuilds(): void {

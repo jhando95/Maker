@@ -8,19 +8,40 @@
 
 import * as THREE from 'three';
 import { createToonMaterial, createOutlineMaterial } from '../render/toonMaterial.ts';
-import { chamferedBox, blob } from '../render/geometry.ts';
-import { Rng } from '../core/rng.ts';
+import { chamferedBox } from '../render/geometry.ts';
 import { MAX_BALLOONS, BALLOON_RADIUS } from './projectiles.ts';
 import type { ProjectileSystem } from './projectiles.ts';
-import type { GameMode } from './gameMode.ts';
-import { CAP_HEIGHT, CAP_RADIUS } from '../physics/constants.ts';
-import { wetBlend } from './wetness.ts';
-import type { Actor, Team } from './actor.ts';
+import type { GameMode, Marker } from './gameMode.ts';
+import { CharacterBatch, lookFor, type CharacterPose } from '../render/character.ts';
+import { shirtColor } from './shirts.ts';
+import type { Actor } from './actor.ts';
 
-const MAX_BOTS = 24;
 /** Simultaneous splash bursts. */
 const MAX_SPLASHES = 16;
 const SPLASH_LIFETIME = 0.5;
+
+/**
+ * Droplets thrown off by impacts, shared across every splash on screen.
+ *
+ * Sixteen splashes at seven droplets each would be 112, and the pool is
+ * deliberately smaller: a burst that big only happens when a dozen balloons
+ * land in the same half-second, and at that point nobody can tell which
+ * droplets belong to which splash. The pool recycles oldest-first, so what gets
+ * dropped is the tail of a splash already half over.
+ */
+const MAX_DROPLETS = 96;
+const DROPLETS_PER_SPLASH = 7;
+/**
+ * Droplet gravity, lighter than the player's 23.
+ *
+ * Not a physical claim — nothing collides with these. Real gravity at this
+ * scale pulls the arc down inside three frames, which reads as the droplets
+ * being sucked into the floor. A little over half of it lets the spray hang
+ * long enough to be seen, which is the entire job.
+ */
+const DROPLET_GRAVITY = 14;
+const DROPLET_LIFETIME = 0.55;
+const DROPLET_RADIUS = 0.06;
 
 /** Objective stands and flags a mode can ask for at once. */
 const MAX_MARKERS = 8;
@@ -33,39 +54,35 @@ const MAX_FLAGS = 4;
  * draw either way.
  */
 const MAX_DROPS = 26;
-
 /**
- * Where a kid's joints are, as fractions of the collision capsule.
+ * How many hoses can be running at once.
  *
- * Tied to CAP_HEIGHT rather than written as numbers so the drawing and the
- * thing that collides can never disagree about how tall somebody is — a
- * character whose feet float or sink is the first thing anyone notices.
+ * Water War spawns raiders continuously and every one of them can be spraying,
+ * so this is a cap on the draw rather than on the game: past it, the streams
+ * furthest down the list go undrawn, which is a missing jet somewhere across
+ * the garden rather than a missing rule anywhere.
  */
-const HIP_Y = CAP_HEIGHT * 0.40;
-const TORSO_TOP = CAP_HEIGHT * 0.80;
-const HEAD_Y = CAP_HEIGHT * 0.90;
-const LEG_LEN = HIP_Y;
-const ARM_LEN = CAP_HEIGHT * 0.34;
-const HIP_X = CAP_RADIUS * 0.42;
-/*
- * Wide enough to clear the torso, which is the whole job.
- *
- * At 0.92 the shoulders sat at 0.294 against a torso half-width of 0.275, so
- * the arms were buried inside the body and the first screenshot had a kid with
- * legs and no arms at all.
- */
-const SHOULDER_X = CAP_RADIUS * 1.22;
-const SHOULDER_Y = TORSO_TOP - 0.06;
+const MAX_STREAMS = 8;
 
-/** Metres of ground per complete stride. Shorter than an adult's, they are kids. */
-const STRIDE_LENGTH = 1.45;
-/** Radians a leg swings at full tilt. */
-const SWING_MAX = 0.62;
-/** Arms swing less than legs, or it reads as a march. */
-const ARM_SWING = 0.62;
+/** One hose: where it starts and where the mode says the water stops. */
+export interface StreamShot {
+  fx: number; fy: number; fz: number;
+  tx: number; ty: number; tz: number;
+}
+
+/** Shared, so clearing the streams does not allocate. */
+const EMPTY_STREAMS: readonly StreamShot[] = [];
 
 interface Splash {
   x: number; y: number; z: number;
+  age: number;
+  active: boolean;
+}
+
+/** One thrown-off bead of water. Ballistic, and it collides with nothing. */
+interface Droplet {
+  x: number; y: number; z: number;
+  vx: number; vy: number; vz: number;
   age: number;
   active: boolean;
 }
@@ -90,136 +107,55 @@ interface FlagPole {
 export class ModeRenderer {
   readonly group = new THREE.Group();
 
-  private readonly botBody: THREE.InstancedMesh;
-  private readonly botHead: THREE.InstancedMesh;
-  /** Left arm, right arm, left leg, right leg. */
-  private readonly limbs: THREE.InstancedMesh[];
   /**
-   * How far through a stride each character is, by actor id.
+   * Everyone in the world, drawn by one shared rig.
    *
-   * Advanced by distance travelled rather than by wall-clock, so feet keep pace
-   * with the ground instead of sliding — the difference between a walk cycle and
-   * a character skating along with their legs waving.
+   * Passed in rather than owned, because the local player is drawn from it too
+   * and main.ts is what knows whether the camera is currently showing them.
    */
-  private readonly stride = new Map<number, number>();
+  private readonly characters: CharacterBatch;
   private readonly balloons: THREE.InstancedMesh;
   private readonly splashMesh: THREE.InstancedMesh;
   private readonly stands: Stand[] = [];
   private readonly flagPoles: FlagPole[] = [];
   private readonly drops: THREE.InstancedMesh;
-  private streamFrom: { x: number; y: number; z: number } | null = null;
-  private streamEnd: { x: number; y: number; z: number } | null = null;
+  /**
+   * Every hose running this frame, nozzle and landing point.
+   *
+   * Owned here and refilled in place rather than taken by reference, because
+   * this is set every frame from a caller-owned array and holding onto that
+   * would make the renderer's picture depend on when the caller next touched
+   * it — a class of bug that shows up as one frame of stale water.
+   */
+  private readonly streams: Array<{
+    fx: number; fy: number; fz: number;
+    tx: number; ty: number; tz: number;
+  }> = [];
+  private streamCount = 0;
 
   private readonly splashes: Splash[] = [];
+  private readonly dropletMesh: THREE.InstancedMesh;
+  private readonly droplets: Droplet[] = [];
+  /** Next slot to try, so spawning does not scan the pool from zero every time. */
+  private dropletCursor = 0;
   private readonly matrix = new THREE.Matrix4();
   private readonly pos = new THREE.Vector3();
-  private readonly quat = new THREE.Quaternion();
-  private readonly limbEuler = new THREE.Euler();
   private readonly scale = new THREE.Vector3(1, 1, 1);
-  private readonly color = new THREE.Color();
+  /** Reused scratch for a shirt colour, so drawing a wave allocates nothing. */
+  private readonly shirt = new THREE.Color();
+  private readonly scratchPose: CharacterPose = {
+    id: 0, x: 0, y: 0, z: 0, facing: 0, speed: 0, onGround: true, shirt: this.shirt,
+  };
   private readonly outlineMaterials: THREE.ShaderMaterial[] = [];
   private readonly outlineMeshes: THREE.Mesh[] = [];
 
   /** Kept off-screen rather than resized, so instance counts never churn. */
   private static readonly HIDDEN = new THREE.Matrix4().makeTranslation(0, -9999, 0);
   private static readonly NO_ROTATION = new THREE.Quaternion();
-  /** Hoisted: composing a character's matrix allocated one of these per bot per frame. */
-  private static readonly UP = new THREE.Vector3(0, 1, 0);
-  /**
-   * A dry shirt and the same shirt wringing wet, per side.
-   *
-   * Two palettes rather than one because the moment your own team existed, one
-   * palette meant every kid on the lawn looked identical and the flag game
-   * became guesswork — you cannot decide who to throw at if you cannot tell who
-   * is who. Violet against the neighbourhood's oranges and greens rather than a
-   * second warm colour, and deliberately not the pale blue a stunned kid washes
-   * out to, which would make "on your side" and "out of it" the same cue.
-   */
-  private static readonly SHIRTS: Record<Team, { dry: THREE.Color; soaked: THREE.Color }> = {
-    left: {
-      dry: new THREE.Color().setHex(0x7a3fc8, THREE.SRGBColorSpace),
-      soaked: new THREE.Color().setHex(0x321a5c, THREE.SRGBColorSpace),
-    },
-    right: {
-      dry: new THREE.Color().setHex(0xe07a4f, THREE.SRGBColorSpace),
-      soaked: new THREE.Color().setHex(0x6b3524, THREE.SRGBColorSpace),
-    },
-  };
 
-  /**
-   * What being stunned looks like: your own shirt, washed out.
-   *
-   * Not a colour of its own. A fixed pale blue for "out of it" competed with the
-   * blue-violet of a team — a screenshot with one kid from each side in it had
-   * them reading as the same thing, and under the toon ramp a mid violet
-   * desaturates almost exactly onto that blue. Washing the team colour toward
-   * this keeps who someone is while saying they are briefly not a threat, which
-   * are two different questions and should not share a channel.
-   */
-  private static readonly STUNNED_WASH = new THREE.Color().setHex(0xd6e2ea, THREE.SRGBColorSpace);
-
-  constructor() {
+  constructor(characters: CharacterBatch) {
     this.group.name = 'mode';
-    const rng = new Rng('mode-visuals');
-
-    // A kid, rather than a capsule with a ball on it.
-    //
-    // Six instanced draws instead of two, which is nothing next to what it buys.
-    // A capsule has no front, so a bot walking at you and a bot walking away
-    // looked identical, and nothing about a silhouette said whether it was
-    // moving, stopped, or carrying your flag. Limbs answer all three for free
-    // once they swing.
-    //
-    // Cartoon proportions on purpose: big head, short limbs, wide stance. These
-    // are eleven-year-olds in a garden, and realistic proportions at this scale
-    // read as small adults.
-    const torsoGeometry = chamferedBox(CAP_RADIUS * 1.72, TORSO_TOP - HIP_Y, CAP_RADIUS * 1.15, 0.05);
-    this.botBody = new THREE.InstancedMesh(
-      torsoGeometry,
-      createToonMaterial({ color: 0xffffff }),
-      MAX_BOTS,
-    );
-    this.botBody.castShadow = true;
-    this.botBody.frustumCulled = false;
-
-    /**
-     * Limbs are modelled with their pivot at the origin, not their centre.
-     *
-     * A box centred on itself rotates about its middle, which makes a leg
-     * scissor around its own knee. Shifting the geometry down by half its length
-     * puts the joint at the origin, so the instance matrix can place the hip and
-     * rotate about it — which is what a hip does.
-     */
-    const legGeometry = chamferedBox(0.16, LEG_LEN, 0.19, 0.03);
-    legGeometry.translate(0, -LEG_LEN / 2, 0);
-    const armGeometry = chamferedBox(0.13, ARM_LEN, 0.14, 0.03);
-    armGeometry.translate(0, -ARM_LEN / 2, 0);
-
-    this.limbs = [];
-    for (let i = 0; i < 4; i++) {
-      // Arms take the shirt colour, legs stay denim — one instanced colour per
-      // mesh would have made a kid one solid block of team colour.
-      const mesh = new THREE.InstancedMesh(
-        i < 2 ? armGeometry : legGeometry,
-        createToonMaterial({ color: i < 2 ? 0xffffff : 0x4a5a78 }),
-        MAX_BOTS,
-      );
-      mesh.castShadow = true;
-      mesh.frustumCulled = false;
-      this.limbs.push(mesh);
-      this.group.add(mesh);
-    }
-
-    const headGeometry = blob(0.22, 1, 0.1, () => rng.next());
-    this.botHead = new THREE.InstancedMesh(
-      headGeometry,
-      createToonMaterial({ color: 0xf0c8a0 }),
-      MAX_BOTS,
-    );
-    this.botHead.castShadow = true;
-    this.botHead.frustumCulled = false;
-
-    this.group.add(this.botBody, this.botHead);
+    this.characters = characters;
 
     // Balloons in flight.
     const balloonGeometry = new THREE.SphereGeometry(BALLOON_RADIUS, 8, 6);
@@ -247,6 +183,27 @@ export class ModeRenderer {
       this.splashes.push({ x: 0, y: 0, z: 0, age: 0, active: false });
     }
 
+    // The spray. A single expanding sphere is a puff of smoke wearing blue —
+    // it says "something happened here" and nothing about what. What makes an
+    // impact read as *water* is that pieces of it come off and fall, so the
+    // burst keeps its job of marking the spot and these do the describing.
+    //
+    // Opaque and unlit-bright rather than translucent like the burst: at this
+    // size a transparent droplet against a bright lawn is nothing at all, and
+    // sixteen splashes' worth of transparency is sixteen sorted draws.
+    this.dropletMesh = new THREE.InstancedMesh(
+      new THREE.SphereGeometry(DROPLET_RADIUS, 5, 4),
+      createToonMaterial({ color: 0xcdf2ff }),
+      MAX_DROPLETS,
+    );
+    this.dropletMesh.frustumCulled = false;
+    this.dropletMesh.castShadow = false;
+    this.group.add(this.dropletMesh);
+
+    for (let i = 0; i < MAX_DROPLETS; i++) {
+      this.droplets.push({ x: 0, y: 0, z: 0, vx: 0, vy: 0, vz: 0, age: 0, active: false });
+    }
+
     // Objective markers: a pool of stands and a pool of flags, positioned from
     // whatever the running mode publishes. The renderer used to know what a
     // stash and a bucket were, which meant a second mode could not add an
@@ -264,7 +221,7 @@ export class ModeRenderer {
     this.drops = new THREE.InstancedMesh(
       new THREE.SphereGeometry(1, 6, 5),
       createToonMaterial({ color: 0x8fd8f4 }),
-      MAX_DROPS,
+      MAX_DROPS * MAX_STREAMS,
     );
     this.drops.frustumCulled = false;
     this.drops.castShadow = false;
@@ -348,16 +305,12 @@ export class ModeRenderer {
   }
 
   private hideAll(): void {
-    for (let i = 0; i < MAX_BOTS; i++) {
-      this.botBody.setMatrixAt(i, ModeRenderer.HIDDEN);
-      this.botHead.setMatrixAt(i, ModeRenderer.HIDDEN);
-    }
     for (let i = 0; i < MAX_BALLOONS; i++) this.balloons.setMatrixAt(i, ModeRenderer.HIDDEN);
-    for (let i = 0; i < MAX_SPLASHES; i++) this.splashMesh.setMatrixAt(i, ModeRenderer.HIDDEN);
-    this.botBody.instanceMatrix.needsUpdate = true;
-    this.botHead.instanceMatrix.needsUpdate = true;
+    // The two packed pools have nothing to hide: drawing none of them is what
+    // a count of zero already means.
+    this.splashMesh.count = 0;
+    this.dropletMesh.count = 0;
     this.balloons.instanceMatrix.needsUpdate = true;
-    this.splashMesh.instanceMatrix.needsUpdate = true;
   }
 
   /** Add a splash burst at a world position. */
@@ -378,6 +331,51 @@ export class ModeRenderer {
     s.x = x; s.y = y; s.z = z;
     s.age = 0;
     s.active = true;
+
+    this.spawnDroplets(x, y, z);
+  }
+
+  /**
+   * Throw a handful of beads off an impact.
+   *
+   * `Math.random` on purpose, like the rest of this file's presentation: the
+   * renderer is never replayed and never hashed, and spending the simulation's
+   * seeded stream on spray would make two players' worlds diverge on nothing —
+   * exactly the mistake `SPLASH_INTERVAL` was written to avoid.
+   *
+   * Sprayed up and out rather than in a sphere. A splash on the lawn throws
+   * nothing downwards, and one on somebody's back throws nothing into them, so
+   * a symmetric burst spends half its droplets inside whatever was hit.
+   */
+  private spawnDroplets(x: number, y: number, z: number): void {
+    for (let n = 0; n < DROPLETS_PER_SPLASH; n++) {
+      const d = this.takeDroplet();
+      const angle = Math.random() * Math.PI * 2;
+      // Sideways speed spread wide, so the spray is a crown and not a ring.
+      const out = 1.1 + Math.random() * 2.2;
+      d.x = x; d.y = y; d.z = z;
+      d.vx = Math.cos(angle) * out;
+      d.vz = Math.sin(angle) * out;
+      d.vy = 2.4 + Math.random() * 2.3;
+      d.age = 0;
+      d.active = true;
+    }
+  }
+
+  /** A free droplet, or the oldest one if there are none. */
+  private takeDroplet(): Droplet {
+    for (let n = 0; n < MAX_DROPLETS; n++) {
+      const i = (this.dropletCursor + n) % MAX_DROPLETS;
+      if (!this.droplets[i]!.active) {
+        this.dropletCursor = (i + 1) % MAX_DROPLETS;
+        return this.droplets[i]!;
+      }
+    }
+    // Full. The cursor is the least recently taken slot, which is the closest
+    // thing to "oldest" available without sorting.
+    const i = this.dropletCursor;
+    this.dropletCursor = (i + 1) % MAX_DROPLETS;
+    return this.droplets[i]!;
   }
 
   /** Called every frame. `time` drives the stash marker's idle animation. */
@@ -395,11 +393,21 @@ export class ModeRenderer {
      * the mode's bots, which is what the headless tests hand it.
      */
     others?: readonly Actor[],
+    /**
+     * Anything to draw beside the mode's own objectives — pings, today.
+     *
+     * Passed in rather than read from anywhere, for the same reason `others` is:
+     * a ping is not the mode's business. You can ping in Free Build, where
+     * there is no mode at all to publish one, and a mark on the world that only
+     * appeared during a round would be a strange thing to explain.
+     */
+    extraMarkers?: readonly Marker[],
   ): void {
     this.updateCharacters(dt, others ?? mode?.bots ?? [], mode);
     this.updateBalloons(projectiles);
     this.updateSplashes(dt);
-    this.updateMarkers(mode, time);
+    this.updateDroplets(dt);
+    this.updateMarkers(mode, time, extraMarkers);
     this.updateStream(time);
   }
 
@@ -409,49 +417,81 @@ export class ModeRenderer {
    * Set every frame from the mode, because a stream that persists for one frame
    * after the trigger is released reads as the weapon sticking.
    */
-  setStream(
-    end: { x: number; y: number; z: number } | null,
-    fromX: number, fromY: number, fromZ: number,
-  ): void {
-    this.streamEnd = end;
-    this.streamFrom = end === null ? null : { x: fromX, y: fromY, z: fromZ };
+  /** Droplets submitted to the draw call this frame, across every hose. */
+  get streamDrops(): number {
+    return this.drops.count;
   }
 
-  private updateStream(time: number): void {
-    const from = this.streamFrom;
-    const to = this.streamEnd;
-    if (from === null || to === null) {
-      for (let i = 0; i < MAX_DROPS; i++) this.drops.setMatrixAt(i, ModeRenderer.HIDDEN);
-      this.drops.instanceMatrix.needsUpdate = true;
-      return;
-    }
+  /** How many hoses may be drawn at once, so a check can reason about the cap. */
+  static readonly MAX_STREAMS = MAX_STREAMS;
+  /** Droplets in one hose at its longest. */
+  static readonly MAX_DROPS = MAX_DROPS;
 
-    const dx = to.x - from.x;
-    const dy = to.y - from.y;
-    const dz = to.z - from.z;
-    const length = Math.hypot(dx, dy, dz);
-    const used = Math.max(2, Math.min(MAX_DROPS, Math.round(length * 2.6)));
-
-    for (let i = 0; i < MAX_DROPS; i++) {
-      if (i >= used) {
-        this.drops.setMatrixAt(i, ModeRenderer.HIDDEN);
-        continue;
+  /**
+   * The hoses to draw this frame.
+   *
+   * Clamped here and only here. `updateStream` used to carry a second bound on
+   * the buffer as well, and a planted bug proved it unreachable — with the
+   * count clamped on the way in and each hose capped at `MAX_DROPS`, the total
+   * cannot exceed the capacity, so the inner guard was two defences for one
+   * invariant with only one of them ever running. It came out; this is the one
+   * that holds, and the test that pushes more hoses than the cap is pointed
+   * here.
+   */
+  setStreams(running: ReadonlyArray<StreamShot>): void {
+    const n = Math.min(running.length, MAX_STREAMS);
+    for (let i = 0; i < n; i++) {
+      const shot = running[i]!;
+      while (this.streams.length <= i) {
+        this.streams.push({ fx: 0, fy: 0, fz: 0, tx: 0, ty: 0, tz: 0 });
       }
-      const t = (i + 0.5) / used;
-      // A little sag and a little wobble: dead straight reads as a laser.
-      const sag = Math.sin(t * Math.PI) * length * 0.035;
-      const wobble = Math.sin(time * 22 + i * 1.7) * 0.035 * t;
-      this.pos.set(
-        from.x + dx * t + wobble,
-        from.y + dy * t - sag,
-        from.z + dz * t + wobble,
-      );
-      // Fattens along its length, so the jet has a direction you can read.
-      this.scale.setScalar(0.045 + t * 0.085);
-      this.matrix.compose(this.pos, ModeRenderer.NO_ROTATION, this.scale);
-      this.drops.setMatrixAt(i, this.matrix);
+      const slot = this.streams[i]!;
+      slot.fx = shot.fx; slot.fy = shot.fy; slot.fz = shot.fz;
+      slot.tx = shot.tx; slot.ty = shot.ty; slot.tz = shot.tz;
+    }
+    this.streamCount = n;
+  }
+
+  /**
+   * Draw every hose that is running.
+   *
+   * **Packed rather than parked.** Live droplets go into the front of the
+   * buffer and `count` is lowered to match, so a garden where nobody has pulled
+   * a trigger costs no draw at all. Parking unused slots at a hidden matrix —
+   * which is what this did — submits every instance to the vertex shader to
+   * produce no pixels, and it is the mistake this project has now made and
+   * fixed in four separate batches.
+   */
+  private updateStream(time: number): void {
+    let slot = 0;
+    for (let s = 0; s < this.streamCount; s++) {
+      const shot = this.streams[s]!;
+      const dx = shot.tx - shot.fx;
+      const dy = shot.ty - shot.fy;
+      const dz = shot.tz - shot.fz;
+      const length = Math.hypot(dx, dy, dz);
+      const used = Math.max(2, Math.min(MAX_DROPS, Math.round(length * 2.6)));
+
+      for (let i = 0; i < used; i++) {
+        const t = (i + 0.5) / used;
+        // A little sag and a little wobble: dead straight reads as a laser.
+        // Phased by which hose it is as well as by time, so two people spraying
+        // side by side do not wobble in lockstep and read as one wide jet.
+        const sag = Math.sin(t * Math.PI) * length * 0.035;
+        const wobble = Math.sin(time * 22 + i * 1.7 + s * 2.3) * 0.035 * t;
+        this.pos.set(
+          shot.fx + dx * t + wobble,
+          shot.fy + dy * t - sag,
+          shot.fz + dz * t + wobble,
+        );
+        // Fattens along its length, so the jet has a direction you can read.
+        this.scale.setScalar(0.045 + t * 0.085);
+        this.matrix.compose(this.pos, ModeRenderer.NO_ROTATION, this.scale);
+        this.drops.setMatrixAt(slot++, this.matrix);
+      }
     }
     this.scale.setScalar(1);
+    this.drops.count = slot;
     this.drops.instanceMatrix.needsUpdate = true;
   }
 
@@ -462,8 +502,11 @@ export class ModeRenderer {
    * would compile a shader on the frame it appeared, which is a visible hitch
    * at exactly the moment something important just happened.
    */
-  private updateMarkers(mode: GameMode | null, time: number): void {
-    const markers = mode?.markers() ?? [];
+  private updateMarkers(
+    mode: GameMode | null, time: number, extra: readonly Marker[] = [],
+  ): void {
+    const own = mode?.markers() ?? [];
+    const markers = extra.length === 0 ? own : [...own, ...extra];
     let standIndex = 0;
     let flagIndex = 0;
 
@@ -503,116 +546,89 @@ export class ModeRenderer {
   }
 
   /**
+   * How many objective markers are actually on screen.
+   *
+   * For scenarios, and it is a different question from how many the mode
+   * published: the pools here are fixed-size, so a mode with more objectives
+   * than there are stands loses the surplus silently. Tag is the first mode
+   * whose marker count is a function of how many people are playing, which is
+   * the first time that ceiling could be reached by accident.
+   */
+  get markersDrawn(): number {
+    let n = 0;
+    for (const stand of this.stands) if (stand.group.visible) n++;
+    for (const flag of this.flagPoles) if (flag.group.visible) n++;
+    return n;
+  }
+
+  /**
+   * Live splash bursts and droplets, for scenarios.
+   *
+   * Both, because they fail differently and one covers for the other. A burst
+   * with no spray is the old effect back; spray with no burst is a splash that
+   * spawned into a pool it could not reach. Neither number alone would notice.
+   */
+  get splashesLive(): number {
+    let n = 0;
+    for (const s of this.splashes) if (s.active) n++;
+    return n;
+  }
+
+  get dropletsLive(): number {
+    let n = 0;
+    for (const d of this.droplets) if (d.active) n++;
+    return n;
+  }
+
+  /**
    * Draw everyone who is not holding the camera.
    *
    * Was `updateBots`, and the rename is the point: a bot and another person are
    * the same silhouette moving through the same world, and the only thing this
    * code ever needed from either was a position, a facing, and how wet they are.
+   *
+   * The posing itself belongs to the character rig, so what is left here is only
+   * the translation from "what a mode knows about somebody" to "what it takes to
+   * draw a kid". Everything the two must agree about — proportions, the walk
+   * cycle, what a soaked shirt looks like — is now stated in exactly one place,
+   * which is what lets the local player be drawn by the same code.
    */
   private updateCharacters(dt: number, others: readonly Actor[], mode: GameMode | null): void {
-    let count = 0;
+    const pose = this.scratchPose;
     for (const who of others) {
-      if (who.alive === false || count >= MAX_BOTS) continue;
+      if (who.alive === false) continue;
 
       const body = who.controller;
-      const facing = who.heading ?? 0;
-      const cos = Math.cos(facing);
-      const sin = Math.sin(facing);
+      pose.id = who.id;
+      pose.x = body.x;
+      pose.y = body.y;
+      pose.z = body.z;
+      pose.facing = who.heading ?? 0;
+      pose.speed = Math.hypot(body.vx ?? 0, body.vz ?? 0);
+      pose.onGround = body.onGround !== false;
+      pose.stunned = who.stunned === true;
+      // Your shirt is yours until a round starts, and then it is your team's.
+      //
+      // The two team palettes are what make a fight legible — `shirts.ts` says
+      // it outright, and the moment allies existed one palette meant every kid
+      // on the lawn looked identical and the flag game became guesswork. A
+      // locker cannot be allowed to take that away, because the cost is paid by
+      // everybody else in the round rather than by the person who chose it.
+      //
+      // So the choice shows where there is nothing to confuse it with: free
+      // build, and the yard you are standing in while you pick it. Everything
+      // else somebody chose — face, hair, trousers, shoes, shaping, the marks —
+      // travels into the round untouched.
+      const own = mode === null ? lookFor(who.id).shirt : null;
+      shirtColor(
+        this.shirt, who.team, mode?.wetnessOf?.(who.id) ?? 0, pose.stunned, own,
+      );
 
-      // Advance the stride by ground covered. A stunned kid stands still, and
-      // anyone stopped eases back to a neutral stance rather than freezing
-      // mid-step with one leg in the air.
-      const speed = who.stunned === true ? 0 : Math.hypot(body.vx ?? 0, body.vz ?? 0);
-      let phase = this.stride.get(who.id) ?? 0;
-      if (speed > 0.2) {
-        phase = (phase + (speed / STRIDE_LENGTH) * Math.PI * 2 * dt) % (Math.PI * 2);
-      } else {
-        // Toward the nearest neutral, whichever way is shorter.
-        const target = phase < Math.PI ? 0 : Math.PI * 2;
-        phase += (target - phase) * Math.min(1, dt * 9);
-      }
-      this.stride.set(who.id, phase);
-
-      const swing = Math.sin(phase) * (speed > 0.2 ? SWING_MAX : 0);
-      // Twice a stride: both feet plant per cycle, so the bob is at double rate.
-      const bob = Math.cos(phase * 2) * 0.022 * (speed > 0.2 ? 1 : 0);
-
-      this.pos.set(body.x, body.y + (HIP_Y + TORSO_TOP) / 2 + bob, body.z);
-      this.quat.setFromAxisAngle(ModeRenderer.UP, facing);
-      this.matrix.compose(this.pos, this.quat, this.scale);
-      this.botBody.setMatrixAt(count, this.matrix);
-
-      // Arms counter-swing against the legs, which is what stops a walk reading
-      // as a march.
-      this.poseLimb(0, count, body.x, body.y + bob, body.z, cos, sin,
-        -SHOULDER_X, SHOULDER_Y, facing, -swing * ARM_SWING);
-      this.poseLimb(1, count, body.x, body.y + bob, body.z, cos, sin,
-        SHOULDER_X, SHOULDER_Y, facing, swing * ARM_SWING);
-      this.poseLimb(2, count, body.x, body.y, body.z, cos, sin,
-        -HIP_X, HIP_Y, facing, swing);
-      this.poseLimb(3, count, body.x, body.y, body.z, cos, sin,
-        HIP_X, HIP_Y, facing, -swing);
-
-      // Stunned characters wash out toward blue, so it is obvious at a glance
-      // who is still a threat. Otherwise the shirt darkens as it soaks, which is
-      // how the player reads who is nearly finished and picks a target.
-      const shirt = ModeRenderer.SHIRTS[who.team];
-      this.color.copy(shirt.dry);
-      this.color.lerp(shirt.soaked, wetBlend(mode?.wetnessOf?.(who.id) ?? 0));
-      // Washed out while stunned, so it stays obvious at a glance who is still a
-      // threat without costing the team colour that says whose side they are on.
-      if (who.stunned === true) this.color.lerp(ModeRenderer.STUNNED_WASH, 0.72);
-      this.botBody.setColorAt(count, this.color);
-      // Sleeves match the shirt; legs stay denim, so a kid is not one solid
-      // block of team colour from the ankles up.
-      this.limbs[0]!.setColorAt(count, this.color);
-      this.limbs[1]!.setColorAt(count, this.color);
-
-      this.pos.set(body.x, body.y + HEAD_Y + bob, body.z);
-      this.matrix.compose(this.pos, this.quat, this.scale);
-      this.botHead.setMatrixAt(count, this.matrix);
-
-      count++;
+      // A full batch is a real answer rather than an error: a mode may spawn
+      // more than the pool holds, and drawing as many as fit beats growing a
+      // buffer mid-round.
+      if (!this.characters.pose(dt, pose)) break;
     }
-
-    for (let i = count; i < MAX_BOTS; i++) {
-      this.botBody.setMatrixAt(i, ModeRenderer.HIDDEN);
-      this.botHead.setMatrixAt(i, ModeRenderer.HIDDEN);
-      for (const limb of this.limbs) limb.setMatrixAt(i, ModeRenderer.HIDDEN);
-    }
-    this.botBody.count = MAX_BOTS;
-    this.botHead.count = MAX_BOTS;
-    this.botBody.instanceMatrix.needsUpdate = true;
-    this.botHead.instanceMatrix.needsUpdate = true;
-    if (this.botBody.instanceColor !== null) this.botBody.instanceColor.needsUpdate = true;
-    for (const limb of this.limbs) {
-      limb.count = MAX_BOTS;
-      limb.instanceMatrix.needsUpdate = true;
-      if (limb.instanceColor !== null) limb.instanceColor.needsUpdate = true;
-    }
-  }
-
-  /**
-   * Hang one limb off a joint and swing it.
-   *
-   * The joint offset is in the character's own frame, so it has to be turned by
-   * their facing before it means anything in the world — otherwise every kid's
-   * arms stay pinned to world east and west however they turn.
-   */
-  private poseLimb(
-    which: number, index: number,
-    x: number, y: number, z: number,
-    cos: number, sin: number,
-    localX: number, localY: number,
-    facing: number, swing: number,
-  ): void {
-    this.pos.set(x + localX * cos, y + localY, z - localX * sin);
-    // YXZ so the swing happens about the character's own side-to-side axis
-    // after the yaw, rather than about a fixed world axis.
-    this.limbEuler.set(swing, facing, 0, 'YXZ');
-    this.quat.setFromEuler(this.limbEuler);
-    this.matrix.compose(this.pos, this.quat, this.scale);
-    this.limbs[which]!.setMatrixAt(index, this.matrix);
   }
 
   private updateBalloons(projectiles: ProjectileSystem): void {
@@ -629,29 +645,74 @@ export class ModeRenderer {
     this.balloons.instanceMatrix.needsUpdate = true;
   }
 
+  /**
+   * Both of these pools are *packed* rather than parked.
+   *
+   * The pool slot a splash lives in and the instance slot it draws in used to
+   * be the same number, with the unused ones pushed to y = -9999. That works,
+   * but it means the draw is always for the full pool — and since nothing is
+   * splashing during the great majority of a round, the common case was two
+   * draw calls a frame for a hundred and twelve invisible spheres. Writing the
+   * live ones into the front of the buffer and setting `count` costs one extra
+   * local and lets three.js skip the draw entirely at zero, which is the same
+   * fix the character batch got and for the same reason.
+   */
   private updateSplashes(dt: number): void {
+    let drawn = 0;
     for (let i = 0; i < this.splashes.length; i++) {
       const s = this.splashes[i]!;
-      if (!s.active) {
-        this.splashMesh.setMatrixAt(i, ModeRenderer.HIDDEN);
-        continue;
-      }
+      if (!s.active) continue;
       s.age += dt;
       if (s.age >= SPLASH_LIFETIME) {
         s.active = false;
-        this.splashMesh.setMatrixAt(i, ModeRenderer.HIDDEN);
         continue;
       }
-      // Expand fast then hold, which reads as a burst rather than a balloon.
+      // Out fast, then back in. It used to expand and hold, which meant it
+      // vanished at full size — a sphere blinking out of existence at its
+      // largest is the one shape that cannot read as anything dissipating.
+      // The material's opacity is shared across every instance and so cannot
+      // fade one of them, which makes the silhouette the only thing left to
+      // say "gone", so it has to say it.
       const t = s.age / SPLASH_LIFETIME;
-      const radius = 0.25 + Math.sqrt(t) * 1.1;
+      const shape = t < 0.32 ? Math.sqrt(t / 0.32) : 1 - (t - 0.32) / 0.68;
+      const radius = 0.18 + shape * 1.05;
       this.pos.set(s.x, s.y, s.z);
       this.scale.setScalar(radius);
-      this.matrix.compose(this.pos, new THREE.Quaternion(), this.scale);
-      this.splashMesh.setMatrixAt(i, this.matrix);
+      this.matrix.compose(this.pos, ModeRenderer.NO_ROTATION, this.scale);
+      this.splashMesh.setMatrixAt(drawn++, this.matrix);
       this.scale.setScalar(1);
     }
+    this.splashMesh.count = drawn;
     this.splashMesh.instanceMatrix.needsUpdate = true;
+  }
+
+  private updateDroplets(dt: number): void {
+    let drawn = 0;
+    for (let i = 0; i < this.droplets.length; i++) {
+      const d = this.droplets[i]!;
+      if (!d.active) continue;
+      d.age += dt;
+      if (d.age >= DROPLET_LIFETIME) {
+        d.active = false;
+        continue;
+      }
+      d.vy -= DROPLET_GRAVITY * dt;
+      d.x += d.vx * dt;
+      d.y += d.vy * dt;
+      d.z += d.vz * dt;
+
+      // Shrink over the back half only. Shrinking from the moment it spawns
+      // makes the spray look like it is being pulled back into the impact.
+      const t = d.age / DROPLET_LIFETIME;
+      const size = t < 0.5 ? 1 : 1 - (t - 0.5) * 2;
+      this.pos.set(d.x, d.y, d.z);
+      this.scale.setScalar(Math.max(size, 0.001));
+      this.matrix.compose(this.pos, ModeRenderer.NO_ROTATION, this.scale);
+      this.dropletMesh.setMatrixAt(drawn++, this.matrix);
+      this.scale.setScalar(1);
+    }
+    this.dropletMesh.count = drawn;
+    this.dropletMesh.instanceMatrix.needsUpdate = true;
   }
 
   /**
@@ -674,9 +735,10 @@ export class ModeRenderer {
   clear(): void {
     this.hideAll();
     for (const s of this.splashes) s.active = false;
+    for (const d of this.droplets) d.active = false;
     for (const stand of this.stands) stand.group.visible = false;
     for (const flag of this.flagPoles) flag.group.visible = false;
-    this.setStream(null, 0, 0, 0);
+    this.setStreams(EMPTY_STREAMS);
     this.updateStream(0);
   }
 }

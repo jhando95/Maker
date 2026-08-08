@@ -10,6 +10,7 @@ import {
   KID_RESPAWN, RESPAWN_TANK,
 } from './waterWar.ts';
 import { TANK_MAX, SOURCE_RADIUS, WEAPONS } from './waterKit.ts';
+import { sameForEveryone } from './gameMode.ts';
 import type { GameEvent, ModeContext, ModeInput } from './gameMode.ts';
 import { Rng } from '../core/rng.ts';
 import { ActorRoster, LOCAL_ACTOR_ID } from './actor.ts';
@@ -17,8 +18,25 @@ import { DT } from '../physics/constants.ts';
 import { WATER_SOURCES, neighborhoodSlabs, installFixtures } from '../world/neighborhood.ts';
 import { STARTING_LUMBER } from '../build/lumber.ts';
 
-const noInput: ModeInput = { fire: false, firePressed: false, fireReleased: false };
-const firing: ModeInput = { fire: true, firePressed: true, fireReleased: false };
+const noInput = sameForEveryone();
+const firing = sameForEveryone({ fire: true, firePressed: true });
+
+/**
+ * Firing while looking somewhere in particular.
+ *
+ * Aim used to be read off `ctx.camera` inside the mode, so a test set the yaw
+ * and the mode followed. It comes in with the input now — a host firing on a
+ * guest's behalf has no camera to consult — so a test that wants a direction
+ * has to say so. Same convention as the camera's own look vector, which
+ * `aimOf` holds the two together on.
+ */
+function firingAt(yaw: number, pitch = 0): ModeInput {
+  const cp = Math.cos(pitch);
+  return sameForEveryone({
+    fire: true, firePressed: true,
+    aimX: -Math.sin(yaw) * cp, aimY: Math.sin(pitch), aimZ: -Math.cos(yaw) * cp,
+  });
+}
 
 function makeContext(): { ctx: ModeContext; events: GameEvent[]; world: CollisionWorld } {
   const world = new CollisionWorld();
@@ -69,6 +87,44 @@ function upright(a: number): { qx: number; qy: number; qz: number; qw: number } 
 }
 
 /**
+ * Afternoons already simulated, by their arguments.
+ *
+ * Each of these runs seven minutes of game at a fixed timestep with fifteen
+ * kids in it, and the same handful of configurations are asked for by several
+ * tests each. Without this the file re-simulates `STARTING_LUMBER` four
+ * separate times to get four identical numbers — which is what pushed it past
+ * vitest's five-second default on CI once the drain check started casting a ray
+ * per kid per tick.
+ *
+ * Safe to share because both harnesses are pure: a fresh world, a fresh mode
+ * and fixed seeds every time.
+ */
+const afternoons = new Map<string, number>();
+
+/**
+ * How long a test that simulates a whole afternoon is allowed to take.
+ *
+ * Well above what any of them costs — the slowest is under three seconds — and
+ * stated rather than left to vitest's five-second default, because these are
+ * not unit tests that got slow by accident. Each one runs seven minutes of game
+ * at a fixed timestep with fifteen kids pathing through it, and that is the
+ * point: the questions they answer are about balance, and balance is not
+ * observable in a tick.
+ *
+ * The default caught one of them out on a CI runner the moment the drain check
+ * started casting a ray per kid per tick. Memoising the repeated configurations
+ * bought most of it back; this is the margin.
+ */
+const AFTERNOON = 30_000;
+function remember(key: string, run: () => number): number {
+  const seen = afternoons.get(key);
+  if (seen !== undefined) return seen;
+  const value = run();
+  afternoons.set(key, value);
+  return value;
+}
+
+/**
  * Fence the taps out of a fixed pile of wood, then leave the player standing
  * still for a whole afternoon and report how much water survived.
  *
@@ -77,6 +133,10 @@ function upright(a: number): { qx: number; qy: number; qz: number; qw: number } 
  * zero builds nothing, which is the control.
  */
 function idleAfternoon(budget: number, radius = 2.0): number {
+  return remember(`budget:${budget}:${radius}`, () => idleAfternoonUncached(budget, radius));
+}
+
+function idleAfternoonUncached(budget: number, radius: number): number {
   const made = makeContext();
   installFixtures(made.world, neighborhoodSlabs(new Rng('map')));
 
@@ -96,6 +156,45 @@ function idleAfternoon(budget: number, radius = 2.0): number {
           ...upright(a),
         });
         if (placed) spent++;
+      }
+    }
+  }
+
+  const fresh = new WaterWarMode();
+  fresh.start(made.ctx);
+  made.ctx.player.teleport(-22, 0.5, -22);
+  run2(fresh, made.ctx, 420);
+  return fresh.waterFraction;
+}
+
+/**
+ * Build a ring `courses` high round every tap, then idle a whole afternoon.
+ *
+ * The height twin of `idleAfternoon`, which sweeps the budget. Height is the
+ * variable a player actually reasons about — "is this wall tall enough" — and
+ * it was the one nothing measured, which is how a payoff cliff sat in the
+ * middle of the economy without anybody noticing.
+ */
+function ringOfHeight(courses: number, radius = 2.0): number {
+  return remember(`height:${courses}:${radius}`, () => ringOfHeightUncached(courses, radius));
+}
+
+function ringOfHeightUncached(courses: number, radius: number): number {
+  const made = makeContext();
+  installFixtures(made.world, neighborhoodSlabs(new Rng('map')));
+
+  const perCourse = Math.max(4, Math.ceil((2 * Math.PI * radius) / 0.9));
+  for (let course = 0; course < courses; course++) {
+    for (const tap of WATER_SOURCES) {
+      for (let i = 0; i < perCourse; i++) {
+        const a = (i / perCourse) * Math.PI * 2;
+        made.ctx.build.applyPlaceIfClear({
+          kind: 0, colorway: 0,
+          x: tap.x + Math.sin(a) * radius,
+          y: 0.125 + course * 0.25,
+          z: tap.z + Math.cos(a) * radius,
+          ...upright(a),
+        });
       }
     }
   }
@@ -222,7 +321,7 @@ describe('WaterWarMode', () => {
       const ratio = drained / (SOURCE_MAX * fresh.sources.length);
       expect(ratio).toBeGreaterThan(1.6);
       expect(ratio).toBeLessThan(3);
-    });
+    }, AFTERNOON);
 
     it('walls alone turn a lost afternoon into a held one', () => {
       // The claim the whole game rests on: that what you build is worth
@@ -241,7 +340,46 @@ describe('WaterWarMode', () => {
       // Fortified and still unattended, enough survives that the round is not
       // lost. Walls do not merely slow the bleeding, they change the outcome.
       expect(walled).toBeGreaterThan(0.1);
-    });
+    }, AFTERNOON);
+
+    it('rewards a half-built wall with half a result', () => {
+      // The property the whole budget rests on, and the one it did not have.
+      //
+      // Draining a tap used to need nothing but standing within 3.2m of it, and
+      // a ring a player would naturally build sits *inside* that — so kids
+      // emptied taps straight through finished walls, and the payoff was a
+      // cliff rather than a curve. Measured across ring heights, everything up
+      // to a metre kept exactly 0% and 1.25m kept 51%: sixty-five planks bought
+      // literally nothing and the next twenty bought the round.
+      //
+      // A kid has to be able to reach the water now, so a wall pays from the
+      // first course that is taller than a kid can step over.
+      const nothing = ringOfHeight(0);
+      const knee = ringOfHeight(2);
+      expect(nothing).toBeLessThan(0.02);
+      // Knee-high is still steppable, so it is still worth nothing.
+      expect(knee).toBeLessThan(0.02);
+    }, AFTERNOON);
+
+    it('pays from the first course a kid cannot step over', () => {
+      // The other half, split out because each of these is seven minutes of
+      // simulated game and four of them in one `it` is four times vitest's
+      // default timeout budget for one name.
+      const waist = ringOfHeight(3);
+      const chest = ringOfHeight(5);
+      expect(waist).toBeGreaterThan(0.05);
+      expect(chest).toBeGreaterThan(waist * 2);
+    }, AFTERNOON);
+
+    it('stops paying for height once a kid cannot see the tap over it', () => {
+      // The other end of the same curve, and the reason the pile is finite. A
+      // wall works by putting something solid between a kid and the water; once
+      // it does that, another metre of it does nothing at all. Measured, 1.25m
+      // and 2.00m rings come out identical to three significant figures.
+      const chest = ringOfHeight(5);
+      const towering = ringOfHeight(8);
+      expect(towering).toBeCloseTo(chest, 2);
+    }, AFTERNOON);
 
     it('a ring with a gap in it is worth almost nothing', () => {
       // Why the budget is a decision rather than an allowance. The step that
@@ -251,7 +389,7 @@ describe('WaterWarMode', () => {
       const short = idleAfternoon(Math.round(STARTING_LUMBER / 2));
       const closed = idleAfternoon(STARTING_LUMBER);
       expect(short).toBeLessThan(closed / 2);
-    });
+    }, AFTERNOON);
 
     it('more wood spent worse is worse than less wood spent well', () => {
       // The other half of the same point, and the reason the budget does not
@@ -261,19 +399,25 @@ describe('WaterWarMode', () => {
       const tight = idleAfternoon(STARTING_LUMBER, 2.0);
       const loose = idleAfternoon(STARTING_LUMBER * 4, 4.2);
       expect(tight).toBeGreaterThan(loose);
-    });
+    }, AFTERNOON);
 
     it('the opening pile is enough to close the ring, and more is not better', () => {
-      // Where 120 comes from. A wall a kid can scramble over is worth nothing —
-      // MANTLE_MAX_HEIGHT is 1.6m — and the pile is sized to clear that round
-      // all three taps and no further. Spending three times as much adds height
-      // nobody uses, which is what makes the number a decision rather than an
-      // allowance the player should simply max out.
+      // Where 120 comes from: the pile closes a ring round all three taps and
+      // does not stretch to much more.
+      //
+      // The reason used to be given as MANTLE_MAX_HEIGHT — a wall a kid can
+      // scramble over is worth nothing, so build past 1.6m. That was wrong
+      // twice over. Nothing in the game implements mantling, so the constant
+      // describes a mechanic that does not exist; and what actually stops a kid
+      // draining a tap is not being able to *reach* it, which a wall does the
+      // moment it is taller than a kid can step over — 0.55m, not 1.6m.
+      // Measured, a 0.75m ring already keeps water and a 2m one keeps no more
+      // than a 1.25m one.
       const budgeted = idleAfternoon(STARTING_LUMBER);
       const lavish = idleAfternoon(STARTING_LUMBER * 3);
       expect(budgeted).toBeGreaterThan(0.3);
       expect(lavish).toBeCloseTo(budgeted, 2);
-    });
+    }, AFTERNOON);
 
     it('a passive player loses partway in, not on the first raid', () => {
       // Losing before the second raid means never seeing the mode; surviving to
@@ -512,11 +656,10 @@ describe('WaterWarMode', () => {
       expect(hitting).toBeLessThanOrEqual(5);
 
       // Turn to face nothing: the splashes should stop.
-      ctx.camera.yaw = Math.PI;
       events.length = 0;
       for (let i = 0; i < 30; i++) {
         bot.controller.teleport(0, 0.5, -3);
-        mode.fixedUpdate(DT, ctx, firing);
+        mode.fixedUpdate(DT, ctx, firingAt(Math.PI));
       }
       expect(events.filter((e) => e.type === 'splash').length).toBe(0);
     });
@@ -616,5 +759,146 @@ describe('WaterWarMode', () => {
       expect(mode.tankLevel).toBe(TANK_MAX);
       for (const s of mode.sources) expect(s.water).toBe(SOURCE_MAX);
     });
+  });
+});
+
+describe('WaterWarMode with two people in the yard', () => {
+  /**
+   * The mode with a second person in the roster, the way a host runs one.
+   *
+   * A `remote` actor rather than a second `local`, because that is the kind the
+   * host actually holds for a guest — and because `isFighter` is written about
+   * the kind, so a test that used the wrong one would be testing nothing.
+   */
+  function withGuest(): {
+    mode: WaterWarMode;
+    ctx: ModeContext;
+    events: GameEvent[];
+    guest: CharacterController;
+  } {
+    const made = makeContext();
+    const guest = new CharacterController(made.world, 4, 0.5, 0);
+    made.ctx.actors.addRemote({ id: 1, kind: 'remote', team: 'left', controller: guest });
+    const mode = new WaterWarMode();
+    mode.start(made.ctx);
+    return { mode, ctx: made.ctx, events: made.events, guest };
+  }
+
+  /** Fire for one person and nobody else, which is what a real tick looks like. */
+  function only(actorId: number, aim = { x: 0, y: 0, z: -1 }): ModeInput {
+    return {
+      of: (id) => ({
+        fire: id === actorId,
+        firePressed: id === actorId,
+        fireReleased: false,
+        aimX: aim.x, aimY: aim.y, aimZ: aim.z,
+      }),
+    };
+  }
+
+  it('gives the guest a tank of their own', () => {
+    // The failure this replaces is not an exception. With one `tank` field on
+    // the mode, the host holding the trigger drains the guest's gauge too —
+    // which reads on the guest's screen as their water going somewhere.
+    const { mode, ctx } = withGuest();
+    run(mode, ctx, BUILD_TIME + 1);
+    ctx.player.teleport(FAR_AWAY.x, 0.5, FAR_AWAY.z);
+
+    const before = mode.selfHud(1).ammo!.current;
+    run(mode, ctx, 1.5, only(LOCAL_ACTOR_ID));
+    expect(mode.selfHud(LOCAL_ACTOR_ID).ammo!.current).toBeLessThan(before);
+    expect(mode.selfHud(1).ammo!.current).toBe(before);
+  });
+
+  it("lets the guest fire, and spends the guest's water doing it", () => {
+    const { mode, ctx } = withGuest();
+    run(mode, ctx, BUILD_TIME + 1);
+    const before = mode.selfHud(1).ammo!.current;
+
+    run(mode, ctx, 1.5, only(1));
+    expect(mode.selfHud(1).ammo!.current).toBeLessThan(before);
+    // And the host, who was not touching anything, still has a full tank.
+    expect(mode.selfHud(LOCAL_ACTOR_ID).ammo!.current).toBe(before);
+  });
+
+  it('draws the guest their own stream, from where the guest is standing', () => {
+    // The host computes it, so without an entry of their own a guest holds the
+    // trigger and sees nothing leave the nozzle.
+    const { mode, ctx, guest } = withGuest();
+    run(mode, ctx, BUILD_TIME + 1);
+    guest.teleport(8, 0.5, 8);
+
+    mode.fixedUpdate(DT, ctx, only(1));
+    const theirs = mode.streamFor(1);
+    expect(theirs, 'the guest is firing and has no stream').not.toBeNull();
+    // Along -Z from the guest, not from the host at the origin.
+    expect(theirs!.x).toBeCloseTo(8, 1);
+    expect(theirs!.z).toBeLessThan(8);
+    expect(mode.streamFor(LOCAL_ACTOR_ID), 'the host is not firing').toBeNull();
+  });
+
+  it('soaks the guest, and stops them, without touching the host', () => {
+    const { mode, ctx, guest } = withGuest();
+    run(mode, ctx, BUILD_TIME + 1);
+    guest.teleport(4, 0.5, 0);
+
+    // Straight at them, close enough that the splash cannot miss.
+    for (let i = 0; i < 30 && mode.speedScaleFor(1) > 0; i++) {
+      ctx.projectiles.spawn(4, 1.2, 1.2, 0, -0.3, -1, 12, 900);
+      run(mode, ctx, 0.3);
+    }
+
+    expect(mode.speedScaleFor(1), 'the guest was never knocked out').toBe(0);
+    expect(mode.speedScaleFor(LOCAL_ACTOR_ID), 'the host went down too').toBe(1);
+    expect(mode.playerIsOut, 'the host reported themselves out').toBe(false);
+  });
+
+  it('says nothing to the host about a guest being soaked', () => {
+    // The event drives this machine's screen flash and the arrow pointing at
+    // whoever got you. Firing it for a soaking in somebody else's garden would
+    // flash the host's screen for something that did not happen to them.
+    const { mode, ctx, events, guest } = withGuest();
+    run(mode, ctx, BUILD_TIME + 1);
+    guest.teleport(4, 0.5, 0);
+    events.length = 0;
+
+    for (let i = 0; i < 30 && mode.speedScaleFor(1) > 0; i++) {
+      ctx.projectiles.spawn(4, 1.2, 1.2, 0, -0.3, -1, 12, 900);
+      run(mode, ctx, 0.3);
+    }
+
+    expect(mode.speedScaleFor(1), 'the guest was never soaked, so this proves nothing').toBe(0);
+    expect(events.filter((e) => e.type === 'playerSoaked')).toHaveLength(0);
+  });
+
+  it('sends kids after whoever is nearest, not always the host', () => {
+    // A kid that could only ever throw at the player was correct while the
+    // player was the only person on the lawn. With a guest in the yard it means
+    // one of the two humans is a spectator with legs.
+    const { mode, ctx, guest } = withGuest();
+    run(mode, ctx, BUILD_TIME + 1);
+    expect(mode.bots.length).toBeGreaterThan(0);
+
+    const kid = mode.bots[0]!;
+    ctx.player.teleport(FAR_AWAY.x, 0.5, FAR_AWAY.z);
+    guest.teleport(kid.x + 1.5, 0.5, kid.z);
+    run(mode, ctx, DT);
+
+    expect(kid.hasAim, 'the kid could not see anybody at all').toBe(true);
+    expect(Math.hypot(kid.aimX - guest.x, kid.aimZ - guest.z))
+      .toBeLessThan(Math.hypot(kid.aimX - ctx.player.x, kid.aimZ - ctx.player.z));
+  });
+
+  it('keeps kid ids clear of the range people are numbered in', () => {
+    // Both allocators used to start at 1, so with one guest connected the guest
+    // and the first kid of the first raid were the same actor. Nothing throws;
+    // the roster answers with whichever was added first and a player gets
+    // dragged toward a bot.
+    const { mode, ctx } = withGuest();
+    run(mode, ctx, BUILD_TIME + 1);
+    expect(mode.bots.length).toBeGreaterThan(0);
+    for (const bot of mode.bots) {
+      expect(bot.id, 'a kid was numbered in the range people use').toBeGreaterThanOrEqual(100);
+    }
   });
 });

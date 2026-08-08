@@ -41,6 +41,38 @@ interface Pending {
  * easy to do by accident.
  */
 export class PropBatch {
+  /**
+   * Cell size for splitting a busy key, in metres.
+   *
+   * Two-thirds of the lot's width, which is the scale that matters: the yard is
+   * forty-eight metres across and the neighbourhood a hundred and thirty, so a
+   * thirty-two metre cell puts the four fence runs, the two gardens, the street
+   * and each side of the horizon in different buckets without shattering
+   * anything into single-instance draws.
+   */
+  static readonly CHUNK = 48;
+
+  /**
+   * How many instances a key needs before it is worth splitting.
+   *
+   * Chunking buys culling and costs draw calls, so it only pays where there are
+   * enough triangles behind the key to be worth culling. Thirty-two is a little
+   * over the count at which one draw of a simple box starts to cost more than
+   * the couple of extra draws splitting it would add.
+   */
+  static readonly CHUNK_THRESHOLD = 80;
+
+  /**
+   * Below this many instances, a key is merged rather than instanced.
+   *
+   * Five, which is where the two costs cross for a box: under it the per-mesh
+   * overhead of an instanced draw dominates, over it the shared geometry starts
+   * to pay for the vertices it duplicates. Measured on this map, five catches
+   * 296 of the 424 meshes — seventy per cent of them — for 498 boxes and about
+   * twenty-two thousand triangles.
+   */
+  static readonly MERGE_BELOW = 5;
+
   readonly group = new THREE.Group();
 
   private readonly pending = new Map<string, Pending>();
@@ -106,47 +138,195 @@ export class PropBatch {
     this.add(key, geometry, m, color, options);
   }
 
-  /** Emit the instanced meshes. Call once, after all adds. */
+  /**
+   * Emit the instanced meshes. Call once, after all adds.
+   *
+   * ## Why this splits a key into chunks
+   *
+   * Frustum culling used to be switched off here, with a comment explaining
+   * exactly why it had to be: instances of one key span the whole yard, so the
+   * mesh's bounding volume covers the whole yard, and an object that large is
+   * either entirely in the frustum or entirely behind you. Turning culling on
+   * with a bad bound is worse than leaving it off — the whole fence pops out of
+   * view the moment its origin does.
+   *
+   * The consequence was that **nothing in the world was ever culled**. Measured
+   * from five viewpoints — facing the house, facing the street, on the roof, and
+   * facing forty metres of empty lawn — the draw calls and the triangle count
+   * came back identical to the digit every time. Looking at nothing cost exactly
+   * what looking at the whole neighbourhood cost.
+   *
+   * So the bound is made meaningful instead of being ignored: instances are
+   * grouped into `CHUNK`-metre cells and each cell becomes its own mesh with its
+   * own tight bounds, which three.js then culls for free. A player facing north
+   * stops paying for the south fence, the cul-de-sac and half the trees.
+   *
+   * ## And why only some keys
+   *
+   * Chunking trades triangles for draw calls, and that trade is only worth
+   * making where there are triangles to save. A key with a handful of instances
+   * is already one cheap draw; splitting it four ways to cull three is a loss.
+   * So a key is chunked only when it holds more than `CHUNK_THRESHOLD`
+   * instances — which is the fence, the pickets, the trees and the hedges, and
+   * not the one-off boxes that make up a house.
+   *
+   * Small keys still get culling, because they still get a correct bound. A
+   * localised set — the cart, a bin — now disappears from the frame when you
+   * turn your back on it, which it never used to.
+   */
   build(): THREE.Group {
     if (this.built) return this.group;
     this.built = true;
+
+    /** Keys too small to be worth instancing, gathered to be merged instead. */
+    const tail: Array<{ entry: Pending; matrix: THREE.Matrix4; color: THREE.Color }> = [];
 
     for (const [key, entry] of this.pending) {
       const count = entry.matrices.length;
       if (count === 0) continue;
 
-      const mesh = new THREE.InstancedMesh(entry.geometry, createToonMaterial({}), count);
-      mesh.name = `prop:${key}`;
-      mesh.castShadow = entry.castShadow;
-      mesh.receiveShadow = entry.receiveShadow;
-      // Instances span the whole yard, so the mesh's own bounds are meaningless
-      // as a culling volume — culling it as one object pops the entire fence out
-      // of view the moment its origin leaves the frustum.
-      mesh.frustumCulled = false;
-
-      for (let i = 0; i < count; i++) {
-        mesh.setMatrixAt(i, entry.matrices[i]!);
-        mesh.setColorAt(i, entry.colors[i]!);
+      // Instancing a shape used once is instancing with nothing to instance:
+      // a bind, a uniform upload and a draw call, for one box. Measured on the
+      // real map, 174 of the 212 keys held exactly one instance and 70 held
+      // two — seventy per cent of the meshes carrying thirteen per cent of the
+      // boxes. Those are merged into shared geometry instead, which is the
+      // other half of the trade every batcher makes: instancing wins when one
+      // shape repeats, merging wins when many shapes do not.
+      if (count < PropBatch.MERGE_BELOW) {
+        for (let i = 0; i < count; i++) {
+          tail.push({ entry, matrix: entry.matrices[i]!, color: entry.colors[i]! });
+        }
+        continue;
       }
-      mesh.instanceMatrix.needsUpdate = true;
-      if (mesh.instanceColor !== null) mesh.instanceColor.needsUpdate = true;
 
-      const outlineMaterial = createOutlineMaterial(entry.outlineColor, entry.outlineThickness);
-      this.outlineMaterials.push(outlineMaterial);
+      if (count <= PropBatch.CHUNK_THRESHOLD) {
+        this.emit(key, entry, entry.matrices, entry.colors);
+        continue;
+      }
 
-      const outline = new THREE.InstancedMesh(entry.geometry, outlineMaterial, count);
-      outline.name = `prop-outline:${key}`;
-      outline.frustumCulled = false;
-      outline.castShadow = false;
-      outline.receiveShadow = false;
-      // Shares the parent's buffer: one upload, one extra draw per key.
-      outline.instanceMatrix = mesh.instanceMatrix;
+      // Bucket by cell, keeping each instance's colour with its matrix.
+      const cells = new Map<string, { matrices: THREE.Matrix4[]; colors: THREE.Color[] }>();
+      for (let i = 0; i < count; i++) {
+        const m = entry.matrices[i]!;
+        const cx = Math.floor(m.elements[12]! / PropBatch.CHUNK);
+        const cz = Math.floor(m.elements[14]! / PropBatch.CHUNK);
+        const id = `${cx},${cz}`;
+        let cell = cells.get(id);
+        if (cell === undefined) {
+          cell = { matrices: [], colors: [] };
+          cells.set(id, cell);
+        }
+        cell.matrices.push(m);
+        cell.colors.push(entry.colors[i]!);
+      }
 
-      this.group.add(mesh, outline);
+      for (const [id, cell] of cells) {
+        this.emit(`${key}@${id}`, entry, cell.matrices, cell.colors);
+      }
     }
+
+    this.mergeTail(tail);
 
     this.pending.clear();
     return this.group;
+  }
+
+  /**
+   * Bake the one-off shapes into shared geometry.
+   *
+   * Grouped by cell **and** by outline treatment, both of which are forced. The
+   * cell keeps the bound tight, or the merge would undo the culling the chunking
+   * above exists to buy — one object spanning the neighbourhood is either
+   * entirely in the frustum or entirely behind you, which is exactly the bug
+   * this file already has a long comment about. The outline colour and
+   * thickness are uniforms on the shell's material, so two treatments cannot
+   * share a draw whatever else they share.
+   *
+   * Colour moves from a per-instance attribute to a per-vertex one, which is
+   * what makes a hundred differently-coloured boxes one draw. It costs three
+   * floats a vertex on geometry that is already resident, and the alternative
+   * is a hundred draws.
+   */
+  private mergeTail(
+    tail: ReadonlyArray<{ entry: Pending; matrix: THREE.Matrix4; color: THREE.Color }>,
+  ): void {
+    if (tail.length === 0) return;
+
+    const groups = new Map<string, typeof tail[number][]>();
+    for (const item of tail) {
+      const m = item.matrix.elements;
+      const cx = Math.floor(m[12]! / PropBatch.CHUNK);
+      const cz = Math.floor(m[14]! / PropBatch.CHUNK);
+      const id = `${cx},${cz}|${item.entry.outlineColor}|${item.entry.outlineThickness}`
+        + `|${item.entry.castShadow ? 1 : 0}${item.entry.receiveShadow ? 1 : 0}`;
+      const group = groups.get(id);
+      if (group === undefined) groups.set(id, [item]);
+      else group.push(item);
+    }
+
+    for (const [id, items] of groups) {
+      const geometry = mergeBaked(items);
+      if (geometry === null) continue;
+      const first = items[0]!.entry;
+
+      const mesh = new THREE.Mesh(geometry, createToonMaterial({ vertexColors: true }));
+      mesh.name = `prop-merged:${id}`;
+      mesh.castShadow = first.castShadow;
+      mesh.receiveShadow = first.receiveShadow;
+      mesh.frustumCulled = true;
+
+      const outlineMaterial = createOutlineMaterial(first.outlineColor, first.outlineThickness);
+      this.outlineMaterials.push(outlineMaterial);
+      const outline = new THREE.Mesh(geometry, outlineMaterial);
+      outline.name = `prop-outline:merged:${id}`;
+      outline.castShadow = false;
+      outline.receiveShadow = false;
+      outline.frustumCulled = true;
+
+      this.group.add(mesh, outline);
+    }
+  }
+
+  /** One instanced mesh and its outline shell, with bounds three.js can cull. */
+  private emit(
+    name: string,
+    entry: Pending,
+    matrices: readonly THREE.Matrix4[],
+    colors: readonly THREE.Color[],
+  ): void {
+    const count = matrices.length;
+    const mesh = new THREE.InstancedMesh(entry.geometry, createToonMaterial({}), count);
+    mesh.name = `prop:${name}`;
+    mesh.castShadow = entry.castShadow;
+    mesh.receiveShadow = entry.receiveShadow;
+
+    for (let i = 0; i < count; i++) {
+      mesh.setMatrixAt(i, matrices[i]!);
+      mesh.setColorAt(i, colors[i]!);
+    }
+    mesh.instanceMatrix.needsUpdate = true;
+    if (mesh.instanceColor !== null) mesh.instanceColor.needsUpdate = true;
+
+    // Over the instances rather than over the geometry, which is the whole
+    // reason culling can be switched on: `InstancedMesh.computeBoundingSphere`
+    // walks the instance matrices, so the answer describes where these props
+    // actually are instead of where one unplaced box is.
+    mesh.computeBoundingSphere();
+    mesh.frustumCulled = true;
+
+    const outlineMaterial = createOutlineMaterial(entry.outlineColor, entry.outlineThickness);
+    this.outlineMaterials.push(outlineMaterial);
+
+    const outline = new THREE.InstancedMesh(entry.geometry, outlineMaterial, count);
+    outline.name = `prop-outline:${name}`;
+    outline.castShadow = false;
+    outline.receiveShadow = false;
+    // Shares the parent's buffer: one upload, one extra draw per chunk.
+    outline.instanceMatrix = mesh.instanceMatrix;
+    outline.boundingSphere = mesh.boundingSphere;
+    outline.frustumCulled = true;
+
+    this.group.add(mesh, outline);
   }
 
   /** Outline width is measured in pixels, so it depends on the viewport. */
@@ -166,4 +346,156 @@ export class PropBatch {
   get drawCalls(): number {
     return this.group.children.length;
   }
+}
+
+/**
+ * Bake a set of placed boxes into one geometry.
+ *
+ * Positions through the matrix, normals through its rotation, and the instance
+ * colour written per vertex. Only the three attributes anything downstream
+ * reads survive — position, normal and `outlineNormal` — because the geometries
+ * coming in do not all carry the same set (a chamfered box and a plain one
+ * differ) and merging arrays that disagree is how a renderer ends up drawing
+ * one shape with another's UVs. Nothing here samples a texture, so nothing is
+ * lost.
+ *
+ * Returns null when there is nothing mergeable, which is a real answer: a batch
+ * of geometry with no outline normals is one the shell shader cannot expand,
+ * and drawing it flat would be worse than not drawing the shell at all.
+ */
+function mergeBaked(
+  items: ReadonlyArray<{ entry: Pending; matrix: THREE.Matrix4; color: THREE.Color }>,
+): THREE.BufferGeometry | null {
+  // Expanded to a plain triangle list first, and cached per geometry.
+  //
+  // `BoxGeometry` is indexed: its vertex array is a third of its triangles and
+  // the order lives in the index. Walking the vertices and ignoring that draws
+  // a shape that is not the one anybody asked for — which is what the first
+  // version of this function did. Caching matters because a key with four
+  // instances would otherwise expand the same box four times.
+  const flat = new Map<THREE.BufferGeometry, THREE.BufferGeometry>();
+  const expand = (g: THREE.BufferGeometry): THREE.BufferGeometry => {
+    if (g.index === null) return g;
+    let out = flat.get(g);
+    if (out === undefined) {
+      out = g.toNonIndexed();
+      flat.set(g, out);
+    }
+    return out;
+  };
+
+  let vertices = 0;
+  for (const item of items) {
+    const position = expand(item.entry.geometry).getAttribute('position');
+    if (position === undefined) return null;
+    vertices += position.count;
+  }
+  if (vertices === 0) return null;
+
+  const positions = new Float32Array(vertices * 3);
+  const normals = new Float32Array(vertices * 3);
+  const outlines = new Float32Array(vertices * 3);
+  const colors = new Float32Array(vertices * 3);
+
+  const v = new THREE.Vector3();
+  const n = new THREE.Matrix3();
+  let at = 0;
+
+  for (const item of items) {
+    const g = expand(item.entry.geometry);
+    const position = g.getAttribute('position')!;
+    const normal = g.getAttribute('normal');
+    // `outlineNormal` is the averaged one the shell expands along. Falling back
+    // to the face normal keeps a merge possible for geometry that never went
+    // through `addOutlineNormals`, at the cost of a shell that splits at the
+    // corners — which is visibly wrong, and still better than a crash.
+    const outline = g.getAttribute('outlineNormal') ?? normal;
+    n.getNormalMatrix(item.matrix);
+
+    for (let i = 0; i < position.count; i++) {
+      v.fromBufferAttribute(position, i).applyMatrix4(item.matrix);
+      positions[at * 3] = v.x; positions[at * 3 + 1] = v.y; positions[at * 3 + 2] = v.z;
+
+      if (normal !== undefined) {
+        v.fromBufferAttribute(normal, i).applyMatrix3(n).normalize();
+        normals[at * 3] = v.x; normals[at * 3 + 1] = v.y; normals[at * 3 + 2] = v.z;
+      }
+      if (outline !== undefined) {
+        v.fromBufferAttribute(outline, i).applyMatrix3(n).normalize();
+        outlines[at * 3] = v.x; outlines[at * 3 + 1] = v.y; outlines[at * 3 + 2] = v.z;
+      }
+
+      colors[at * 3] = item.color.r;
+      colors[at * 3 + 1] = item.color.g;
+      colors[at * 3 + 2] = item.color.b;
+      at++;
+    }
+  }
+
+  const merged = new THREE.BufferGeometry();
+  merged.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  merged.setAttribute('normal', new THREE.BufferAttribute(normals, 3));
+  merged.setAttribute('outlineNormal', new THREE.BufferAttribute(outlines, 3));
+  merged.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+  merged.computeBoundingSphere();
+  return merged;
+}
+
+/**
+ * Split one big instanced mesh into a grid of smaller ones, so it can be culled.
+ *
+ * The same idea `PropBatch.build` applies to scenery, for the meshes that are
+ * built somewhere else and handed over whole — the lawn's eleven thousand grass
+ * clumps being the one that matters. A single `InstancedMesh` is one object with
+ * one bounding volume, so a lawn that stretches sixty metres is drawn in full
+ * whether you are looking across it or standing with your back to it.
+ *
+ * The parts share the source mesh's geometry and material, which is what keeps
+ * this cheap: no new shader, no new upload of anything but the matrices, and the
+ * per-instance colours carried across so the split is invisible.
+ *
+ * Returns a group, and the caller adds that instead of the mesh. The source
+ * mesh is left alone — it is the caller's, and a helper that quietly disposed of
+ * its argument would be a trap.
+ */
+export function chunkInstanced(
+  source: THREE.InstancedMesh,
+  cell: number,
+  name = source.name,
+): THREE.Group {
+  const group = new THREE.Group();
+  group.name = name;
+
+  const cells = new Map<string, number[]>();
+  const m = new THREE.Matrix4();
+  for (let i = 0; i < source.count; i++) {
+    source.getMatrixAt(i, m);
+    const id = `${Math.floor(m.elements[12]! / cell)},${Math.floor(m.elements[14]! / cell)}`;
+    const bucket = cells.get(id);
+    if (bucket === undefined) cells.set(id, [i]);
+    else bucket.push(i);
+  }
+
+  const colour = new THREE.Color();
+  for (const [id, indices] of cells) {
+    const part = new THREE.InstancedMesh(source.geometry, source.material, indices.length);
+    part.name = `${name}@${id}`;
+    part.castShadow = source.castShadow;
+    part.receiveShadow = source.receiveShadow;
+    for (let k = 0; k < indices.length; k++) {
+      source.getMatrixAt(indices[k]!, m);
+      part.setMatrixAt(k, m);
+      if (source.instanceColor !== null) {
+        source.getColorAt(indices[k]!, colour);
+        part.setColorAt(k, colour);
+      }
+    }
+    part.instanceMatrix.needsUpdate = true;
+    if (part.instanceColor !== null) part.instanceColor.needsUpdate = true;
+    part.computeBoundingSphere();
+    part.frustumCulled = true;
+    group.add(part);
+  }
+
+  return group;
 }

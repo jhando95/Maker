@@ -117,8 +117,42 @@ export const CLIMB_REACH = 0.6;
 export const CLIMB_MAX_TILT_DEG = 30;
 
 // ── Mantle ───────────────────────────────────────────────────────────────────
-/** Ledges between STEP_HEIGHT and this are mantled over. */
+/**
+ * The tallest ledge a kid can haul themselves over.
+ *
+ * This constant spent a long time here describing a mechanic nobody had
+ * written — the note that replaced it said so, because the lumber budget had
+ * been sized against it and the README published a table of measurements
+ * explaining the design in terms of it. It is real now, and the reason to build
+ * it was the same reason it was tempting to fake: **a wall wants more than one
+ * meaningful height.**
+ *
+ * With only a step-up, every obstacle is either ankle-high or a wall, and the
+ * whole of a player's decision about how tall to build is a single yes/no at
+ * 0.55m. Three thresholds is a curve somebody can learn and play against:
+ *
+ * | height | what it costs to get past |
+ * |---|---|
+ * | up to `STEP_HEIGHT` | nothing; you walk over it |
+ * | up to this | a jump press and `MANTLE_DURATION` of being a stationary target |
+ * | above this | you go round, or you build |
+ *
+ * Chest height on a kid, which is the honest answer to "could you pull yourself
+ * up that" and — not by accident — a course and a half of planks above the step.
+ */
 export const MANTLE_MAX_HEIGHT = 1.6;
+/**
+ * How long the pull-up takes.
+ *
+ * The cost, and the whole reason mantling does not simply delete walls. For
+ * this long the player moves on a rail: no steering, no jump, no throwing, and
+ * a soaker pointed at them cannot miss. Long enough to be a real decision in
+ * front of somebody's fort, short enough not to feel like a cutscene.
+ */
 export const MANTLE_DURATION = 0.42;
 /** Clearance required above a ledge before a mantle is allowed. */
 export const MANTLE_CLEARANCE = CAP_HEIGHT * 0.9;
+/** How far in front of the chest to look for something worth climbing. */
+export const MANTLE_REACH = 0.75;
+/** How far past the ledge edge the pull-up lands, so nobody ends on the lip. */
+export const MANTLE_OVERSHOOT = CAP_RADIUS * 1.6;

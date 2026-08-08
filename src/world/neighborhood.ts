@@ -21,6 +21,9 @@
 
 import * as THREE from 'three';
 import { Rng } from '../core/rng.ts';
+import { ITEMS } from './items.ts';
+import { culDeSacSlabs } from './culDeSac.ts';
+import { surroundsSlabs } from './surrounds.ts';
 import type { CollisionWorld } from '../physics/collisionWorld.ts';
 
 /**
@@ -50,6 +53,30 @@ export interface Slab {
    * neighbourhood can, or the house is a ladder and the map has no shape.
    */
   climbable?: boolean;
+  /**
+   * This face is a light, and glows once the lamps come on.
+   *
+   * Here rather than in a list of lamp coordinates somewhere else, because two
+   * records of one fact drift the moment somebody nudges a post. The glow is
+   * derived from the slab — its position, its size, its rotation — so it cannot
+   * end up somewhere the lamp is not. See `render/nightLights.ts`.
+   */
+  lit?: Lit;
+}
+
+/** What a slab does once the lamps come on. */
+export interface Lit {
+  /** The colour of the glow. Warmer than the thing it is painted on. */
+  color: number;
+  /**
+   * How far past the slab's own extent the halo bleeds, in metres.
+   *
+   * A lamp lens is a 20cm box, and a 20cm glow is a lamp that is switched on
+   * and unnoticeable. The bloom is what makes it a light rather than a bright
+   * face, and it is per-slab because a window pane wants a hint and a street
+   * lamp wants a halo you can see from the far end of the garden.
+   */
+  bloom?: number;
 }
 
 /** Colours specific to the neighborhood, beyond the base scene palette. */
@@ -132,6 +159,61 @@ export const WATER_SOURCES: ReadonlyArray<{ key: string; name: string; x: number
 /** The treehouse deck, which is the left side's high ground. */
 export const TREEHOUSE = { x: -13.5, z: 5.5, deck: 4.5 } as const;
 
+/**
+ * Where the grass gets walked off.
+ *
+ * Derived from the map's own landmarks rather than scattered for texture: every
+ * patch is somewhere a mode sends people. That makes the ground a record of the
+ * traffic the game creates, and it means a player who has never seen this lot
+ * can read where the routes go before anything moves — the taps everybody runs
+ * to, the flag bases, the tree everybody climbs, the doors everybody comes
+ * through.
+ *
+ * A consequence worth stating: change where a mode puts an objective and the
+ * wear follows it, because both read the same constant. A hand-placed patch
+ * would quietly start lying the first time a number here moved.
+ */
+export function wearPoints(): ReadonlyArray<{ x: number; z: number; radius: number; strength?: number }> {
+  return [
+    // The three taps. Water War's whole traffic pattern.
+    ...WATER_SOURCES.map((s) => ({ x: s.x, z: s.z, radius: 4.2, strength: 0.85 })),
+    // Both flag bases, and the spawns people run out of.
+    { x: LEFT_FLAG.x, z: LEFT_FLAG.z, radius: 3.4, strength: 0.8 },
+    { x: RIGHT_FLAG.x, z: RIGHT_FLAG.z, radius: 3.4, strength: 0.8 },
+    { x: LEFT_SPAWN.x, z: LEFT_SPAWN.z, radius: 2.8, strength: 0.55 },
+    { x: RIGHT_SPAWN.x, z: RIGHT_SPAWN.z, radius: 2.8, strength: 0.55 },
+    // Under the tree, which is bare in every real garden that has one.
+    { x: TREEHOUSE.x, z: TREEHOUSE.z, radius: 3.6, strength: 0.95 },
+    // The stash, and the fort that gets built round it.
+    { x: FORT_YARD.x, z: FORT_YARD.z, radius: 3.2, strength: 0.7 },
+    // The garden path down the back, from the deck to the far fence, as
+    // overlapping steps — a path is a line and this lattice only knows about
+    // circles.
+    ...pathWear(0, 17.5, 0, 7.4, 1.5, 0.75),
+    // And the front path: gate to porch, which is the way everybody comes in.
+    // The two were labelled the wrong way round here for a while. The porch is
+    // at -Z and the deck at +Z, and since both ends of a lawn look much alike
+    // from above, the ground quietly recorded traffic on the wrong side of the
+    // house until the cul-de-sac put a gate at one end and not the other.
+    ...pathWear(0, -23, 0, -9.5, 1.6, 0.8),
+    { x: 0, z: -8.2, radius: 3.0, strength: 0.6 },
+  ];
+}
+
+/** A worn line, as overlapping circles a metre apart. */
+function pathWear(
+  x0: number, z0: number, x1: number, z1: number, radius: number, strength: number,
+): Array<{ x: number; z: number; radius: number; strength: number }> {
+  const span = Math.hypot(x1 - x0, z1 - z0);
+  const steps = Math.max(1, Math.round(span));
+  const out: Array<{ x: number; z: number; radius: number; strength: number }> = [];
+  for (let i = 0; i <= steps; i++) {
+    const t = i / steps;
+    out.push({ x: x0 + (x1 - x0) * t, z: z0 + (z1 - z0) * t, radius, strength });
+  }
+  return out;
+}
+
 const slabs: Slab[] = [];
 
 function put(s: Slab): void {
@@ -167,8 +249,30 @@ export function neighborhoodSlabs(rng: Rng): Slab[] {
   leftYard(rng);
   rightYard(rng);
   street();
+  // The neighbourhood beyond the fence. Its own module: it is a different job
+  // from the lot — nobody plays on it and nothing there is balanced — and
+  // mixing scenery you can only look at into the file that also describes the
+  // geometry three modes are tuned around is how one starts being edited for
+  // the other's reasons.
+  for (const s of culDeSacSlabs()) put(s);
   clutter(rng);
+  playthings();
   waterworks();
+
+  // Its own Rng, unconnected to the yard's, rather than a fork of it.
+  //
+  // `rng.fork()` advances the parent, so taking one here shifted every random
+  // draw the yard makes afterwards: adding trees to a horizon moved the junk in
+  // the garden, and one crate landed on the left spawn. That was caught by the
+  // test which says nothing may sit on a spawn — a test with no connection to
+  // this change, which is exactly what it is for.
+  //
+  // Reordering the call would have fixed that one instance and left the hazard
+  // in place for the next person to add scenery. A separate stream cannot
+  // interact with the lot at all. The cost is that the horizon does not vary
+  // with the map seed, and the horizon is the last thing in this world that
+  // needs to.
+  for (const s of surroundsSlabs(new Rng('surrounds'))) put(s);
 
   return slabs.map((s) => ({ ...s }));
 }
@@ -297,6 +401,16 @@ function porch(): void {
 
   // Railing between the posts, low enough to vault.
   timber(HOUSE.halfWidth * 2, 0.12, 0.12, 0, 0.95, zFront - 1.45, LOT.plankPale);
+
+  // The porch light, under the roof beside the door.
+  //
+  // The one lamp in the game that is *theirs*. Everything else that comes on at
+  // dusk is somebody else's house across the road, which is atmosphere; a light
+  // over your own front door at the end of a round is the bit that means it is
+  // getting late and you live here.
+  timber(0.3, 0.34, 0.26, 1.5, HOUSE.porchRoof - 0.42, zFront - 0.3, LOT.cloth, {
+    chamfer: 0.07, ghost: true, lit: { color: 0xffe0a8, bloom: 0.62 },
+  });
 }
 
 /** The back deck: the right side's shortcut onto the roof, two stages up. */
@@ -308,6 +422,13 @@ function backDeck(): void {
   // A crate against the deck: the informal step everyone finds first.
   timber(1.0, 1.0, 1.0, 4.6, 0.5, zBack + 1.2, LOT.plank);
   timber(0.9, 0.9, 0.9, 4.5, 1.45, zBack + 1.0, LOT.plankPale, { ry: 0.4 });
+
+  // A bulkhead light on the back wall. The deck is where The Floor Is Lava
+  // starts and where everybody respawns, so this is the one light in the game
+  // that a player is looking at on purpose rather than noticing.
+  timber(0.26, 0.3, 0.22, 1.0, 2.35, HOUSE.halfDepth + 0.08, LOT.cloth, {
+    chamfer: 0.06, ghost: true, lit: { color: 0xffe0a8, bloom: 0.58 },
+  });
 }
 
 /**
@@ -380,10 +501,63 @@ function dividers(): void {
  * that the bridge is obviously the thing to build, far enough that it is a
  * project rather than a step.
  */
+/**
+ * Bark on the big trunk, and a flare where it meets the ground.
+ *
+ * The trunk is one 1.3m box seven and a half metres tall, and standing anywhere
+ * in the left yard it is the largest single-coloured surface on screen — the
+ * flatness survey measured it at 26.7% of one frame, higher than the lawn ever
+ * was before the lawn was fixed. A toon ramp gives a box two bands and no more,
+ * so nothing about the shading was going to break it up.
+ *
+ * All of it is ghost geometry sitting proud of the trunk, which is the same
+ * arrangement the house cladding uses and for the same reason: the ladder up
+ * this tree works by a climb probe finding a near-vertical climbable surface,
+ * and a decorative strip of bark that the probe hit instead of the backing
+ * board would quietly break the one route to the deck.
+ */
+function bark(x: number, z: number): void {
+  // Strips down two faces — the two you can see from the yard. Varying the
+  // width matters more than the count: four evenly spaced identical ribs read
+  // as a radiator, and it is the irregularity that reads as bark.
+  const strips: ReadonlyArray<[offset: number, width: number, tone: number]> = [
+    [-0.44, 0.22, 0x7a5438], [-0.14, 0.34, 0x9a7050], [0.2, 0.16, 0x74502f],
+    [0.44, 0.26, 0x936a48],
+  ];
+  for (const [offset, width, tone] of strips) {
+    timber(width, 7.2, 0.06, x + offset, 3.6, z - 0.68, tone, { ghost: true, chamfer: 0.02 });
+    // The side face gets the *same* box turned a quarter turn rather than one
+    // built the other way round. Scenery is instanced by exact dimensions, so
+    // (w, 7.2, 0.06) and (0.06, 7.2, w) are two geometries and two draw calls
+    // for one shape — and this file is full of places where that adds up.
+    timber(width, 7.2, 0.06, x + 0.68, 3.6, z + offset, tone, {
+      ghost: true, chamfer: 0.02, ry: Math.PI / 2,
+    });
+  }
+
+  // The flare. A trunk that meets the lawn at a right angle is the single thing
+  // that most says "box with a bark texture on it" — real ones spread.
+  for (let i = 0; i < 3; i++) {
+    const t = i / 3;
+    timber(
+      1.3 + 0.5 * (1 - t), 0.34, 1.3 + 0.5 * (1 - t),
+      x, 0.17 + i * 0.3, z,
+      i % 2 === 0 ? 0x7a5438 : LOT.trunk,
+      { ghost: true, chamfer: 0.06 },
+    );
+  }
+
+  // Two sawn-off branch stubs. What they contribute is a horizontal on a shape
+  // that is otherwise nothing but verticals.
+  timber(1.5, 0.3, 0.3, x + 0.9, 5.6, z + 0.2, 0x7a5438, { ghost: true, rz: 0.34, chamfer: 0.08 });
+  timber(0.3, 0.28, 1.2, x - 0.2, 6.4, z - 0.8, 0x7a5438, { ghost: true, rx: 0.3, chamfer: 0.08 });
+}
+
 function treehouse(): void {
   const { x, z, deck } = TREEHOUSE;
 
   timber(1.3, 7.4, 1.3, x, 3.7, z, LOT.trunk, { outline: 0x4a3122, chamfer: 0.03 });
+  bark(x, z);
 
   // Rungs nailed up the trunk. Not a ladder object — the character controller
   // recognises any near-vertical surface with rungs, so this is the same
@@ -574,12 +748,19 @@ function flagSurround(x: number, z: number, accent: number): void {
   timber(1.6, 0.22, 1.6, x, 0.11, z, accent, { outline: DARK, chamfer: 0.04 });
 }
 
-/** The street out front, and the cart everyone's scam starts with. */
+/**
+ * The front of the property: the drive inside the fence, and the cart.
+ *
+ * This used to be the street itself — a strip of tarmac running off both edges
+ * of the world, inside the lot's own fence, which is not where a road goes. The
+ * road is outside now, in `culDeSac.ts`, and what is left here is the drive it
+ * arrives at.
+ */
 function street(): void {
   put({
-    w: 46, h: 0.06, d: 5.0,
+    w: 12, h: 0.06, d: 5.0,
     x: 0, y: 0.02, z: -20.5,
-    color: 0x8f8f96, outline: 0x5a5a60, chamfer: 0.02, ghost: true,
+    color: 0xb8b4aa, outline: 0x7a776e, chamfer: 0.02, ghost: true,
   });
   timber(2.4, 0.25, 1.3, -4.5, 0.42, -18.5, LOT.cart, { outline: 0xa06a20 });
   for (const [ox, oz] of [[-0.9, -0.6], [-0.9, 0.6], [0.9, -0.6], [0.9, 0.6]] as const) {
@@ -604,6 +785,53 @@ function street(): void {
  * diagram of a map rather than a place, and there is nowhere to take cover on
  * the way across.
  */
+/**
+ * The trampolines and the slides, as things you can see and stand on.
+ *
+ * Built from the item list rather than typed out again, so a pad that moves
+ * moves its picture with it. The one thing that must line up is the top
+ * surface: `items.ts` states a `y` and the effect keys on it, so the geometry
+ * has to put a real surface there or the player falls through a working
+ * trampoline. `items.test.ts` holds the two together.
+ */
+function playthings(): void {
+  for (const item of ITEMS) {
+    if (item.kind === 'trampoline') {
+      // A sprung mat on a frame: the mat is the surface the effect keys on, the
+      // legs are why it is off the ground.
+      timber(item.halfW * 2, 0.1, item.halfD * 2, item.x, item.y - 0.05, item.z,
+        0x2b4c8c, { outline: 0x16294d, chamfer: 0.04 });
+      timber(item.halfW * 2 + 0.18, 0.12, item.halfD * 2 + 0.18,
+        item.x, item.y - 0.16, item.z, 0x3a3f45, { chamfer: 0.05 });
+      for (const sx of [-1, 1]) {
+        for (const sz of [-1, 1]) {
+          timber(0.12, item.y - 0.2, 0.12,
+            item.x + sx * (item.halfW - 0.05), (item.y - 0.2) / 2, item.z + sz * (item.halfD - 0.05),
+            0x3a3f45);
+        }
+      }
+      continue;
+    }
+
+    // A slide is a wet plastic sheet: almost flat, and bright enough that
+    // somebody sprinting past reads it as a lane rather than as a puddle.
+    //
+    // Ghosted, and that is load-bearing rather than tidy. A sheet six
+    // centimetres thick is walked straight over by any character — the step-up
+    // clears nine times that — but the flow field the kids route on marks a
+    // cell occupied when anything solid is in it, whatever its height. Solid,
+    // these two lanes quietly diverted every bot on their side of the house
+    // and three of Water War's balance measurements moved. The effect keys on
+    // position, not on standing on a slab, so nothing is lost by making it
+    // scenery.
+    timber(item.halfW * 2, 0.06, item.halfD * 2, item.x, item.y - 0.03, item.z,
+      0x37b9d8, { ry: item.ry, outline: 0x1d7791, chamfer: 0.03, ghost: true });
+    // A darker stripe down the middle, ghosted so it cannot catch a toe.
+    timber(item.halfW * 0.5, 0.02, item.halfD * 2 - 0.3, item.x, item.y + 0.01, item.z,
+      0x1d7791, { ry: item.ry, ghost: true });
+  }
+}
+
 function clutter(rng: Rng): void {
   const crate = (x: number, z: number, y = 0.45, tint: number = LOT.plank) =>
     timber(0.9, 0.9, 0.9, x, y, z, tint, { ry: rng.range(0, Math.PI) });
@@ -707,7 +935,13 @@ function clutter(rng: Rng): void {
 
   // ── A lamp post out front, because the street needed a vertical ───────────
   timber(0.22, 4.4, 0.22, 8.5, 2.2, -17.5, LOT.metal, { outline: 0x4a4f54 });
-  timber(0.6, 0.5, 0.6, 8.5, 4.6, -17.5, LOT.cloth, { chamfer: 0.12, ghost: true });
+  timber(0.6, 0.5, 0.6, 8.5, 4.6, -17.5, LOT.cloth, {
+    chamfer: 0.12, ghost: true,
+    // The nearest street light to the lot, and the only one inside the fog's
+    // near plane, so it is the one that reads as an object with a light in it
+    // rather than as a glow on the horizon.
+    lit: { color: 0xffdc96, bloom: 0.85 },
+  });
 }
 
 /**

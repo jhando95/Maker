@@ -24,10 +24,9 @@ const assert = (cond, message) => {
 async function holdKey(page, key, check) {
   for (let attempt = 0; attempt < 6; attempt++) {
     await page.keyboard.down(key);
-    await page.waitForTimeout(250);
-    if (await page.evaluate(check)) return;
+    if (await settledInto(page, check)) return;
     await page.keyboard.up(key);
-    await page.waitForTimeout(100);
+    await page.waitForTimeout(80);
   }
   throw new Error(`wheel scenario: ${key} never registered as held`);
 }
@@ -36,10 +35,31 @@ async function holdKey(page, key, check) {
 async function releaseKey(page, key, check) {
   for (let attempt = 0; attempt < 6; attempt++) {
     await page.keyboard.up(key);
-    await page.waitForTimeout(250);
-    if (await page.evaluate(check)) return;
+    if (await settledInto(page, check)) return;
   }
   throw new Error(`wheel scenario: ${key} never registered as released`);
+}
+
+/**
+ * Wait, in frames, for the game to agree — not for a fixed slice of wall clock.
+ *
+ * This was a quarter of a second, which is plenty of frames on a machine with a
+ * GPU and is *one* frame on a CI runner rendering through SwiftShader. Input is
+ * buffered and folded at a tick boundary, so a check that lands before the next
+ * frame reads the state from before the key was pressed and the whole attempt
+ * is wasted — six of those and the scenario fails claiming the key never
+ * registered, which is a description of the timer rather than of the key.
+ *
+ * That is the same mistake as every other scenario failure on this project: a
+ * wall clock standing in for the game's clock.
+ */
+async function settledInto(page, check) {
+  try {
+    await page.waitForFunction(check, undefined, { timeout: 4000, polling: 'raf' });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 const wheelIsOpen = () => window.__maker.hud.partWheel.isOpen;

@@ -5,10 +5,71 @@ you nail together whatever you want — ladders, staircases, towers, forts,
 bridges. The long-term goal is party modes played *inside* the things you build:
 capture the flag, water balloon battles, tag.
 
-Single-player so far: a neighborhood lot with a house in the middle of it, the
-movement and building mechanics the whole game rests on, and three modes —
-**Capture the Flag** across the two yards, **Fort Defense** on the front lawn,
-and **Water War** over the paddling pool, the rain barrel and the garden tap.
+A house at the head of a cul-de-sac, with neighbours, hedgerows and woods
+filling every horizon it can see, the movement and building mechanics the whole
+game rests on, and five modes: **The Floor Is Lava** round the whole garden,
+**Capture the Flag** across the two yards, **Tag** out on the street, **Water
+War** over the paddling pool, the rain barrel and the garden tap, and **Fort
+Defense** on the front lawn. Two browsers can share a lawn and play any of them
+together, and there is a locker to decide what you turn up looking like.
+
+**What you build has to hold itself up.** Every part is either standing on the
+lawn, nailed to something that was already there, or joined by a chain of parts
+to one of those — and the moment that chain breaks, whatever was on the end of
+it comes down. Take the leg out of somebody's tower and the tower goes with it,
+including the kid who was standing on top. Contact counts in any direction, not
+just downward, because this is a kid with a hammer rather than a bricklayer: a
+plank nailed to the side of a post is held by that post, and half of what people
+build here is cantilevered off something. A collapse has its own sound, lower
+and louder the more of it fell, and it carries twice as far as a plank going
+up — in a mode where two people are dismantling each other's forts, it is the
+only warning the other one gets. And the preview tells you first: a placement
+that would be standing on nothing goes on pulsing rather than sitting still,
+which is a warning rather than a refusal, because finding out whether it holds
+is the game.
+
+**And the kids will take it apart.** A raider that has spent long enough getting
+no closer to what it came for puts both hands on whatever is in the way and
+hauls, and after a couple of seconds it comes off — along with everything it was
+holding up. It picks the most load-bearing thing within reach rather than the
+nearest, which is what makes a fort a structure rather than a pile of hit
+points: a wall with a door is still beaten by the door, and a sealed one is
+beaten by finding its legs. Fort Defense is now a game about where the wood
+goes.
+
+**There is a can of spray paint in slot nine.** It cannot hit anybody, block
+anybody or hold anything up, and a round plays out exactly the same whether or
+not a single tag exists — it is there so four friends in a back garden can leave
+something behind. Eleven shapes in eight colours, sprayed onto whatever the
+crosshair is on: the fence, the house, the lawn, somebody else's fort. The marks
+are the same instanced polygons the locker paints a shirt with, so the can added
+no geometry to the game at all, and paint goes down with whatever it was painted
+on. Two caps make it self-limiting rather than a griefing tool: spray your
+twelfth and the next one takes your own oldest, never anybody else's. Settings →
+Playing → Spray can turns it off for a lobby that would rather it did not exist.
+
+**Settings → Playing → Frame stats** shows frames a second, frame time, the
+worst frame in the last two seconds, draw calls and triangles — and **where the
+frame went**: simulation, network, posing characters, drawing, the HUD, and
+whatever is left over, which is always reported rather than quietly dropped. The
+leftover is the point: the first time it was asked, in an empty yard, 88% of the
+frame turned out to be outside everything instrumented.
+
+**The afternoon gets late while you play.** The sun drops and swings west across
+a round, the shadows stretch, the sky drains to a warm horizon under a deep blue,
+and by the end of a full-length round it is dusk — the street lights warm up over
+the turning head, the windows of every house on the cul-de-sac come on warmer
+than the sky behind them, and there is a light over your own back door.
+The crickets come up with them, over a hum of traffic three streets away —
+the same number drives the light and the sound, so a sky that has gone orange is
+never a garden that still sounds like midday. Settings → Picture → Time of day
+if you would rather nail it to one hour.
+
+**The Floor Is Lava is the one the game is named after.** The grass is out of
+bounds; you get round the garden on the deck, the crates, the fence rail, the
+treehouse and whatever you nail together to bridge the gaps. Every other mode
+treats building as something you do to help you fight. This one has no fighting
+in it, and building is the only way to move at all.
 
 ```bash
 npm install
@@ -19,10 +80,10 @@ npm run dev      # http://localhost:5173
 
 | | |
 |---|---|
-| `WASD` | move |
-| `Space` | jump |
+| `WASD` / arrows | move |
+| `Space` | jump — and, against a ledge you can reach, haul yourself over it |
 | `Shift` | sprint |
-| `Ctrl` / `C` | crouch (also fine-placement mode while building) |
+| `Ctrl` | crouch (also fine-placement mode while building) |
 | `LMB` | place part — hold to keep placing; throw or soak once the fighting starts |
 | `RMB` | remove the part under the crosshair |
 | `Alt` | free aim — suspend snapping entirely |
@@ -33,13 +94,31 @@ npm run dev      # http://localhost:5173
 | `Tab` (hold) | part wheel — flick a direction, let go; picks your water kit during a fight |
 | `1`–`8`, scroll | choose a part |
 | `Shift` + wheel | change colour |
-| `V` | first ⇄ third person |
 | `G` | repeat the last step — hold to run a chain |
-| `Esc` | pause |
+| `M` / `N` | next blueprint / save what you are looking at |
+| `V` | first ⇄ third person |
 | `F` | undo |
+| `C` (hold) | push to talk |
+| `MMB` | ping whatever you are looking at |
+| `Enter` / `Y` | say something / say it to your team only |
+| `B` | emotes |
+| `Esc` | pause |
 | `` ` `` | debug overlay |
 
-Every binding above is remappable in Settings → Controls.
+**Settings → Locker** is where you decide what you look like: skin, eyes, brows
+and mouth, eight haircuts in twelve colours, shirt, trousers and shoes, head
+size and build on sliders that stay inside the model, and a mark painted on your
+chest, back or either sleeve. You are the preview — the kid standing on the lawn
+behind the card is the real one, and everything is worn the moment you pick it.
+Keep up to twelve outfits and put one back on in a click. In a game with teams
+you wear your team's shirt so everybody can tell who is who; the rest is yours
+all round.
+
+**Every control has two keys and both are yours.** Settings → Controls lists all
+thirty-seven of them in six groups; click either key to change it, `Backspace`
+to leave a control on one key, `Esc` to back out. Binding a key something else
+already has takes it, and the screen says which control lost it rather than
+letting a binding quietly stop working.
 
 ### Controller
 
@@ -79,6 +158,117 @@ placing parts, so you are never fumbling between two things on one button. The
 on-screen hints follow, because half the build keys do nothing while you are
 holding a soaker and a player who tries them learns the wrong lesson.
 
+## Playing with other people
+
+Two browsers, one lawn. Start the server, then swap codes with somebody:
+
+```bash
+npm run server                 # ws://localhost:8787
+```
+
+Then **Play With Friends**, which is the way it is meant to be used: the server
+hands you a short code, you swap codes with somebody, and a queue puts you both
+in a yard together. **Host a Yard** and **Join a Yard** stay underneath it for
+two people on one network who would rather not involve a matchmaker at all.
+
+The one process serves both: a `/lobby` that knows about players, and the relay
+on every other path that knows only about sockets. The lobby's only output is a
+room name — it gathers people, elects a host and steps back — so a lobby that
+fell over could not interrupt a match already running.
+
+**Identity is a friend code, not an account.** Your browser makes a uuid on
+first run and the server maps it to a short shareable code; there is no email,
+no password and no database beyond the lobby's own memory. It is worth being
+plain that this is *not* authentication — a uuid in localStorage is a bearer
+credential, and whoever holds it is you. That is affordable only because nothing
+of value hangs off it: a code buys a place in somebody's list and a way to be
+invited to a game of tag.
+
+A party is the unit the queue moves, and it is **never split** across two
+matches — being separated from the friend you queued with is worse than waiting
+longer, so the matchmaker overshoots the target rather than taking half a party
+to hit it exactly.
+
+The relay carries bytes between browsers and knows nothing about the game — it
+never parses a message, so the protocol can change without touching it. It is a
+development server: no TLS, no auth, and no rate limiting beyond a frame cap.
+
+**Host-authoritative.** One player's browser runs the simulation and everybody
+else follows it. That is a real trade — the host cannot be stopped from cheating,
+and closing their tab ends the round — bought for two things worth more right
+now: no deploy target to pay for, and no dependence on two CPUs agreeing about a
+square root. The determinism tests prove a round replays identically *in one
+process*; they say nothing about float portability, and lockstep would depend on
+exactly that.
+
+**Guests predict and are corrected.** A guest moves the moment you press a key,
+and when a snapshot says where it really was at tick T it puts the body back
+there and replays every input since — so a correction moves you by the size of
+the error, not the size of the latency. In practice that is under two
+centimetres on a good connection, even though the host disagrees on every single
+snapshot: it is always at least one tick behind, because it cannot run a command
+it has not received yet.
+
+**Everyone else is interpolated, never simulated.** Remote players are drawn 120
+milliseconds behind live. That looks less smooth than extrapolating between
+packets and is more honest: it is always showing something that really happened,
+and the alternative drifts most exactly when the network is worst.
+
+Building goes through the host too. A guest asks, the host decides, and the
+answer reaches everybody — which is what stops two people building into the same
+space from opposite sides of a wall and ending up with two different worlds. Part
+ids are translated per machine, because two stores allocate them independently
+and "remove part 7" otherwise means two different planks.
+
+**Every mode is played together.** The host picks what to play and everybody
+joins it within a snapshot — the same phase, the same clock, the same score, the
+same objectives on the compass, the same result screen at the end. A guest never
+runs the rules. It wears a `RemoteMode`, which is a `GameMode` that computes
+nothing and answers every question from the last thing the host said, so the HUD
+and the renderer go through code that has no idea a network is involved. That
+only works because modes have never rendered: they publish state and the
+presentation layer reads it, which was written down as the thing that would one
+day let a server run a mode headlessly.
+
+The wood is one pile in the corner of the yard that everybody draws from. A
+per-player allowance would mean two people building the same fort hit their own
+limits at different moments, which is a strange thing to explain and a stranger
+thing to play.
+
+**You cannot pause a game other people are playing.** Opening a menu in a session
+takes the cursor and the controls and leaves the world running. Freezing the loop
+would stop a guest hearing about the round at all, while the host — which has no
+idea a menu is open — went on walking their character from the last command it
+received.
+
+**Everybody fights, out of a tank of their own.** Every mode used to carry one
+`tank`, one `ammo`, one wind-up and one soaked timer, which is the same thing as
+saying it had room for one pair of hands. They are keyed by actor now, so a
+guest throws, soaks, gets soaked, is sent home and comes back on exactly the
+rules the host plays by — and the host slows a soaked guest by the same rule
+that slows a soaked host.
+
+Nothing new goes over the wire to make that work. A command already carried a
+trigger, a yaw and a pitch; the host read the position and threw the rest away.
+Two things do get sent back. The first is each peer's own four personal numbers
+— tank, wetness, wind-up, refill — because those are the four a guest's HUD
+showed as blank, and the reason was sound: a needle describing somebody else is
+not a meter. The answer was to ask the host the question *per peer* rather than
+to mirror its own. The second is the balloons in the air, because a guest runs
+no projectile simulation at all, so without them the lawn was silent and the
+first sign of an incoming throw was being wet.
+
+Kids now aim at whoever is nearest rather than at whoever is hosting. And people
+and bots are numbered out of separate ranges, which sounds like bookkeeping and
+is not: both allocators started at 1, so with one guest in the yard the guest and
+the first kid of the first raid were the same actor id. Nothing threw. The
+roster answered with whichever was added first and a player got dragged toward a
+bot.
+
+Not yet: repeat-place and undo are host-only, and only your own stream is drawn
+— everybody else's hose is computed and published but nothing draws it, which is
+a missing draw call rather than a missing rule.
+
 ## Wood costs something
 
 In a mode you are handed a pile of lumber — a hundred and twenty planks — and
@@ -97,16 +287,44 @@ with a ring of planks stood on edge:
 | what was built | planks | water kept |
 |---|---|---|
 | nothing | 0 | 0% |
-| rings 1.0m high — a kid vaults them | 60 | 0% |
-| rings 1.75m high, two metres out | 120 | 51% |
-| the same rings taken to 4m | 313 | 51% |
-| rings built 4.2m out instead of 2m | 682 | 20% |
+| rings 0.50m high — a kid steps over them | 27 | 0% |
+| rings 0.75m high, two metres out | 46 | 9% |
+| rings 1.25m high, two metres out | 86 | 51% |
+| the same rings taken to 2m | 149 | 51% |
+| rings 1.25m high built 4.2m out instead | 204 | 20% |
 
-Building is worth doing. Height stops mattering once a kid can no longer
-scramble up, so 120 buys exactly that and no more. And more wood is not better
-wood — the six-hundred-plank version does worse than the hundred-and-twenty
-plank one, because what stops a kid is a closed ring near the tap and not a
-bigger wall further from it. Free lumber made none of that a choice.
+Three things fall out of that. **Building is worth doing** — nothing to
+fifty-one per cent is the difference between losing and winning. **A wall pays
+from the first course a kid cannot step over**, which is 0.55m, and stops paying
+the moment they cannot see the tap over it; the sixty planks between 1.25m and
+2m buy nothing at all. And **more wood is not better wood**: rings built further
+out cost twice as much and do worse, because what stops a kid is something solid
+between them and the water, not a bigger wall further from it.
+
+### The measurement that found a broken rule
+
+That table used to say something different, and the difference was not a tuning
+pass. Draining a tap needed nothing but standing within 3.2m of it — and a ring
+a player would naturally build sits *inside* that, so kids stood against the
+outside of a finished wall and emptied the tap straight through it.
+
+The payoff was therefore a cliff rather than a curve. Swept by height, every
+wall up to a metre kept **exactly 0%** and a 1.25m one kept 51%: sixty-five
+planks bought literally nothing and the next twenty bought the round, with
+nothing on screen to say why. Swept by radius it was worse than arbitrary —
+61%, 51%, 74%, 8.8%, 20% at 1.6m, 2.0m, 2.6m, 3.6m and 4.2m — a shape no player
+could learn, because it was not really measuring the wall at all.
+
+Kids have to be able to *reach* the water now. It costs one raycast per kid per
+tick and it makes a wall work because it is a wall.
+
+The old table also explained the budget in terms of `MANTLE_MAX_HEIGHT`, on the
+grounds that a wall is worth building once a kid can no longer scramble over it.
+**Nothing in this game implements mantling.** The constant is read by no code at
+all; the only vertical traversal is the 0.55m step-up and climbing a ladder. It
+had sat there long enough to size a budget and write a design note, which is the
+particular danger of a constant that describes a mechanic nobody wrote: it reads
+as a decision, so everything downstream trusts it.
 
 Free Build has no budget. It is where you go to just make things.
 
@@ -332,20 +550,29 @@ src/
   physics/     spatial hash, capsule-vs-OBB collision, part store, collision world
   player/      character controller, camera rig
   build/       part kit, snapping, build system, the lumber budget
+  net/         wire format, transports, host and guest sessions
   render/      cel shading, procedural geometry, instanced meshes
   world/       neighborhood map, scene, starter structures
-  game/        game modes, actors and teams, bots, flow-field navigation, projectiles
+  game/        game modes, actors and teams, per-person combat state, bots,
+               flow-field navigation, projectiles
   audio/       synthesized sound
-  app/         settings, persistence, crash handling
+  app/         settings, persistence, identity, crash handling
   ui/          design tokens, HUD, menus, radial part picker
+server/
+  serve.ts     one process: the relay, and the lobby on /lobby
+  websocket.ts the parts of RFC 6455 both of them stand on
+  relay.ts     carries bytes between browsers; never parses a game message
+  lobbyCore.ts friends, parties and the matchmaker, with no socket in sight
+  lobby.ts     the socket wiring around it
 tools/
   shoot.mjs    headless screenshot + smoke-test harness
+  imgdiff.mjs  counts changed pixels between two PNGs
   bench.ts     simulation cost per tick, at 3000 parts
 scenarios/     scripted checks driven through the harness
 ```
 
 ```bash
-npm test         # 547 unit tests
+npm test         # 650 unit tests
 npm run typecheck
 npm run bench    # what a tick costs, as a share of the 16.67ms budget
 node tools/shoot.mjs --out shots/x.png   # boot headless, screenshot, fail on any console error
@@ -360,9 +587,56 @@ whether emptying a water tank and refilling it from a paddling pool works once
 the mode, the shell and the HUD are wired together, whether a second person in
 the world reaches the renderer's instance buffers wearing the right shirt,
 whether the HUD can actually point at an objective that is behind you,
-whether running out of wood is ever visible to the player rather than just true. Each only
-happens in a browser, and each has broken at least once with the unit suite
-green.
+whether running out of wood is ever visible to the player rather than just true,
+whether somebody who joined over the network is ever actually drawn, whether a
+round somebody else is running reaches your banner and your compass, whether the
+ground's vertex colours survive the toon shader. Each only happens in a browser,
+and each has broken at least once with the unit suite green.
+
+The reverse is worth stating too, because two claims from the lawn pass were
+written as scenarios first and then moved out. Grass growing up through the
+street is invisible from directly overhead — the blades are edge-on and cover
+half a per cent of the frame — and "the lawn is many colours" passes on a
+perfectly flat lawn, because ten thousand individually tinted grass clumps put
+hundreds of colours on screen by themselves. Both now live in the unit suite,
+checked against positions and tone spreads rather than pixels. A browser
+assertion that cannot fail is worse than no assertion, and the way to find out
+is to take the fix back out and watch.
+
+## Where it goes next
+
+A review of the whole project and the plan that came out of it — what is strong,
+what is weak, what the genre knows that this does not, and the order to do it in
+— is in [`docs/roadmap.md`](docs/roadmap.md).
+
+## The developer build
+
+`npm run dev` and `npm run build:tools` include a tuning panel on **F8**: a
+slider for every registered knob, live, with `Copy changes` putting the changed
+values on the clipboard as lines to paste back into the source.
+
+`npm run build` does not include it, and that is the gate — the code is not in
+the output rather than hidden behind a flag, because anything shipped to a
+browser can be read by anybody who opens the console. `npm run check:public`
+proves it against the built bundle and CI runs it on every commit.
+
+Adding a knob is one `register` call beside the code that reads it; the panel is
+built from whatever is registered by the time it opens.
+
+## Why things are the way they are
+
+Per-feature engineering notes — what each system does, why it is shaped that
+way, and what it cost — are in [`docs/notes.md`](docs/notes.md). They are the
+long-form companion to this file: this one says how to work on the project, that
+one says how it got here.
+
+## What the tests could not see
+
+Checks on this project that **passed for the wrong reason**, and red builds that
+turned out to be the check's fault rather than the game's, are written up in
+[`docs/verification.md`](docs/verification.md). A test that cannot fail is worse
+than none, and the only way that stays true is if the ones caught doing it are
+written down where the next person will read them.
 
 ## Design notes
 
@@ -444,12 +718,14 @@ and around forever — every decision right, the result unusable. Shadows and
 outlines are never touched; they are how the game looks, and that is the
 player's call.
 
-**Multiplayer is not built, but it is not blocked.** Simulation runs on a fixed
-timestep with no `Math.random` in anything affecting world state. Placement is
-split into intent and application: `place()` returns a plain JSON-safe record
-quantized to a millimetre, and `applyPlace()` is the only thing that mutates the
-world. That is the seam a server would authorise against, and the same records
-are the save format.
+**The seams multiplayer was built on are still the right ones for a server.**
+Simulation runs on a fixed timestep with no `Math.random` in anything affecting
+world state. Placement is split into intent and application: `place()` returns a
+plain JSON-safe record quantized to a millimetre, and `applyPlace()` is the only
+thing that mutates the world — the seam a server would authorise against, and
+the same records are the save format. Input is split the same way: a mode reads
+`input.of(actorId)` and never touches a camera, so the machine firing a balloon
+does not have to be the machine the player is sitting at.
 
 ## Known limitations
 

@@ -37,8 +37,12 @@
  */
 
 import { Bot, BOT_TIERS, type BotConfig } from './bot.ts';
+import { FIRST_BOT_ID, LOCAL_ACTOR_ID, type Actor } from './actor.ts';
+import { Fighters, isFighter, type Fighter } from './fighters.ts';
 import { SPLASH_RADIUS, type BalloonTarget } from './projectiles.ts';
-import type { GameMode, Loadout, Marker, ModeContext, ModeHud, ModeInput, ModeSummary } from './gameMode.ts';
+import type {
+  ActorInput, GameMode, Loadout, Marker, ModeContext, ModeHud, ModeInput, ModeSelfHud, ModeSummary,
+} from './gameMode.ts';
 import { CAP_HEIGHT, CAP_RADIUS } from '../physics/constants.ts';
 import { NavField } from './navField.ts';
 import { Lumber, STARTING_LUMBER, PHASE_DELIVERY, LUMBER_CAP } from '../build/lumber.ts';
@@ -113,7 +117,14 @@ export interface SourceState {
   water: number;
 }
 
-const PLAYER_ID = 0;
+/**
+ * How close to a tap counts as being at it, whatever is in the way.
+ *
+ * Every source is a solid prop, so a sight line aimed at one ends on the prop.
+ * This is where the check stops looking — big enough to clear the pool rim and
+ * the barrel, small enough that a wall built round a tap is still outside it.
+ */
+const SOURCE_EDGE = 1.5;
 
 export class WaterWarMode implements GameMode {
   readonly id = 'waterWar';
@@ -130,24 +141,37 @@ export class WaterWarMode implements GameMode {
   /** Which source each kid is walking to, by bot id. */
   private readonly assignments = new Map<number, number>();
   private readonly respawns = new Map<number, number>();
-  /** Wetness for every kid, by bot id, and for the player. */
+  /** Wetness for every kid, by bot id. */
   private readonly botWet = new Map<number, WetnessState>();
-  private readonly playerWet = makeWetness();
+  /**
+   * Tank, wetness and soaked-timer for every *person* in the yard.
+   *
+   * One entry, not one set of fields — which is the entire difference between a
+   * guest watching this mode and a guest playing it. There used to be a `tank`,
+   * and a tank is a thing exactly one person can drink from.
+   */
+  private readonly fighters = new Fighters(TANK_MAX);
 
   private timer = BUILD_TIME;
   private message: string | null = null;
   private messageTimer = 0;
 
+  /** What the person at this keyboard is holding. */
   weapon: WeaponId = 'soaker';
-  private tank = TANK_MAX;
-  private throwCooldown = 0;
-  private playerOut = 0;
-  /** Set while the stream is firing, for the renderer. */
-  streamTo: { x: number; y: number; z: number } | null = null;
+  /** And what everybody else is, taken from the slot in their command. */
+  private readonly held = new Map<number, WeaponId>();
+  /**
+   * Where each person's stream currently ends, for the renderer.
+   *
+   * A map because a hose is not the local player's alone any more, and the one
+   * that matters most is a guest's — the host computes their stream, so without
+   * an entry of their own a guest would hold down the trigger and see no water.
+   */
+  private readonly streams = new Map<number, { x: number; y: number; z: number }>();
   private streamHitSomething = false;
   private splashTimer = 0;
 
-  private nextBotId = 1;
+  private nextBotId = FIRST_BOT_ID;
   /**
    * One field per source, because each is a fixed goal and a flow field is
    * defined by its goal. Fixed goals are also why the nav cache actually works
@@ -168,16 +192,19 @@ export class WaterWarMode implements GameMode {
     this.timer = BUILD_TIME;
     this.finished = false;
     this.won = false;
-    this.tank = TANK_MAX;
     this.weapon = 'soaker';
-    this.playerOut = 0;
-    this.streamTo = null;
+    this.held.clear();
+    this.streams.clear();
     for (const s of this.sources) s.water = SOURCE_MAX;
     this.bots.length = 0;
     this.assignments.clear();
     this.respawns.clear();
     this.botWet.clear();
-    resetWetness(this.playerWet);
+    // Reset rather than clear: everybody who is in the yard is still in it, and
+    // dropping the map would give each of them a fresh entry the first time
+    // they were asked about — which is the same numbers, one tick later, and a
+    // guest's HUD blank for that tick.
+    this.fighters.reset();
     this.lumber.set(STARTING_LUMBER);
     this.setMessage('Three taps, one afternoon. Fortify what you can reach.', 7);
     ctx.emit({ type: 'phaseChange', phase: 'build' });
@@ -186,7 +213,7 @@ export class WaterWarMode implements GameMode {
   end(ctx: ModeContext): void {
     this.bots.length = 0;
     this.respawns.clear();
-    this.streamTo = null;
+    this.streams.clear();
     ctx.projectiles.clear();
   }
 
@@ -198,19 +225,20 @@ export class WaterWarMode implements GameMode {
 
     this.messageTimer -= dt;
     if (this.messageTimer <= 0) this.message = null;
-    this.throwCooldown -= dt;
-    this.streamTo = null;
+    this.streams.clear();
 
-    tickWetness(this.playerWet, dt);
+    this.fighters.tick(dt, (f) => this.revive(ctx, f));
     for (const w of this.botWet.values()) tickWetness(w, dt);
 
-    if (this.playerOut > 0) {
-      this.playerOut -= dt;
-      if (this.playerOut <= 0) this.revivePlayer(ctx);
+    // Everybody who is not a bot, in one pass. Written as a loop over the
+    // roster rather than as a line about the player, because the roster is the
+    // only thing that knows how many people are in the yard.
+    for (const who of ctx.actors.all) {
+      if (!isFighter(who)) continue;
+      const fighter = this.fighters.of(who.id);
+      this.updateTank(dt, ctx, who, fighter);
+      this.updateFiring(dt, ctx, who, fighter, input.of(who.id));
     }
-
-    this.updateTank(dt, ctx);
-    this.updateFiring(dt, ctx, input);
 
     switch (this.phase) {
       case 'build':
@@ -282,7 +310,7 @@ export class WaterWarMode implements GameMode {
     this.phase = 'over';
     this.finished = true;
     this.won = won;
-    this.streamTo = null;
+    this.streams.clear();
     this.setMessage(won ? 'Sun down. You kept the water.' : 'Every tap dry.', 8);
     ctx.emit({ type: won ? 'roundWon' : 'roundLost' });
   }
@@ -344,20 +372,28 @@ export class WaterWarMode implements GameMode {
       bot.targetY = 0;
       bot.targetZ = source.z;
 
-      const atSource = Math.hypot(bot.x - source.x, bot.z - source.z) <= SOURCE_RADIUS;
+      const atSource = Math.hypot(bot.x - source.x, bot.z - source.z) <= SOURCE_RADIUS
+        && this.canReach(ctx, bot, source);
       if (atSource && source.water > 0) {
         source.water = Math.max(0, source.water - DRAIN_RATE * dt);
         // Bucket full: they head for the next one worth taking.
         if (source.water <= DRY) this.reassign(bot.id, index);
       }
 
-      const canSee = this.canSeePlayer(ctx, bot);
-      bot.aimX = ctx.player.x;
-      bot.aimY = ctx.player.y + CAP_HEIGHT * 0.6;
-      bot.aimZ = ctx.player.z;
-      bot.hasAim = canSee && this.playerOut <= 0;
+      // Whoever is nearest and in the open, rather than always the host. A kid
+      // that could only ever throw at the player was correct while the player
+      // was the only person on the lawn; with a guest in the yard it means one
+      // of the two humans is being shot at and the other is a spectator with
+      // legs.
+      const mark = this.nearestVisible(ctx, bot);
+      if (mark !== null) {
+        bot.aimX = mark.controller.x;
+        bot.aimY = mark.controller.y + CAP_HEIGHT * 0.6;
+        bot.aimZ = mark.controller.z;
+      }
+      bot.hasAim = mark !== null;
 
-      bot.update(dt, ctx.projectiles, canSee, this.nav[index]!);
+      bot.update(dt, ctx.projectiles, mark !== null, this.nav[index]!);
     }
   }
 
@@ -398,25 +434,87 @@ export class WaterWarMode implements GameMode {
     }
   }
 
-  private canSeePlayer(ctx: ModeContext, bot: Bot): boolean {
-    const dx = ctx.player.x - bot.x;
-    const dy = ctx.player.y + CAP_HEIGHT * 0.6 - (bot.y + CAP_HEIGHT * 0.75);
-    const dz = ctx.player.z - bot.z;
+  /**
+   * Can this kid actually get their bucket into the water?
+   *
+   * Being within `SOURCE_RADIUS` used to be the whole test, and that one line is
+   * why the mode's entire fortification economy did not work. A tap is drained
+   * from 3.2m away, and a ring of planks a player would naturally build sits
+   * *inside* that — so kids stood against the outside of a finished wall and
+   * emptied the tap straight through it.
+   *
+   * The symptoms were strange enough to be worth recording, because they all
+   * come from here. Measured over a full afternoon with the player standing
+   * still, the water kept went 61% at a 1.6m ring, 51% at 2.0m, 74% at 2.6m,
+   * 8.8% at 3.6m and 20% at 4.2m — no curve a player could ever learn, because
+   * it was not really measuring the wall. And wall *height* did nothing at all
+   * above the first metre: 1.25m and 2.00m rings gave results identical to
+   * three significant figures at every radius, so the second hundred planks a
+   * player spent going higher bought exactly nothing.
+   *
+   * A line of sight is the cheapest honest fix. It makes a wall work because it
+   * is a wall — something solid between a kid and the tap — rather than because
+   * of where the nav grid happened to leave a gap. Raycasts cost 0.0036ms and
+   * this is one per kid per tick.
+   */
+  private canReach(ctx: ModeContext, bot: Bot, source: SourceState): boolean {
+    // From the bucket, roughly, to the water. Low on both ends on purpose: a
+    // knee-high wall is not a wall, and measuring eye-to-tap would let a kid
+    // "reach" over anything they could see across.
+    const fromY = bot.y + CAP_HEIGHT * 0.35;
+    const dx = source.x - bot.x;
+    const dy = 0.35 - fromY;
+    const dz = source.z - bot.z;
     const distance = Math.hypot(dx, dy, dz);
-    if (distance > 18) return false;
-    const hit = ctx.world.raycast(bot.x, bot.y + CAP_HEIGHT * 0.75, bot.z, dx, dy, dz, distance);
-    return hit === null || hit.distance >= distance - CAP_RADIUS;
+
+    // Stop short of the tap itself, and this is the whole trick rather than a
+    // tolerance. Every source *is* a solid prop — a paddling pool has a rim, a
+    // rain barrel is a barrel — so a ray aimed at the middle of one always ends
+    // by hitting it. The first version of this did exactly that and blocked
+    // every kid on the map from ever drinking: an empty lawn with no wall on it
+    // kept 66% of its water, which is a better result than any fort, and is the
+    // kind of number a control case exists to produce.
+    const reach = distance - SOURCE_EDGE;
+    if (reach <= 0) return true;
+    const hit = ctx.world.raycast(bot.x, fromY, bot.z, dx, dy, dz, reach);
+    return hit === null || hit.distance >= reach - CAP_RADIUS;
+  }
+
+  /** The closest person this kid can actually see, or null. */
+  private nearestVisible(ctx: ModeContext, bot: Bot): Actor | null {
+    let best: Actor | null = null;
+    let bestDistance = Infinity;
+    for (const who of ctx.actors.all) {
+      if (!isFighter(who)) continue;
+      if (this.fighters.isOut(who.id)) continue;
+      const body = who.controller;
+      const dx = body.x - bot.x;
+      const dy = body.y + CAP_HEIGHT * 0.6 - (bot.y + CAP_HEIGHT * 0.75);
+      const dz = body.z - bot.z;
+      const distance = Math.hypot(dx, dy, dz);
+      if (distance > 18 || distance >= bestDistance) continue;
+      const hit = ctx.world.raycast(bot.x, bot.y + CAP_HEIGHT * 0.75, bot.z, dx, dy, dz, distance);
+      if (hit !== null && hit.distance < distance - CAP_RADIUS) continue;
+      best = who;
+      bestDistance = distance;
+    }
+    return best;
   }
 
   // ── Water and weapons ──────────────────────────────────────────────────────
 
-  /** The source you are standing at, or -1. */
+  /** The source the local player is standing at, or -1. For the HUD. */
   get atSource(): number {
-    return this.nearestSourceTo(this.playerX, this.playerZ);
+    return this.sourceUnder(LOCAL_ACTOR_ID);
   }
 
-  private playerX = 0;
-  private playerZ = 0;
+  /** Where each person was last seen, so `atSource` can answer without a roster. */
+  private readonly standing = new Map<number, { x: number; z: number }>();
+
+  private sourceUnder(actorId: number): number {
+    const at = this.standing.get(actorId);
+    return at === undefined ? -1 : this.nearestSourceTo(at.x, at.z);
+  }
 
   private nearestSourceTo(x: number, z: number): number {
     for (let i = 0; i < this.sources.length; i++) {
@@ -426,44 +524,70 @@ export class WaterWarMode implements GameMode {
     return -1;
   }
 
-  private updateTank(dt: number, ctx: ModeContext): void {
-    this.playerX = ctx.player.x;
-    this.playerZ = ctx.player.z;
+  private updateTank(dt: number, ctx: ModeContext, who: Actor, self: Fighter): void {
+    void ctx;
+    const body = who.controller;
+    this.standing.set(who.id, { x: body.x, z: body.z });
 
-    const at = this.atSource;
-    if (at === -1 || this.playerOut > 0) return;
+    const at = this.sourceUnder(who.id);
+    if (at === -1 || self.out > 0) return;
     const source = this.sources[at]!;
-    if (source.water <= DRY || this.tank >= TANK_MAX) return;
+    if (source.water <= DRY || self.ammo >= TANK_MAX) return;
 
-    const want = Math.min(REFILL_RATE * dt, TANK_MAX - this.tank);
-    this.tank += want;
+    const want = Math.min(REFILL_RATE * dt, TANK_MAX - self.ammo);
+    self.ammo += want;
     // Filling costs the source. Not much, but enough that camping one pool is
     // draining the thing you are camping.
     source.water = Math.max(0, source.water - REFILL_DRAW * dt * (want / (REFILL_RATE * dt || 1)));
   }
 
-  /** True when the held weapon can actually be used right now. */
+  /** True when the local player's held weapon can actually be used right now. */
   get weaponReady(): boolean {
-    const w = WEAPONS[this.weapon];
-    if (w.tethered) return this.atSource !== -1;
-    return this.tank >= (w.continuous ? 1 : w.cost);
+    return this.readyFor(LOCAL_ACTOR_ID, this.weapon);
+  }
+
+  private readyFor(actorId: number, id: WeaponId): boolean {
+    const w = WEAPONS[id];
+    if (w.tethered) return this.sourceUnder(actorId) !== -1;
+    const tank = this.fighters.of(actorId).ammo;
+    return tank >= (w.continuous ? 1 : w.cost);
   }
 
   selectWeapon(id: WeaponId): void {
     this.weapon = id;
   }
 
-  private updateFiring(dt: number, ctx: ModeContext, input: ModeInput): void {
-    if (this.phase === 'build' || this.phase === 'lull' || this.phase === 'over') return;
-    if (this.playerOut > 0) return;
+  /**
+   * What somebody is holding.
+   *
+   * The local player's choice comes off the wheel they clicked. Everybody
+   * else's rides in their command, because a picker is a per-tick statement of
+   * will exactly like a movement axis — and a guest who could only ever hold
+   * the starting soaker would be playing a strictly smaller game than the host.
+   */
+  private weaponOf(actorId: number): WeaponId {
+    if (actorId === LOCAL_ACTOR_ID) return this.weapon;
+    return this.held.get(actorId) ?? 'soaker';
+  }
 
-    const weapon = WEAPONS[this.weapon];
+  private updateFiring(
+    dt: number, ctx: ModeContext, who: Actor, self: Fighter, input: ActorInput,
+  ): void {
+    if (input.slot !== undefined && who.id !== LOCAL_ACTOR_ID) {
+      const picked = WEAPON_ORDER[input.slot];
+      if (picked !== undefined) this.held.set(who.id, picked);
+    }
+    if (this.phase === 'build' || this.phase === 'lull' || this.phase === 'over') return;
+    if (self.out > 0) return;
+
+    const id = this.weaponOf(who.id);
+    const weapon = WEAPONS[id];
     if (weapon.continuous) {
-      if (input.fire && this.weaponReady) this.fireStream(dt, ctx, weapon.id);
+      if (input.fire && this.readyFor(who.id, id)) this.fireStream(dt, ctx, who, self, input, id);
       return;
     }
-    if (input.firePressed && this.throwCooldown <= 0 && this.tank >= weapon.cost) {
-      this.throwBalloon(ctx);
+    if (input.firePressed && self.cooldown <= 0 && self.ammo >= weapon.cost) {
+      this.throwBalloon(ctx, who, self, input);
     }
   }
 
@@ -473,24 +597,28 @@ export class WaterWarMode implements GameMode {
    * Stopped by the world is the whole point — it is what makes a plank worth
    * nailing up, and what the balloon exists to get around.
    */
-  private fireStream(dt: number, ctx: ModeContext, id: WeaponId): void {
+  private fireStream(
+    dt: number, ctx: ModeContext, who: Actor, self: Fighter, input: ActorInput, id: WeaponId,
+  ): void {
     const weapon = WEAPONS[id];
     if (weapon.cost > 0) {
-      const spend = Math.min(this.tank, weapon.cost * dt);
+      const spend = Math.min(self.ammo, weapon.cost * dt);
       if (spend <= 0) return;
-      this.tank -= spend;
+      self.ammo -= spend;
     }
 
-    const dir = ctx.camera.getLookDirection();
-    const ox = ctx.player.x;
-    const oy = ctx.player.y + EYE_HEIGHT;
-    const oz = ctx.player.z;
+    const dir = { x: input.aimX, y: input.aimY, z: input.aimZ };
+    const body = who.controller;
+    const ox = body.x;
+    const oy = body.y + EYE_HEIGHT;
+    const oz = body.z;
 
     let reach = weapon.range;
     const blocked = ctx.world.raycast(ox, oy, oz, dir.x, dir.y, dir.z, weapon.range);
     if (blocked !== null) reach = blocked.distance;
 
-    this.streamTo = { x: ox + dir.x * reach, y: oy + dir.y * reach, z: oz + dir.z * reach };
+    const end = { x: ox + dir.x * reach, y: oy + dir.y * reach, z: oz + dir.z * reach };
+    this.streams.set(who.id, end);
     this.streamHitSomething = false;
 
     // Everything the ray passes close to, within its reach.
@@ -522,7 +650,7 @@ export class WaterWarMode implements GameMode {
       this.splashTimer -= dt;
       if (this.splashTimer <= 0) {
         this.splashTimer = SPLASH_INTERVAL;
-        ctx.emit({ type: 'splash', x: this.streamTo.x, y: this.streamTo.y, z: this.streamTo.z });
+        ctx.emit({ type: 'splash', x: end.x, y: end.y, z: end.z });
       }
     } else {
       // Reset, so re-acquiring a target splashes immediately rather than
@@ -531,16 +659,18 @@ export class WaterWarMode implements GameMode {
     }
   }
 
-  private throwBalloon(ctx: ModeContext): void {
+  private throwBalloon(ctx: ModeContext, who: Actor, self: Fighter, input: ActorInput): void {
     const weapon = WEAPONS.balloon;
-    this.tank -= weapon.cost;
-    this.throwCooldown = weapon.cooldown;
+    self.ammo -= weapon.cost;
+    self.cooldown = weapon.cooldown;
 
-    const dir = ctx.camera.getLookDirection();
-    const ox = ctx.player.x + dir.x * 0.6;
-    const oy = ctx.player.y + CAP_HEIGHT * 0.8;
-    const oz = ctx.player.z + dir.z * 0.6;
-    ctx.projectiles.spawn(ox, oy, oz, dir.x, dir.y + 0.08, dir.z, 19, PLAYER_ID);
+    const body = who.controller;
+    const ox = body.x + input.aimX * 0.6;
+    const oy = body.y + CAP_HEIGHT * 0.8;
+    const oz = body.z + input.aimZ * 0.6;
+    // Owned by whoever threw it, so it passes through them and not through the
+    // person next to them.
+    ctx.projectiles.spawn(ox, oy, oz, input.aimX, input.aimY + 0.08, input.aimZ, 19, who.id);
     ctx.emit({ type: 'throw', x: ox, y: oy, z: oz });
   }
 
@@ -552,19 +682,28 @@ export class WaterWarMode implements GameMode {
     ctx.emit({ type: 'botSoaked', x: bot.x, y: bot.y + 1, z: bot.z });
   }
 
-  private soakPlayer(ctx: ModeContext, from?: { x: number; y: number; z: number }): void {
-    if (this.playerOut > 0) return;
-    this.playerOut = PLAYER_SOAKED_TIME;
-    this.streamTo = null;
-    ctx.emit({ type: 'playerSoaked', x: from?.x, y: from?.y, z: from?.z });
-    this.setMessage('Drenched! Back in a moment.', 2.5);
+  private soakFighter(
+    ctx: ModeContext, self: Fighter, from?: { x: number; y: number; z: number },
+  ): void {
+    if (self.out > 0) return;
+    self.out = PLAYER_SOAKED_TIME;
+    this.streams.delete(self.id);
+    // Only the person it happened to hears about it. The event drives this
+    // machine's screen flash and the arrow pointing at whoever got you, and
+    // firing it for a guest being soaked in another garden would flash the
+    // host's screen for something that did not happen to them.
+    if (self.id === LOCAL_ACTOR_ID) {
+      ctx.emit({ type: 'playerSoaked', x: from?.x, y: from?.y, z: from?.z });
+      this.setMessage('Drenched! Back in a moment.', 2.5);
+    }
   }
 
-  private revivePlayer(ctx: ModeContext): void {
-    resetWetness(this.playerWet);
+  private revive(ctx: ModeContext, self: Fighter): void {
+    resetWetness(self.wet);
     // Half a tank, so being soaked is never a shortcut to a full one.
-    this.tank = Math.max(this.tank, RESPAWN_TANK);
-    ctx.player.teleport(FORT_YARD.x, 0.6, FORT_YARD.z - 4);
+    self.ammo = Math.max(self.ammo, RESPAWN_TANK);
+    const who = ctx.actors.get(self.id);
+    who?.controller.teleport(FORT_YARD.x, 0.6, FORT_YARD.z - 4);
   }
 
   private updateProjectiles(dt: number, ctx: ModeContext): void {
@@ -572,11 +711,13 @@ export class WaterWarMode implements GameMode {
     for (const bot of this.bots) {
       if (bot.alive) this.targets.push(bot.asTarget());
     }
-    if (this.playerOut <= 0) {
+    for (const who of ctx.actors.all) {
+      if (!isFighter(who) || this.fighters.of(who.id).out > 0) continue;
+      const body = who.controller;
       this.targets.push({
-        x: ctx.player.x, y: ctx.player.y, z: ctx.player.z,
+        x: body.x, y: body.y, z: body.z,
         radius: CAP_RADIUS, height: CAP_HEIGHT,
-        id: PLAYER_ID, alive: true,
+        id: who.id, alive: true,
       });
     }
 
@@ -610,9 +751,13 @@ export class WaterWarMode implements GameMode {
   ): void {
     if (target === undefined || amount <= 0) return;
 
-    if (target.id === PLAYER_ID) {
-      soak(this.playerWet, amount);
-      if (isSoaked(this.playerWet)) this.soakPlayer(ctx, from);
+    // People and kids are told apart by which range the id came out of — see
+    // FIRST_BOT_ID. Asking the fighters map rather than comparing against a
+    // single player id is what lets a guest be hit at all.
+    if (target.id < FIRST_BOT_ID) {
+      const self = this.fighters.of(target.id);
+      soak(self.wet, amount);
+      if (isSoaked(self.wet)) this.soakFighter(ctx, self, from);
       return;
     }
     const bot = this.bots.find((b) => b.id === target.id);
@@ -637,25 +782,31 @@ export class WaterWarMode implements GameMode {
   }
 
   get playerSpeedScale(): number {
-    return this.playerOut > 0 ? 0 : 1;
+    return this.speedScaleFor(LOCAL_ACTOR_ID);
+  }
+
+  speedScaleFor(actorId: number): number {
+    return this.fighters.isOut(actorId) ? 0 : 1;
   }
 
   get tankLevel(): number {
-    return this.tank;
+    return this.fighters.of(LOCAL_ACTOR_ID).ammo;
   }
 
   get playerWetness(): number {
-    return this.playerWet.value;
+    return this.fighters.wetnessOf(LOCAL_ACTOR_ID);
   }
 
   /** True while the player is soaked and sitting the next few seconds out. */
   get playerIsOut(): boolean {
-    return this.playerOut > 0;
+    return this.fighters.isOut(LOCAL_ACTOR_ID);
   }
 
-  /** Wetness of a kid, for the renderer's tint. */
-  wetnessOf(botId: number): number {
-    return this.botWet.get(botId)?.value ?? 0;
+  /** Wetness of anybody at all, for the renderer's tint. */
+  wetnessOf(actorId: number): number {
+    return actorId < FIRST_BOT_ID
+      ? this.fighters.wetnessOf(actorId)
+      : this.botWet.get(actorId)?.value ?? 0;
   }
 
   private setMessage(text: string, seconds: number): void {
@@ -683,13 +834,29 @@ export class WaterWarMode implements GameMode {
         ? { label: 'kids', value: String(standing) }
         : { label: 'kit', value: weapon.name },
       message: this.message,
+      ...this.selfHud(LOCAL_ACTOR_ID),
+      lumber: this.buildingAllowed ? this.lumber.available : null,
+    };
+  }
+
+  /**
+   * The four personal numbers, about whoever is asked for.
+   *
+   * The local player's HUD is built from this too rather than from a second
+   * copy of the same expressions. That is the point: a guest's tank gauge and
+   * the host's come out of one function, so there is no version of this where
+   * one of them is right and the other has quietly drifted.
+   */
+  selfHud(actorId: number): ModeSelfHud {
+    const self = this.fighters.of(actorId);
+    const at = this.sourceUnder(actorId);
+    return {
       charge: null,
-      wetness: this.playerWet.value,
+      wetness: self.wet.value,
       ammo: this.buildingAllowed
         ? null
-        : { current: this.tank, max: TANK_MAX, gauge: true },
-      refill: this.atSource !== -1 && this.tank < TANK_MAX ? this.tank / TANK_MAX : null,
-      lumber: this.buildingAllowed ? this.lumber.available : null,
+        : { current: self.ammo, max: TANK_MAX, gauge: true },
+      refill: at !== -1 && self.ammo < TANK_MAX ? self.ammo / TANK_MAX : null,
     };
   }
 
@@ -723,7 +890,7 @@ export class WaterWarMode implements GameMode {
           id,
           name: w.name,
           blurb: w.blurb,
-          ready: w.tethered ? this.atSource !== -1 : this.tank >= (w.continuous ? 1 : w.cost),
+          ready: this.readyFor(LOCAL_ACTOR_ID, id),
         };
       }),
       selected: this.weapon,
@@ -734,7 +901,19 @@ export class WaterWarMode implements GameMode {
   }
 
   get stream(): { x: number; y: number; z: number } | null {
-    return this.streamTo;
+    return this.streamFor(LOCAL_ACTOR_ID);
+  }
+
+  /**
+   * Where somebody's hose is landing, or null.
+   *
+   * Other people's streams are computed and published but not yet drawn — the
+   * renderer takes one stream, the local player's. Worth stating rather than
+   * hiding: it means a guest can see their own water and cannot see the host's.
+   * The state to fix it is here; what is missing is a second draw call.
+   */
+  streamFor(actorId: number): { x: number; y: number; z: number } | null {
+    return this.streams.get(actorId) ?? null;
   }
 
   markers(): readonly Marker[] {
