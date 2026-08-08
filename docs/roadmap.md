@@ -269,6 +269,112 @@ the locker becomes progression, whether Tag escalates to many Its.
 
 ---
 
+## Part 7 — Frames and latency, measured rather than assumed
+
+Added after a second pass aimed specifically at frame rate, latency, lighting and
+infrastructure. Ordered by measured value, and where a number is a guess it says
+so.
+
+### The finding: what players build is never culled
+
+`partRenderer.ts` sets `frustumCulled = false` on every part mesh and on every
+outline shell, with a comment explaining why: an `InstancedMesh`'s bounding
+sphere is computed around its origin, and the instances are scattered across the
+whole yard, so three.js would pop an entire fort out of view the moment that
+origin left the frustum. The comment is correct. The consequence is that **every
+plank anybody has ever placed is submitted every frame, twice** — once for the
+mesh and once for the inverted-hull outline — regardless of where the camera is
+pointing.
+
+Measured on the software rasteriser CI uses: turning away from a 129-plank
+structure saves 172 draw calls and 55,000 triangles, and **none of that saving is
+the structure**. It is the scenery, which is properly culled by `propBatch`. The
+fort is drawn either way.
+
+This is the one cost in the game that a player controls without limit. A fort of
+three thousand parts is roughly a quarter of a million triangles submitted per
+frame from behind a wall you cannot see through.
+
+**The fix is chunking, not per-frame packing.** Repacking the instance buffer
+each frame to hold only what is visible means uploading the whole buffer sixty
+times a second, which trades a rasterisation cost for a bandwidth one. One
+`InstancedMesh` per *(kind, spatial chunk)* gives three.js a bounding sphere it
+can actually use, costs nothing per frame, and needs no upload at all — draw
+calls rise with the number of visible chunks and fall with everything else. It is
+a real refactor of a 400-line file with two invariants in it (swap-with-last, and
+the outline sharing the parent's matrix buffer), which is why it is written down
+here rather than done in passing.
+
+### Latency, which nothing has measured
+
+Every performance number on this project is a throughput number. Nobody has
+measured the delay between a key going down and the pixel changing, and there are
+three places it hides:
+
+- **The canvas is composited.** A WebGL context created with
+  `desynchronized: true` opts out of the compositor's own frame queue, and is
+  worth one whole frame on a machine that is keeping up. It is one flag and a
+  measurement, and it is the cheapest latency win available.
+- **Input is folded at a tick boundary**, and the tick can be up to 16ms before
+  the frame that shows it. Sampling the pending buffer as late as possible in the
+  frame, rather than at the top of it, is free.
+- **Nothing measures any of this.** The honest first step is a scenario that
+  drives a key and counts frames to the first pixel change, so the two changes
+  above can be shown to have done something rather than asserted to have.
+
+### Lighting: ambient occlusion from a graph that already exists
+
+The renderer is a toon ramp, an inverted-hull outline and a static shadow map,
+and it has no ambient occlusion — so the inside of a fort is exactly as bright as
+the lawn, and a box stacked on a box has no seam.
+
+The usual objection is cost: AO means either a screen-space pass or a bake, and
+this project has no texture pipeline to bake into. But it does have something
+better and unusual — **`support.ts` already computes, on every placement and
+removal, which parts touch which**. That joint graph is an occlusion estimate: a
+part with six neighbours is in a corner, a part with one is in the open. Feeding
+a per-instance darkening factor from the neighbour count into `instanceColor` —
+which every part mesh already carries, and which is already uploaded when a part
+is placed — gives a fort that gets darker where it is enclosed, for the cost of a
+byte per part and no new pass at all.
+
+That is worth doing because it is unique to this game rather than borrowed: the
+structural model was built to answer whether a tower falls down, and it turns out
+to answer where the light does not reach.
+
+### Smart UI, beyond the map
+
+The map is in. The two things next to it that are cheap and change how a round
+reads: **contextual density** — the HUD currently shows the same panels whether
+you are building or fighting, and a mode already declares which meters it has —
+and a **roster**, which is also the missing home for the per-player mute that
+exists in code and in Settings with nowhere to click.
+
+### Infrastructure
+
+- **CI is thirty minutes and serial.** Twenty-seven scenarios run one after
+  another in one job. They are independent processes with independent dev
+  servers, so a matrix of four or five shards is a mechanical change to one
+  workflow file and takes the wall clock to about eight minutes. This is the
+  highest-value infrastructure change available and it is nearly free.
+- **The bundle is one 925KB chunk**, 258KB gzipped, with no code splitting. The
+  menus, the locker and the lobby are not needed to draw the first frame.
+- **Nothing guards against a performance regression.** The benchmark runs in CI
+  and its numbers are read by a human or not at all. A recorded baseline with a
+  tolerance would make a slow commit fail rather than be noticed a month later.
+
+### Order
+
+1. **Shard CI.** Nearly free, and it shortens every loop after it.
+2. **Measure latency**, then `desynchronized` and late input sampling.
+3. **Structural AO**, which is small, unique, and needs no new pass.
+4. **Chunk the part renderer.** The largest win and the largest risk; do it once
+   there is a latency and throughput measurement to show it did not cost
+   anything elsewhere.
+5. **A performance baseline in CI**, once there is something worth protecting.
+
+---
+
 ## Part 6 — What I would not do
 
 - **Not a fourth and fifth mode.** Five exist. The marginal mode is worth less
