@@ -381,6 +381,39 @@ exists in code and in Settings with nowhere to click.
 
 ---
 
+## Part 8 — Loadouts, new weapons, and Forge: sized before built
+
+Three asks from the same batch as the knockdown and the chunked renderer,
+written down as designs rather than half-built at the end of a long day —
+each is a real feature with a decision inside it, and the decisions deserve
+their own sittings.
+
+**Loadouts and per-mode weapons.** The seams exist and are good: `ActorInput`
+carries a `slot`, modes own their arsenals (`waterKit.ts` has three weapons
+with real trade-offs), and the locker proves per-player choice travels the
+wire. What a loadout adds is *pre-round choice* — pick two of the three
+soakers, trade tank size against refill speed — and the reason to size it
+first is balance: every choice has to be a real trade or it is a menu that
+wastes a screen. The cheap, high-value start is one new weapon per mode that
+changes movement rather than damage: a water shield in Water War (spends tank
+to block, no new projectile), a grapple line in Lava (spends nothing, needs an
+anchor part), a decoy in Tag. Movement toys compound with building; damage
+numbers compete with it.
+
+**Forge (Free Build grown up).** Free Build is already the forge floor; what it
+lacks is editor reach. In order of value: fly camera (noclip, dev-panel first
+to audition), symmetric stamp (mirror a blueprint across an axis — the store
+already turns them), kit palettes (restrict the eight parts to a themed subset
+per session), and a shareable yard (the blueprint share-code design, one level
+up). Fly camera is an afternoon; the yard code is the creator pipeline and
+earns a design pass of its own.
+
+**The knockdown's next rung** — if the fainting goat earns a laugh, the next
+step is launch: a small impulse on the way down driven by what hit you, which
+needs the hit direction on the wire (it is host-side already) and nothing else.
+
+---
+
 ## Part 6 — What I would not do
 
 - **Not a fourth and fifth mode.** Five exist. The marginal mode is worth less
