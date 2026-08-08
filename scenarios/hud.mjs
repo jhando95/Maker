@@ -119,9 +119,86 @@ export default async function (page) {
     `the arc should point where the water came from, saw "${hurt.rotation}"`,
   );
 
+  // ── The map in the corner ──────────────────────────────────────────────────
+  //
+  // What only a browser can answer: whether anything is actually drawn. The
+  // projection and the edge-pinning are unit-tested against numbers, which is
+  // where they belong; a canvas wired up wrong produces perfect numbers and a
+  // blank square.
+  const map = await page.evaluate(async () => {
+    const m = window.__maker;
+    m.settings.set('showMinimap', true);
+    m.menu.show('none');
+    await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+    return { visible: m.minimap.visible(), ink: m.minimap.ink(), span: m.minimap.span() };
+  });
+  assert(map.visible, 'the map should be on when the setting is on');
+  // Three thousand rather than "more than nothing". The neighbourhood fills
+  // most of the map; the player arrow and a handful of markers are worth about
+  // sixty pixels between them. A low bar here passes with the world layer
+  // missing entirely, which is exactly what the first version of this did — a
+  // map showing only the things that move is not a map.
+  assert(map.ink > 3000, `the neighbourhood should be on it, saw ${map.ink} lit pixels`);
+
+  // The built layer is a different layer on a different clock: redrawn when the
+  // world says it changed, and nothing else touches it.
+  const built = await page.evaluate(async () => {
+    const m = window.__maker;
+    const before = { built: m.minimap.built(), ink: m.minimap.ink(), parts: m.stats().parts };
+    // The open lawn, as the soak uses it. Not the player's own feet: the HUD
+    // scenario stands them somewhere chosen for the pins, and a stamp that
+    // lands inside the house places nothing and proves nothing.
+    // Out on the open lawn, away from the fort this mode already built. Not the
+    // player's own feet: the HUD scenario stands them wherever the pin tests
+    // needed, and a stamp that lands inside the house places nothing and proves
+    // nothing — which is what the first version of this did.
+    // Three, not eight: `stamp` is all-or-nothing, so one plank landing in
+    // something refuses the whole run — which is the right rule and makes a
+    // long path a worse test fixture than a short one.
+    // Six short runs rather than one long one: `stamp` is all-or-nothing, so a
+    // long path refuses entirely the moment one plank lands in something.
+    // Eighteen planks is about seventy pixels on a map of this scale, which is
+    // comfortably clear of the two or three the player's own arrow moves by
+    // between two samples — a delta of one is noise, and the first version of
+    // this asserted on one.
+    for (let i = 0; i < 6; i++) m.layPlankPath(8, 14 + i * 0.6, 3);
+    await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+    return {
+      before,
+      after: { built: m.minimap.built(), ink: m.minimap.ink(), parts: m.stats().parts },
+    };
+  });
+  assert(
+    built.after.parts > built.before.parts,
+    `the stamp has to actually land, ${built.before.parts} -> ${built.after.parts} parts`,
+  );
+  assert(
+    built.after.built > built.before.built,
+    `building should reach the map's own list, ${built.before.built} -> ${built.after.built}`,
+  );
+  assert(
+    built.after.ink > built.before.ink + 30,
+    `and be drawn on it, ${built.before.ink} -> ${built.after.ink} lit pixels`,
+  );
+
+  // Zoom changes what is shown, and the setting really does put it away.
+  const zoomed = await page.evaluate(async () => {
+    const m = window.__maker;
+    const was = m.minimap.span();
+    const now = m.minimap.zoom();
+    m.settings.set('showMinimap', false);
+    await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+    return { was, now, visible: m.minimap.visible() };
+  });
+  assert(zoomed.now !== zoomed.was, `zooming should change the span, stayed at ${zoomed.was}`);
+  assert(!zoomed.visible, 'and the setting should be able to put the map away');
+  await page.evaluate(() => window.__maker.settings.set('showMinimap', true));
+
   await page.screenshot({ path: process.env.HUD_SHOT ?? 'shots/hud.png' });
   console.log(
     '[hud] verified: captioned banner cells, three objectives pinned with distances',
-    'that survive going off screen, pins track the camera, hit and hurt cues fire',
+    'that survive going off screen, pins track the camera, hit and hurt cues fire,',
+    'and a map in the corner that draws the neighbourhood, redraws when somebody',
+    'builds, zooms, and can be switched off',
   );
 }

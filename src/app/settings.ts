@@ -27,6 +27,7 @@ export interface Settings {
    * their machine is keeping up should not have to read past them.
    */
   showStats: boolean;
+  showMinimap: boolean;
   /**
    * Whether to hear the two chat channels.
    *
@@ -134,6 +135,7 @@ export const DEFAULT_SETTINGS: Settings = {
   shadows: true,
   outlines: true,
   showStats: false,
+  showMinimap: true,
   muteTeamChat: false,
   muteNearChat: false,
   voiceEnabled: false,

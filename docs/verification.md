@@ -1003,6 +1003,47 @@ upside down. Fourteen more on the geometry, twelve caught first time — one of 
 two was a no-op plant of mine, and the other was a `reset` whose effect is
 indistinguishable from clearing a timer until the step *after* the next one.
 
+## A map in the corner, and a measure too blunt to see it
+
+The compass this game has answers "which way is the flag" and cannot answer
+"which way is round". A backyard with a house in the middle is a maze the first
+six times you play it, and Tag runs the length of a street.
+
+The design is three layers on three clocks — the neighbourhood baked once, what
+people have built rebuilt when `worldChanged()` says so, and people and
+objectives every frame — so a frame costs two `drawImage` calls and a dozen
+little paths whatever is in the world. Twelve plants on the projection and the
+edge-pinning, all caught. The browser half took three passes.
+
+**"Is anything drawn" was measured by counting lit pixels**, which is the right
+instrument and was pointed at the wrong threshold. `ink > 500` passes with the
+*entire neighbourhood layer missing*, because the player's arrow and a handful
+of markers are worth more than five hundred pixels between them. Measured
+properly: the map draws about 7,000 lit pixels, and about 2,000 of those survive
+deleting the world layer. The bar is 3,000 now, which is a bar only the
+neighbourhood can clear.
+
+**And the same instrument was too twitchy at the other end.** "Building shows up
+on the map" was asserted as `after > before`, and the player's own arrow moves
+two or three pixels between two samples — so a delta of one is noise, and a
+plant that stopped the built layer being rebuilt at all passed on it. Eighteen
+planks are worth about seventy pixels; the bar is thirty, which is ten times the
+noise and half the signal.
+
+Both are the same mistake at two ends of one scale: a measurement with no sense
+of how big the thing being measured is. Getting the numbers first — 7,000 with
+the world, 2,000 without, +73 for eighteen planks, ±3 for a walking player —
+took one throwaway probe and turned three assertions from decorative into
+load-bearing.
+
+**And one function deleted rather than tested.** The model started with an
+`onMap` that answered "is this box worth drawing", with tests for a fence whose
+centre is off the map and whose end is on it. Then the renderer turned out not
+to need it: baking the whole world once and blitting a window out of it skips
+everything off-screen without asking. A function with no caller is dead code
+however good its tests are, so it went, and this is the note saying why rather
+than a `void onMap` somewhere.
+
 ## Every bug that was planted on purpose
 
 Each of these was introduced deliberately, to watch one assertion fail, and then

@@ -1327,6 +1327,7 @@ export class Menu {
     // heading of its own: somebody turning this on is about to change one of
     // the four settings above it and wants to see whether it helped.
     this.toggle('Show frame rate', 'showStats', s.showStats);
+    this.toggle('Minimap', 'showMinimap', s.showMinimap);
     // Under Picture rather than under Playing, because it changes nothing about
     // the game and everything about the picture — which is also why it is safe
     // to offer at all.

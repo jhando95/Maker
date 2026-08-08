@@ -65,7 +65,7 @@ import { CaptureTheFlagMode } from './game/captureTheFlag.ts';
 import { WaterWarMode } from './game/waterWar.ts';
 import { TagMode, IT_SPAWN } from './game/tag.ts';
 import { LavaMode, LAVA_SPAWN, COURSE as LAVA_COURSE } from './game/lava.ts';
-import { BOARD_THICKNESS } from './build/partKit.ts';
+import { BOARD_THICKNESS, getPartKind, type PartKindId } from './build/partKit.ts';
 import { LEFT_SPAWN, RIGHT_SPAWN, WATER_SOURCES } from './world/neighborhood.ts';
 import { IDLE_INPUT, sameForEveryone } from './game/gameMode.ts';
 import type {
@@ -77,6 +77,7 @@ import { BuildStore } from './app/buildStore.ts';
 import { Menu, type LobbyView, type MenuCallbacks } from './ui/menu.ts';
 import { CrashHandler } from './app/crashHandler.ts';
 import { GamepadManager } from './core/gamepadManager.ts';
+import { Minimap, type MapBox, type MapMarker } from './ui/minimap.ts';
 import { PerformanceGovernor } from './app/performanceGovernor.ts';
 import { FrameStats } from './app/frameStats.ts';
 import { FrameProfile, type SectionTime } from './app/frameProfile.ts';
@@ -197,6 +198,42 @@ const world = new CollisionWorld(1.0, 4096);
 // Installed before anything else touches the world so the starter structures
 // and the player both spawn against a house that is already there.
 installFixtures(world, slabs);
+// ── The map in the corner ────────────────────────────────────────────────────
+//
+// Baked from the same slabs the scenery was drawn from, so the map cannot drift
+// from the world: there is one description of where the house is.
+const minimap = new Minimap(app);
+const mapMarkers: MapMarker[] = [];
+minimap.setWorld(slabs
+  .filter((slab) => slab.ghost !== true)
+  .map((slab) => footprint(slab.x, slab.z, slab.w, slab.d, slab.ry ?? 0, mapColor(slab.color))));
+
+/**
+ * A box's shadow on the ground, as an axis-aligned rectangle.
+ *
+ * Turned boxes are the reason this is a function. A fence panel at forty-five
+ * degrees drawn as its own width and depth is a rectangle that misses the fence
+ * — and half the neighbourhood is turned, because a cul-de-sac is a curve.
+ */
+function footprint(
+  x: number, z: number, w: number, d: number, ry: number, color: string,
+): MapBox {
+  const c = Math.abs(Math.cos(ry));
+  const s = Math.abs(Math.sin(ry));
+  return { x, z, hw: (w * c + d * s) / 2, hd: (w * s + d * c) / 2, color };
+}
+
+/** A map is read at a glance, so it flattens a colour rather than reproducing it. */
+function mapColor(rgb: number): string {
+  const r = (rgb >> 16) & 0xff;
+  const g = (rgb >> 8) & 0xff;
+  const b = rgb & 0xff;
+  // Pushed toward its own hue and darkened a little, so a map of a sunlit yard
+  // does not come out as five shades of the same cream.
+  const mix = (v: number): number => Math.round(Math.min(255, v * 0.82 + 12));
+  return `rgb(${mix(r)},${mix(g)},${mix(b)})`;
+}
+
 // And the four walls at the edge of it. Separate because they are not scenery:
 // nothing draws them, and the slab list is a description of what the yard looks
 // like rather than of where it ends.
@@ -287,7 +324,47 @@ const SHADOW_REBUILD_INTERVAL = 0.25;
 function worldChanged(): void {
   shadowsDirty = true;
   forgetTagsOnDead();
+  // The map's built layer is redrawn when the world says it changed, rather
+  // than on a timer or every frame. This is the funnel every placement, removal
+  // and collapse already goes through, which is the whole reason the map can
+  // afford to draw a fort at all.
+  minimap.invalidateBuilt();
 }
+
+/**
+ * Every placed part as a footprint, for the map's built layer.
+ *
+ * Pulled when the map is ready rather than pushed on each placement: stamping a
+ * blueprint puts thirty parts down in one tick and this runs once.
+ *
+ * The rotated extents are done properly through the quaternion rather than by
+ * pulling a yaw out of it. Parts get placed on their sides and on ramps, and a
+ * yaw-only footprint draws a plank leaning against a wall as though it were
+ * lying flat — which is a map that disagrees with the yard.
+ */
+const mapQuat = new THREE.Quaternion();
+const mapMat = new THREE.Matrix4();
+
+function builtFootprints(): MapBox[] {
+  const out: MapBox[] = [];
+  for (const record of build.serialize()) {
+    const kind = getPartKind(record.kind as PartKindId);
+    mapQuat.set(record.qx, record.qy, record.qz, record.qw);
+    mapMat.makeRotationFromQuaternion(mapQuat);
+    const e = mapMat.elements;
+    const hx = kind.length / 2, hy = kind.thickness / 2, hz = kind.width / 2;
+    out.push({
+      x: record.x,
+      z: record.z,
+      hw: Math.abs(e[0]!) * hx + Math.abs(e[4]!) * hy + Math.abs(e[8]!) * hz,
+      hd: Math.abs(e[2]!) * hx + Math.abs(e[6]!) * hy + Math.abs(e[10]!) * hz,
+      color: '#8a5a34',
+    });
+  }
+  return out;
+}
+
+minimap.setBuiltSource(builtFootprints);
 
 /**
  * How long an afternoon takes, in seconds of play.
@@ -2674,6 +2751,28 @@ function draw(alpha: number, frameDt: number): void {
   // shows up as a draw count that lags a turn by a frame — invisible in normal
   // play and maddening when somebody is using this to work out what is
   // expensive.
+  // ── The map in the corner ──────────────────────────────────────────────────
+  //
+  // Every frame, and it costs two blits and a dozen little paths whatever is in
+  // the world — the two expensive layers were paid for when they changed.
+  const mapOn = settings.get('showMinimap') && menu.current === 'none';
+  minimap.setVisible(mapOn);
+  if (mapOn) {
+    mapMarkers.length = 0;
+    for (const actor of actors.all) {
+      if (actor.id === actors.local.id) continue;
+      mapMarkers.push({
+        x: actor.controller.x, z: actor.controller.z,
+        color: actor.team === actors.local.team ? '#6ec9f0' : '#ff8b6b',
+        size: 3,
+      });
+    }
+    for (const marker of mode?.markers() ?? []) {
+      mapMarkers.push({ x: marker.x, z: marker.z, color: '#ffd76a', size: 4, hollow: true });
+    }
+    minimap.draw(state.x, state.z, camera.yaw, mapMarkers);
+  }
+
   if (frameStats.frame(frameDt) && settings.get('showStats')) {
     hud.setStats(
       frameStats.current,
@@ -3246,6 +3345,30 @@ window.__maker = {
         buttons: Array.from(el.querySelectorAll('button'), (b) => b.textContent ?? ''),
       }),
     ),
+  },
+  /**
+   * The map in the corner, for the harness.
+   *
+   * Reports what it drew rather than exposing the canvas: a scenario can then
+   * assert that a fort reached the built layer and that a flag off the edge was
+   * pinned to the rim, which are the two things that can be wrong invisibly.
+   */
+  minimap: {
+    visible: () => !minimap.root.classList.contains('mk-hidden'),
+    span: () => minimap.span,
+    zoom: () => minimap.cycleZoom(),
+    built: () => builtFootprints().length,
+    /** How many non-transparent pixels the map has, as a crude "is it drawn". */
+    ink: () => {
+      const canvas = minimap.root.querySelector('canvas');
+      if (!(canvas instanceof HTMLCanvasElement)) return 0;
+      const ctx = canvas.getContext('2d');
+      if (ctx === null) return 0;
+      const data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+      let lit = 0;
+      for (let i = 3; i < data.length; i += 4) if (data[i]! > 8) lit++;
+      return lit;
+    },
   },
   /** Where the last placement landed, so a scenario can aim back at it. */
   lastPlacedAt: () => build.lastPlacedAt,
