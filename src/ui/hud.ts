@@ -396,7 +396,9 @@ import type { Loadout, ModeHud } from '../game/gameMode.ts';
 import type { FrameSummary } from '../app/frameStats.ts';
 import type { SectionTime } from '../app/frameProfile.ts';
 import type { Caption } from './captions.ts';
-import { MAX_CHAT, type ChatLine } from '../game/comms.ts';
+import {
+  EMOTE_COLORS, EMOTE_LABELS, EMOTE_ORDER, MAX_CHAT, type ChatLine,
+} from '../game/comms.ts';
 
 /** Bubbles on screen at once. More than this and they are a wall, not a face. */
 const MAX_EMOTES = 8;
@@ -1103,6 +1105,26 @@ export class Hud {
   /** Point the wheel at the build kit. */
   showParts(): void {
     this.wheel.setEntries(WHEEL_ENTRIES);
+  }
+
+  /**
+   * Point the wheel at the things you can say.
+   *
+   * The third content set on one wheel. `partWheel.ts` never knew what a part
+   * was — a `WheelEntry` is a label, a line of detail and a colour — so this is
+   * a second use rather than a second wheel, and the gesture somebody already
+   * learned for parts is the gesture for this.
+   *
+   * The detail line is deliberately empty. Parts have a size and weapons have a
+   * reason they are greyed; "wave" has nothing to add, and a second line
+   * repeating the first is noise in a menu that is open for half a second.
+   */
+  showEmotes(): void {
+    this.wheel.setEntries(EMOTE_ORDER.map((kind) => ({
+      label: EMOTE_LABELS[kind],
+      detail: '',
+      color: EMOTE_COLORS[kind],
+    })));
   }
 
   /**

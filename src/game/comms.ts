@@ -76,6 +76,26 @@ export const EMOTE_LABELS: Readonly<Record<EmoteKind, string>> = {
 /** The order they appear in the wheel, which is also their number-key order. */
 export const EMOTE_ORDER: readonly EmoteKind[] = ['wave', 'yes', 'no', 'nice', 'sorry', 'oops'];
 
+/**
+ * A colour each, for the wheel.
+ *
+ * Warm for the friendly half and cool for the awkward half, so the wheel can be
+ * read by where a colour is before the word is: "yes" and "nice" are the ones
+ * people reach for without looking, and they sit together in green.
+ *
+ * Beside the labels rather than in the UI, because these three tables describe
+ * one thing — a table in `hud.ts` would be a fourth place to remember when a
+ * seventh emote is added, and there is a test that walks all of them.
+ */
+export const EMOTE_COLORS: Readonly<Record<EmoteKind, string>> = {
+  wave: '#f4a259',
+  yes: '#7ddf64',
+  no: '#e8697d',
+  nice: '#5ec98a',
+  sorry: '#9b8fe8',
+  oops: '#6ec6ff',
+};
+
 /** Seconds a ping stays in the world. */
 export const PING_LIFETIME = 6;
 /** Seconds an emote floats over somebody's head. */

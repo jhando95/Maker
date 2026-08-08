@@ -1,8 +1,10 @@
-import { describe, it, expect } from 'vitest';
+import {
+  describe, it, expect } from 'vitest';
 import {
   CommsLog, RateLimit, audible, cleanChat,
   CHAT_HISTORY, CHAT_LIFETIME, EMOTE_LIFETIME, NEAR_RADIUS, PING_LIFETIME, MAX_CHAT,
   type Listener,
+  EMOTE_COLORS, EMOTE_LABELS, EMOTE_ORDER, type EmoteKind,
 } from './comms.ts';
 
 const who = (id: number, team: 'left' | 'right', x = 0, z = 0): Listener => ({ id, team, x, z });
@@ -231,6 +233,36 @@ describe('CommsLog', () => {
       expect(log.emoteOf(4)?.kind).toBe('wave');
       expect(log.emoteOf(5)?.kind).toBe('nice');
     });
+  });
+});
+
+describe('the six things you can say', () => {
+  // Three tables describe one thing: what an emote is called, what colour it is
+  // on the wheel, and where it sits. They are only correct together, and the
+  // way they go wrong is a seventh emote added to the type with one of the
+  // three forgotten — which TypeScript catches for the two `Record`s and cannot
+  // catch for the order, because an array of a union is happy to be short.
+  const KINDS: EmoteKind[] = ['wave', 'yes', 'no', 'sorry', 'nice', 'oops'];
+
+  it('puts every emote in the wheel exactly once', () => {
+    expect([...EMOTE_ORDER].sort()).toEqual([...KINDS].sort());
+    expect(new Set(EMOTE_ORDER).size).toBe(EMOTE_ORDER.length);
+  });
+
+  it('gives every one a word', () => {
+    for (const kind of KINDS) expect(EMOTE_LABELS[kind]).toBeTruthy();
+  });
+
+  it('gives every one a colour the wheel can use', () => {
+    // A CSS hex, because that is what a `WheelEntry` takes. A colour that is
+    // not one renders as black-on-black rather than throwing.
+    for (const kind of KINDS) expect(EMOTE_COLORS[kind]).toMatch(/^#[0-9a-f]{6}$/i);
+  });
+
+  it('keeps the colours distinct enough to tell apart', () => {
+    // Six wedges the same colour is six wedges you have to read. Distinctness
+    // is the whole reason they are coloured at all.
+    expect(new Set(Object.values(EMOTE_COLORS)).size).toBe(KINDS.length);
   });
 });
 

@@ -607,6 +607,35 @@ nothing. The values that matter are the ones that coerce *successfully*:
 friend list black because somebody sent a null. The test sends `null` and `true`
 now, which is what the comment beside the code had said all along.
 
+## The emote wheel, which was already written down as owed
+
+`main.ts` carried a comment saying emotes cycled "for now", that a radial picker
+already existed for parts and weapons, and that this ought to use it — an
+admission rather than a design. Paying it off turned out to be small, because
+`partWheel.ts` never knew what a part was: a `WheelEntry` is a label, a line of
+detail and a colour. So this is a **third content set on one wheel** rather than
+a second wheel, and the gesture somebody already learned for parts is the
+gesture for this.
+
+The one thing that needed care is that a shared wheel has to remember which
+content it is showing. The key that closes it must be the key that opened it —
+otherwise releasing the part key while the emote wheel is up picks an emote, and
+holding both leaves one stuck open. `wheelShows` is that memory, and the browser
+plant that proved the check works landed on exactly it: labelling the emote
+content as `build` made the release watch the wrong key, so the wheel opened and
+shut inside one frame and the scenario timed out waiting to see it open.
+
+**Three tables describe one emote** — its word, its colour and its place in the
+order — and they are only correct together. TypeScript catches a missing entry
+in the two `Record`s and cannot catch a short `EMOTE_ORDER`, because an array of
+a union is perfectly happy to be missing a member. Four plants on that: an emote
+dropped from the order, one listed twice, two wedges sharing a colour, and a
+colour a `WheelEntry` cannot use. All four caught.
+
+The detail line is deliberately empty for emotes. Parts have a size and weapons
+have a reason they are greyed; "wave" has nothing to add, and a second line
+repeating the first is noise in a menu that is open for half a second.
+
 ## Every bug that was planted on purpose
 
 Each of these was introduced deliberately, to watch one assertion fail, and then
@@ -657,6 +686,11 @@ negative result trusted; a result read without asking whether it is ready — th
 one that would stall the whole pipeline; a second query opened while one is
 active; a tainted result recorded anyway; and a timer that claims to work on a
 machine with no extension.
+
+And on the emote wheel, five: an emote dropped from the wheel order; one listed
+in it twice; two wedges given the same colour; a colour a `WheelEntry` cannot
+use; and the emote content mislabelled as the build content, which makes the
+release watch the wrong key.
 
 And on the lobby's faces, six: the look never reaching a friend's list; the look
 stored unclamped; nobody starting with a look at all; the party view dropping it

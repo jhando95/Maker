@@ -126,6 +126,53 @@ export default async function (page) {
   assert(waved.length >= 1, 'an emote should put a bubble over somebody');
   assert(waved[0].length > 0, `with something in it, got "${waved[0]}"`);
 
+  // ── And picking one, rather than tapping through six ────────────────────────
+  //
+  // Emotes used to cycle: a key that sent the next one in a list, with a
+  // comment saying a radial picker already existed for parts and weapons and
+  // this ought to use it. It does now — the third content set on one wheel,
+  // because a `WheelEntry` is a label, a detail and a colour and never knew
+  // what a part was.
+  //
+  // A real key held down rather than a hook, and the mouse injected rather than
+  // moved, exactly as `wheel.mjs` does it: the game ignores the mouse unless
+  // the pointer is locked and a headless page has no gesture to grant lock
+  // from. Holding exercises the whole gesture — the key opens it, the mouse
+  // aims it, the release sends — where a check that only opened it would pass
+  // with the release path deleted.
+  await page.keyboard.down('b');
+  await page
+    .waitForFunction(() => window.__maker.comms.wheel().open, null, { timeout: 15_000 })
+    .catch(() => { throw new Error('comms scenario: holding the emote key never opened the wheel'); });
+
+  const opened = await page.evaluate(() => window.__maker.comms.wheel());
+  assert(opened.shows === 'emotes', `the wheel should show emotes, not ${opened.shows}`);
+  assert(opened.selection === null, 'nothing should be picked before the mouse moves');
+
+  // Straight down, which is the wedge opposite the top one. Far enough out to
+  // clear the dead zone, which is what stops a twitch choosing something.
+  await page.evaluate(() => window.__maker.look(0, 200));
+  await page
+    .waitForFunction(() => window.__maker.comms.wheel().selection !== null, null, { timeout: 15_000 })
+    .catch(() => { throw new Error('comms scenario: aiming the emote wheel never picked a wedge'); });
+
+  const aimed = await page.evaluate(() => window.__maker.comms.wheel());
+  await page.keyboard.up('b');
+  await page
+    .waitForFunction(() => !window.__maker.comms.wheel().open, null, { timeout: 15_000 })
+    .catch(() => { throw new Error('comms scenario: releasing the emote key never closed the wheel'); });
+
+  const sent = await page.evaluate(() => window.__maker.comms.wheel());
+  assert(
+    sent.last === aimed.selection,
+    `releasing should send what was pointed at: aimed at ${aimed.selection},`
+    + ` sent ${sent.last}`,
+  );
+  assert(
+    sent.shows === null,
+    `and the wheel should forget what it was showing, not stay on ${sent.shows}`,
+  );
+
   // ── Muting ──────────────────────────────────────────────────────────────────
 
   // A muted player's message must not announce itself, or the mute is a mute of
@@ -152,5 +199,7 @@ export default async function (page) {
 
   console.log('[comms] verified: a line said alone reaches the screen tagged with its'
     + ' channel and escaped, the box takes the keyboard without walking the player,'
-    + ' a ping becomes a drawn marker, an emote becomes a bubble, and a mute is silent');
+    + ' a ping becomes a drawn marker, an emote becomes a bubble, a held key opens'
+    + ' a wheel of six and releasing it sends the one being pointed at rather than'
+    + ' the next in a cycle, and a mute is silent');
 }

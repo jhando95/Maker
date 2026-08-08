@@ -1075,20 +1075,16 @@ function emoteLocally(kind: EmoteKind): void {
  * pointing at a rooftop.
  */
 /**
- * Which emote the key sends.
+ * The last thing you said, so the wheel opens pointing at it.
  *
- * A cycle rather than a wheel, for now, and the comment is the honest part: a
- * radial picker already exists for parts and weapons and this should use it,
- * but wiring a third content set into it is a bigger change than the feature
- * warrants today. Tapping through six is a worse gesture than pointing at one
- * and a much better one than not being able to say "sorry".
+ * People repeat themselves with an emote — "nice" three times in a round is
+ * normal — and opening on the last choice makes the second one a tap in the
+ * same direction rather than a fresh hunt.
  */
-let emoteAt = 0;
-function nextEmote(): EmoteKind {
-  const kind = EMOTE_ORDER[emoteAt % EMOTE_ORDER.length]!;
-  emoteAt++;
-  return kind;
-}
+let lastEmote = 0;
+
+/** Which of the three content sets the one wheel is currently showing. */
+let wheelShows: 'build' | 'emotes' | null = null;
 
 /**
  * Where the water is, and how much of it is left.
@@ -2062,7 +2058,6 @@ function simulateBody(dt: number): void {
   if (input.wasPressed('chatNear')) hud.openSay('near');
   else if (input.wasPressed('chatTeam')) hud.openSay('team');
   else if (input.wasPressed('ping')) pingAtCrosshair();
-  else if (input.wasPressed('emoteWheel')) emoteLocally(nextEmote());
 
   // Look is sampled per tick from accumulated mouse movement, so a 1000Hz mouse
   // and a 60Hz simulation agree on how far the view turned.
@@ -2077,24 +2072,45 @@ function simulateBody(dt: number): void {
   // cannot — which is exactly when each is the only one that makes sense, and
   // is one gesture to learn instead of two.
   const loadout = mode?.buildingAllowed === false ? mode.loadout : undefined;
-  if (input.wasPressed('partWheel') && (mode === null || mode.buildingAllowed || loadout !== undefined)) {
-    if (loadout !== undefined) {
-      hud.showWeapons(loadout);
-      picker.show(loadout.entries.findIndex((e) => e.id === loadout.selected));
-    } else {
-      hud.showParts();
-      picker.show(build.selectedKind);
+  // Only one at a time, and it has to remember which it is showing: three
+  // contents share one wheel, and the key that closes it is the key that opened
+  // it. Releasing the part key while the emote wheel is up would otherwise
+  // pick an emote, and holding both would leave one of them stuck open.
+  if (!picker.isOpen) {
+    if (input.wasPressed('partWheel')
+      && (mode === null || mode.buildingAllowed || loadout !== undefined)) {
+      wheelShows = 'build';
+      if (loadout !== undefined) {
+        hud.showWeapons(loadout);
+        picker.show(loadout.entries.findIndex((e) => e.id === loadout.selected));
+      } else {
+        hud.showParts();
+        picker.show(build.selectedKind);
+      }
+    } else if (input.wasPressed('emoteWheel')) {
+      // No gate on building or on a mode. Saying "sorry" is never the wrong
+      // thing to be allowed to do, and the one screen where it would be — a
+      // menu — is already handled by the chat guard above.
+      wheelShows = 'emotes';
+      hud.showEmotes();
+      picker.show(lastEmote);
     }
   }
   if (picker.isOpen) {
     picker.move(look.x, look.y);
-    if (!input.isDown('partWheel')) {
+    if (!input.isDown(wheelShows === 'emotes' ? 'emoteWheel' : 'partWheel')) {
       const picked = picker.hide();
-      if (picked !== null) {
+      if (wheelShows === 'emotes') {
+        if (picked !== null) {
+          lastEmote = picked;
+          emoteLocally(EMOTE_ORDER[picked] ?? EMOTE_ORDER[0]!);
+        }
+      } else if (picked !== null) {
         if (loadout !== undefined) loadout.select(loadout.entries[picked]?.id ?? loadout.selected);
         else build.selectKind(picked);
         sounds.pickPart();
       }
+      wheelShows = null;
       hud.showParts();
     }
   } else if (look.x !== 0 || look.y !== 0) {
@@ -3257,7 +3273,27 @@ window.__maker = {
   comms: {
     say: (channel: Channel, text: string) => sayLocally(channel, text),
     ping: () => pingAtCrosshair(),
-    emote: () => emoteLocally(nextEmote()),
+    /**
+     * Say one, by index into `EMOTE_ORDER`.
+     *
+     * An index rather than a cycling call, because the wheel replaced the
+     * cycle: a scenario that asked for "the next one" would be asking about a
+     * counter that no longer exists, and one that asks for a *particular*
+     * emote is the one that can check the right thing arrived.
+     */
+    emote: (which = 0) => {
+      const i = ((which % EMOTE_ORDER.length) + EMOTE_ORDER.length) % EMOTE_ORDER.length;
+      lastEmote = i;
+      emoteLocally(EMOTE_ORDER[i]!);
+      return EMOTE_ORDER[i]!;
+    },
+    /** The wheel, so a check can open it and see what it is pointing at. */
+    wheel: () => ({
+      open: hud.partWheel.isOpen,
+      shows: wheelShows,
+      selection: hud.partWheel.selection,
+      last: lastEmote,
+    }),
     openSay: (channel: 'team' | 'near' | null) => hud.openSay(channel),
     state: () => ({
       chat: comms.chat.map((l) => ({ ...l })),
