@@ -17,13 +17,14 @@ import {
 } from './partKit.ts';
 import { Snapper, type Candidate, type SnapResult, ROT_STEP_DEG } from './snapping.ts';
 import { PartRenderer } from '../render/partRenderer.ts';
+import { shadeFor } from '../render/occlusion.ts';
 import { chamferedBox, wedge } from '../render/geometry.ts';
 import { damp } from '../core/mathUtils.ts';
 import { Lumber, costOf } from './lumber.ts';
 import type { PartId } from '../physics/types.ts';
 import { boxInBounds } from '../world/bounds.ts';
 import { MAX_BLUEPRINT_PARTS } from './blueprint.ts';
-import { collapseAfter, wouldStand, type Box, type Structure } from './support.ts';
+import { collapseAfter, joinedTo, onGround, wouldStand, type Box, type Structure } from './support.ts';
 
 export { worldAabb } from './partKit.ts';
 
@@ -918,6 +919,34 @@ export class BuildSystem {
       };
     }
     return this.structureView;
+  }
+
+  /**
+   * Darken every part by how boxed in it is, using the support graph.
+   *
+   * The joint graph built to answer "does this fall down" also answers "is this
+   * enclosed" — a part's contact count is an occlusion estimate, and it is
+   * already sitting in memory when the light wants it. The ground counts as a
+   * contact so a floor inside a fort darkens like the walls around it; the
+   * first contact is free so a lone plank on the lawn does not dim.
+   *
+   * A full pass rather than an incremental one, on the same reasoning as the
+   * minimap's built layer: this runs when the world changes, a placement can
+   * only change its own neighbourhood but a collapse changes many, and one pass
+   * over every part is a broadphase query each — cheap at the rate worlds
+   * change, and one code path instead of three.
+   */
+  shadeByEnclosure(strength = 1): void {
+    const s = this.structure;
+    for (const id of s.ids()) {
+      // Fixtures are the map's collision proxies; the renderer has no instance
+      // for them and `shade` would shrug, but skipping saves their queries too.
+      if (this.world.isFixture(id)) continue;
+      const box = s.box(id);
+      let contacts = joinedTo(s, box, id).length;
+      if (onGround(s, box)) contacts++;
+      this.renderer.shade(id, shadeFor(contacts, strength));
+    }
   }
 
   /** Undo the most recent placement still standing. */

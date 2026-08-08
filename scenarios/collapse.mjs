@@ -312,6 +312,47 @@ export default async function (page) {
   );
   await page.evaluate(() => window.__maker.captions.on(false));
 
+  // ── And the light knows what the structure knows ───────────────────────────
+  //
+  // The support graph that decides collapses also drives enclosure shading, and
+  // the wiring under test is specifically `worldChanged()` — the unit suite
+  // proves the graph darkens a row's middle, but only a browser can prove the
+  // funnel every placement goes through actually calls the pass. A row laid on
+  // the lawn has a middle with three contacts and ends with two, so the spread
+  // opens; removing the row must close it again, through the same funnel.
+  const shaded = await page.evaluate(async () => {
+    const m = window.__maker;
+    // Standing over the row before laying it: `removeAtPoint` rays out from
+    // the player and is bounded by reach, so a row laid across the yard is a
+    // row this hook cannot take down — it returns nothing, no worldChanged
+    // fires, and the assertion would be measuring the player's position.
+    m.teleport(6.9, 0.6, 18);
+    const before = m.shading();
+    const path = m.layPlankPath(6, 16, 3);
+    await new Promise((r) => requestAnimationFrame(r));
+    const built = m.shading();
+    // The middle, not the end: taking an end off leaves the other two planks
+    // still joined to each other and still shaded, so nothing would change.
+    // Taking the middle out turns both ends into lone planks — the same cut
+    // the unit test makes, driven through the real removal path.
+    m.removeAtPoint(path.top.x - 0.9, path.top.y, path.top.z);
+    await new Promise((r) => requestAnimationFrame(r));
+    const after = m.shading();
+    return { before, built, after };
+  });
+  assert(
+    shaded.built.min < 1 && shaded.built.shaded >= 2,
+    `a laid row should darken where it is joined, saw ${JSON.stringify(shaded.built)}`,
+  );
+  assert(
+    shaded.built.max === 1,
+    'while something in the open stays at full brightness',
+  );
+  assert(
+    shaded.after.shaded < shaded.built.shaded,
+    `and taking it down should lighten what is left, ${shaded.built.shaded} -> ${shaded.after.shaded} shaded`,
+  );
+
   console.log('[collapse] verified: a three-part tower stands and carries a player'
     + ` at ${up.y.toFixed(2)}m, its top comes off on its own, its leg takes all of it`
     + ` down, the player lands back on the lawn at ${after.y.toFixed(2)}m, and a beam`
@@ -319,5 +360,7 @@ export default async function (page) {
     + ` which is which before the wood is spent — pulsing ${spread.toFixed(2)} over open`
     + ` air and holding to ${drift.toFixed(3)} on the lawn — and that a player who`
     + ` cannot hear the wood come apart is told about it (${heard.map((l) => l.text).join(', ')})`
-    + ' but never about one further away than the sound itself would have carried');
+    + ' but never about one further away than the sound itself would have carried,'
+  + ' and the support graph that decides collapses also darkens a row of planks'
+  + ' where they are joined and lightens them again when the row comes down');
 }

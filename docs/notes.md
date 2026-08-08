@@ -1235,6 +1235,47 @@ round.
 
 ---
 
+# 26. The light learns what the structure already knew
+
+This renderer is a toon ramp, an outline pass and a static shadow map, and it
+had no ambient occlusion — the inside of a fort was exactly as bright as the
+open lawn, and a box stacked against a wall met it without a seam. The usual
+fixes are a screen-space pass, which is a whole pipeline stage, or a bake, which
+needs the texture pipeline this project deliberately does not have.
+
+But the game already computes something better suited to it than either. The
+structural model asks, on every placement and removal, **which parts touch
+which** — that is what decides whether a tower stands. A part's contact count is
+an occlusion estimate: six neighbours is boxed in, one is out in the open. So
+the joint graph built to answer *does it fall down* also answers *is it
+enclosed*, and the answer is already in memory when the light wants it.
+
+Delivery is a multiply into the `instanceColor` buffer every part mesh has
+carried since the shader warm-up work — no new pass, no new buffer, uploaded
+when parts change anyway. The curve is flat for the first contact (a plank on
+the lawn touches the ground and must not dim), linear after it, and floored at a
+quarter darkening, chosen against the toon ramp: the ramp's bands are ~35%
+apart, so a quarter is visible everywhere without pushing a lit face down a
+whole band, which would read as a material change rather than shade.
+
+Two implementation details carry the correctness. **Shades multiply from a
+stored base colour, never from the live buffer** — multiplying in place
+compounds, and two passes at 0.9 make 0.81, ratcheting the world darker every
+time anything changes. And the renderer's swap-with-last removal now keeps
+**three** buffers aligned rather than two; a swap that misses the base colour
+makes the moved part's next re-shade multiply from the removed part's paint,
+which only shows after a removal followed by a lighting pass — exactly the order
+a collapse produces.
+
+The pass runs from `worldChanged()`, the funnel every placement, removal,
+collapse and resync already goes through, and its strength is a knob in the
+developer panel. Eleven plants, all caught — the eleventh deleted the
+`worldChanged` wiring itself and was caught by the browser scenario, which is
+the only place that wiring exists.
+
+
+---
+
 ## Verification
 
 **1,413 unit tests** across 63 files, and **twenty-eight browser runs** — a

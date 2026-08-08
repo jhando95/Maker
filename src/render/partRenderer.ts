@@ -28,6 +28,15 @@ interface KindBucket {
   outline: THREE.InstancedMesh;
   /** Instance slot -> part id. */
   slotToPart: Int32Array;
+  /**
+   * Each slot's colour before any shading, three floats per slot.
+   *
+   * Kept apart from `instanceColor` so a shade is always `base * factor` from
+   * the original: multiplying the live buffer in place would compound — two
+   * re-shades at 0.9 make 0.81 — and the error would ratchet darker with every
+   * pass over the world.
+   */
+  baseColor: Float32Array;
   /** How many slots are in use. */
   used: number;
   capacity: number;
@@ -45,6 +54,9 @@ export class PartRenderer {
   private readonly pos = new THREE.Vector3();
   private readonly scale = new THREE.Vector3(1, 1, 1);
   private readonly color = new THREE.Color();
+
+  /** Part id -> the enclosure factor last applied. Absent means 1. */
+  private readonly shades = new Map<PartId, number>();
 
   private readonly outlineMaterials: THREE.ShaderMaterial[] = [];
   /** Per-part hue jitter, seeded so every client generates the same lumber. */
@@ -86,6 +98,7 @@ export class PartRenderer {
       this.group.add(mesh, outline);
 
       this.buckets.push({
+        baseColor: new Float32Array(INITIAL_CAPACITY * 3),
         kind,
         mesh,
         outline,
@@ -133,6 +146,10 @@ export class PartRenderer {
     const slotToPart = new Int32Array(next).fill(-1);
     slotToPart.set(bucket.slotToPart);
 
+    const baseColor = new Float32Array(next * 3);
+    baseColor.set(bucket.baseColor);
+    bucket.baseColor = baseColor;
+
     bucket.mesh = mesh;
     bucket.outline = outline;
     bucket.slotToPart = slotToPart;
@@ -174,6 +191,12 @@ export class PartRenderer {
       Math.max(0, Math.min(1, hsl.l + this.jitterRng.signed(0.065))),
     );
     bucket.mesh.setColorAt(slot, this.color);
+    bucket.baseColor[slot * 3] = this.color.r;
+    bucket.baseColor[slot * 3 + 1] = this.color.g;
+    bucket.baseColor[slot * 3 + 2] = this.color.b;
+    // A fresh part starts unshaded; whoever computes enclosure runs after the
+    // world changes and will say otherwise if it is.
+    this.shades.delete(id);
 
     bucket.slotToPart[slot] = id;
     bucket.mesh.count = bucket.used;
@@ -198,6 +221,9 @@ export class PartRenderer {
         bucket.mesh.getColorAt(last, this.color);
         bucket.mesh.setColorAt(loc.slot, this.color);
       }
+      // The base colour moves with its part, or the next re-shade of the moved
+      // part multiplies from the removed one's paint.
+      bucket.baseColor.copyWithin(loc.slot * 3, last * 3, last * 3 + 3);
       // The part that was at the end now lives here.
       const movedId = bucket.slotToPart[last]!;
       bucket.slotToPart[loc.slot] = movedId;
@@ -213,6 +239,7 @@ export class PartRenderer {
     if (bucket.mesh.instanceColor !== null) bucket.mesh.instanceColor.needsUpdate = true;
 
     this.location.delete(id);
+    this.shades.delete(id);
     return true;
   }
 
@@ -224,6 +251,66 @@ export class PartRenderer {
       bucket.slotToPart.fill(-1);
     }
     this.location.clear();
+    this.shades.clear();
+  }
+
+  /**
+   * Darken one part to `factor` of its own colour.
+   *
+   * From the stored base every time, never from the live buffer — see the note
+   * on `baseColor`. Skipped when nothing changed, because the caller re-shades
+   * the whole world on every change and most parts keep the shade they had;
+   * a needless write is a needless GPU upload of the whole colour buffer.
+   */
+  shade(id: PartId, factor: number): void {
+    const current = this.shades.get(id) ?? 1;
+    if (Math.abs(current - factor) < 1e-3) return;
+    const loc = this.location.get(id);
+    if (loc === undefined) return;
+    const bucket = this.buckets[loc.kind]!;
+    const at = loc.slot * 3;
+    this.color.setRGB(
+      bucket.baseColor[at]! * factor,
+      bucket.baseColor[at + 1]! * factor,
+      bucket.baseColor[at + 2]! * factor,
+    );
+    bucket.mesh.setColorAt(loc.slot, this.color);
+    if (bucket.mesh.instanceColor !== null) bucket.mesh.instanceColor.needsUpdate = true;
+    this.shades.set(id, factor);
+  }
+
+  /** What a part is currently shaded to. 1 for a part never shaded. */
+  shadeOf(id: PartId): number {
+    return this.shades.get(id) ?? 1;
+  }
+
+  /**
+   * The colour actually in the buffer for this part, not the bookkeeping.
+   *
+   * For tests and the harness: `shadeOf` reports what this class believes, and
+   * a class's beliefs about its own buffer are exactly the thing a swap bug
+   * falsifies.
+   */
+  colorOf(id: PartId): { r: number; g: number; b: number } | null {
+    const loc = this.location.get(id);
+    if (loc === undefined) return null;
+    const bucket = this.buckets[loc.kind]!;
+    bucket.mesh.getColorAt(loc.slot, this.color);
+    return { r: this.color.r, g: this.color.g, b: this.color.b };
+  }
+
+  /** The spread of shades across every live part, for a scenario to check. */
+  shadeStats(): { min: number; max: number; shaded: number } {
+    // A part absent from the map is at 1, so the spread starts there whenever
+    // any part is unshaded — and an empty world is all at 1 by vacuity.
+    const anyUnshaded = this.location.size === 0 || this.shades.size < this.location.size;
+    let min = 1;
+    let max = anyUnshaded ? 1 : 0;
+    for (const factor of this.shades.values()) {
+      if (factor < min) min = factor;
+      if (factor > max) max = factor;
+    }
+    return { min, max, shaded: this.shades.size };
   }
 
   /** Outline width is measured in pixels, so it depends on the viewport. */

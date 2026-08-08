@@ -1101,6 +1101,15 @@ The general shape, which has now appeared three times on this project: **a
 function with two internal paths needs a test that separates them, and a test
 that exercises both at once separates neither.**
 
+And on the enclosure shading, eleven: the first contact not free, so every
+plank on the lawn dims; no floor, so a boxed-in part goes black; shades that
+multiply the live buffer and compound; a base colour that does not move with a
+swapped part; a removed part's shade haunting the next holder of its id; the
+base array dropped across a grow; a shade recorded but never written to the
+buffer; the ground not counting as a contact; a pass that shades nothing; a part
+counting itself as its own neighbour; and the `worldChanged` wiring deleted
+outright — caught by the browser scenario, the only place that wiring exists.
+
 ## Every bug that was planted on purpose
 
 Each of these was introduced deliberately, to watch one assertion fail, and then

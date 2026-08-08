@@ -237,6 +237,15 @@ tuning.register({
   home: 'src/player/cameraRig.ts',
 });
 
+const enclosureShade = tuning.register({
+  key: 'light.enclosure',
+  label: 'Enclosure shading',
+  value: 1,
+  min: 0, max: 1, step: 0.05,
+  help: 'How much parts darken where the support graph says they are boxed in.',
+  home: 'src/render/occlusion.ts',
+});
+
 tuning.register({
   key: 'map.size',
   label: 'Minimap size',
@@ -256,6 +265,7 @@ const minimap = new Minimap(app);
 tuning.onChange((key, value) => {
   if (key === 'camera.fov') camera.baseFov = value;
   if (key === 'map.size') minimap.setSize(value);
+  if (key === 'light.enclosure') build.shadeByEnclosure(value);
 });
 
 const mapMarkers: MapMarker[] = [];
@@ -379,6 +389,12 @@ const SHADOW_REBUILD_INTERVAL = 0.25;
 function worldChanged(): void {
   shadowsDirty = true;
   forgetTagsOnDead();
+  // Re-light what players have built from the support graph the change just
+  // rebuilt. Here rather than at any call site, because this is the funnel
+  // every placement, removal, collapse and resync already goes through — and a
+  // lighting cue that missed one of those would go stale exactly when the
+  // world got interesting.
+  build.shadeByEnclosure(enclosureShade());
   // The map's built layer is redrawn when the world says it changed, rather
   // than on a timer or every frame. This is the funnel every placement, removal
   // and collapse already goes through, which is the whole reason the map can
@@ -3454,6 +3470,8 @@ window.__maker = {
       return lit;
     },
   },
+  /** The enclosure shading's spread, so a scenario can see it lands. */
+  shading: () => parts.shadeStats(),
   /** Where the last placement landed, so a scenario can aim back at it. */
   lastPlacedAt: () => build.lastPlacedAt,
   save: (): PlacementRecord[] => build.serialize(),
