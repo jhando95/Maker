@@ -1101,6 +1101,13 @@ The general shape, which has now appeared three times on this project: **a
 function with two internal paths needs a test that separates them, and a test
 that exercises both at once separates neither.**
 
+And on the chunked renderer, seven, every one of which first passed against a
+suite of 1,592: culling quietly off again; the sphere never recomputed; every
+part landing in one chunk; an emptied bucket that keeps drawing; a stale slot
+after a swap-with-last; an outline given its own matrix buffer in a grow; and a
+clear that leaves buckets visible. All seven caught by the suite written for
+them.
+
 And on the enclosure shading, eleven: the first contact not free, so every
 plank on the lawn dims; no floor, so a boxed-in part goes black; shades that
 multiply the live buffer and compound; a base colour that does not move with a
@@ -1109,6 +1116,31 @@ base array dropped across a grow; a shade recorded but never written to the
 buffer; the ground not counting as a contact; a pass that shades nothing; a part
 counting itself as its own neighbour; and the `worldChanged` wiring deleted
 outright — caught by the browser scenario, the only place that wiring exists.
+
+## The chunked renderer, and seven plants that found no test at all
+
+Chunking the part renderer — one InstancedMesh per kind per 12-metre cell, so
+frustum culling could be switched back on — passed all 1,592 existing tests
+without a single edit to a caller. Then all seven plants on the new behaviour
+passed too: culling quietly off again, the bounding sphere never recomputed,
+every part landing in one chunk, an emptied bucket that keeps drawing, a stale
+slot after a swap, an outline given its own matrix buffer in a grow, and a clear
+that leaves buckets visible.
+
+That is not seven bad tests; it is zero tests. The chunking is deliberately
+invisible to every caller — that is what makes it a safe refactor — and a
+change invisible to callers is invisible to the callers' tests, all of which
+drive the renderer through `add`/`remove`/`shade` and never look at what it put
+in the scene. The refactor's virtue and its verification gap are the same fact.
+
+The new suite asserts through the renderer's public surface — the meshes in its
+group, their names, spheres and visibility — and one entry is worth keeping for
+the pattern: **a stale slot in the location map is self-consistent.** After a
+swap-with-last, `shade` writes to the dead slot and `colorOf` reads it back, so
+the two agree with each other and with nothing on screen. The only honest
+question is the one the GPU answers — slot 0 of a one-part mesh — and asked that
+way the plant fails immediately. Third instance on this project of bookkeeping
+that can corroborate its own lie.
 
 ## Every bug that was planted on purpose
 

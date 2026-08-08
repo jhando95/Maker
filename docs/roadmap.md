@@ -295,7 +295,13 @@ This is the one cost in the game that a player controls without limit. A fort of
 three thousand parts is roughly a quarter of a million triangles submitted per
 frame from behind a wall you cannot see through.
 
-**The fix is chunking, not per-frame packing.** Repacking the instance buffer
+**Done, and measured again on the way out.** One mesh per kind per 12-metre
+chunk; culling back on; looking away from the same 129-plank structure now drops
+its draws and its ~8,500 triangles entirely, while facing it costs the same as
+before. The soak stayed flat — seed buckets per kind keep the shader warm-up
+honest, and buckets are never destroyed so the second half allocates nothing.
+
+**The fix was chunking, not per-frame packing.** Repacking the instance buffer
 each frame to hold only what is visible means uploading the whole buffer sixty
 times a second, which trades a rasterisation cost for a bandwidth one. One
 `InstancedMesh` per *(kind, spatial chunk)* gives three.js a bounding sphere it

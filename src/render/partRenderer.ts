@@ -1,15 +1,45 @@
 /**
- * Draws every placed part.
+ * Draws every placed part, in chunks the camera can skip.
  *
- * One InstancedMesh per part kind, plus one outline shell per kind that shares
- * the *same* instanceMatrix buffer object as its parent. Sharing the buffer is
- * what keeps outlines affordable: the shell costs one extra draw call per kind,
- * not per part, and never needs its own transform upload. Eight kinds means
- * roughly sixteen draw calls for an entire fort.
+ * One InstancedMesh per part kind **per 12-metre chunk of the yard**, plus one
+ * outline shell per mesh that shares the *same* instanceMatrix buffer object as
+ * its parent. Sharing the buffer is what keeps outlines affordable: the shell
+ * costs one extra draw call, not one per part, and never needs its own
+ * transform upload.
  *
- * Removal is O(1) via swap-with-last. Instance buffers have no holes, so
- * deleting from the middle means moving the last instance into the gap, which
- * needs a two-way map between a part's id and the instance slot holding it.
+ * ## Why chunks, measured
+ *
+ * The first version of this file was one mesh per kind with `frustumCulled`
+ * switched off, and the comment explaining why was correct: an InstancedMesh's
+ * bounding sphere sits at its origin, and with instances scattered across the
+ * whole yard three.js would pop an entire fort out of view the moment that
+ * origin left the frustum. The *consequence* was that every plank anybody had
+ * ever placed was submitted every frame, twice — the one cost in this game a
+ * player can grow without limit. Measured before the change: turning away from
+ * a 129-plank structure saved 172 draw calls and 55,000 triangles, and none of
+ * that saving was the structure.
+ *
+ * Chunking is the standard fix and the cheap one. A mesh whose instances all
+ * sit inside one 12-metre cell has a bounding sphere that means something, so
+ * culling can be switched back on and three.js does the rest. The cost is more
+ * draw calls when many chunks are in view — bounded by how much of the yard is
+ * actually built on — and the alternative, repacking one buffer to the visible
+ * set each frame, trades a rasterisation cost for uploading the whole buffer
+ * sixty times a second.
+ *
+ * ## The rules that keep the soak flat
+ *
+ * Chunk buckets are created lazily and **never destroyed** — a bucket whose
+ * last part is removed goes invisible and waits, because the soak's second
+ * twelve rounds must allocate nothing, and rounds build in the same places.
+ * Geometry and materials are made once per *kind* and shared by every chunk,
+ * so a new bucket compiles no program and uploads no geometry: the seed bucket
+ * each kind starts with is what the boot-time warm-up compiles, and every
+ * later bucket looks identical to the compiler.
+ *
+ * Removal is O(1) via swap-with-last, which keeps three buffers aligned:
+ * matrices, live colours, and the unshaded base colours the enclosure shading
+ * multiplies from.
  */
 
 import * as THREE from 'three';
@@ -20,10 +50,28 @@ import { createToonMaterial, createOutlineMaterial } from './toonMaterial.ts';
 import type { PartId } from '../physics/types.ts';
 import { Rng } from '../core/rng.ts';
 
-const INITIAL_CAPACITY = 256;
+/**
+ * Metres per chunk.
+ *
+ * Sized against the fights this game has: a fort fits in one or two, so a
+ * built-up corner of the yard is a handful of draw calls, while the far half of
+ * a 116-metre world drops out of the frustum entirely. Smaller chunks cull
+ * tighter and cost more draws; this is a knob to measure, not a constant to
+ * defend.
+ */
+export const CHUNK = 12;
 
-interface KindBucket {
-  kind: PartKind;
+/**
+ * Slots a fresh bucket starts with.
+ *
+ * Small, because there is a bucket per kind per chunk now and most hold a
+ * handful of parts; growth doubles, so a dense chunk pays a few copies on the
+ * way up and nothing after.
+ */
+const INITIAL_CAPACITY = 32;
+
+interface ChunkBucket {
+  kindId: number;
   mesh: THREE.InstancedMesh;
   outline: THREE.InstancedMesh;
   /** Instance slot -> part id. */
@@ -42,12 +90,22 @@ interface KindBucket {
   capacity: number;
 }
 
+/** The resources every chunk of one kind shares. */
+interface KindResources {
+  kind: PartKind;
+  geometry: THREE.BufferGeometry;
+  material: THREE.MeshToonMaterial;
+  outlineMaterial: THREE.ShaderMaterial;
+}
+
 export class PartRenderer {
   readonly group = new THREE.Group();
 
-  private readonly buckets: KindBucket[] = [];
-  /** Part id -> which bucket and slot holds it. */
-  private readonly location = new Map<PartId, { kind: number; slot: number }>();
+  private readonly kinds: KindResources[] = [];
+  /** `${kindId}:${cx},${cz}` -> the bucket drawing that cell. */
+  private readonly buckets = new Map<string, ChunkBucket>();
+  /** Part id -> the bucket and slot holding it. */
+  private readonly location = new Map<PartId, { bucket: ChunkBucket; slot: number }>();
 
   private readonly matrix = new THREE.Matrix4();
   private readonly quat = new THREE.Quaternion();
@@ -58,7 +116,7 @@ export class PartRenderer {
   /** Part id -> the enclosure factor last applied. Absent means 1. */
   private readonly shades = new Map<PartId, number>();
 
-  private readonly outlineMaterials: THREE.ShaderMaterial[] = [];
+  private outlinesOn = true;
   /** Per-part hue jitter, seeded so every client generates the same lumber. */
   private readonly jitterRng = new Rng('lumber-jitter');
 
@@ -69,60 +127,91 @@ export class PartRenderer {
       const geometry = kind.isWedge
         ? wedge(kind.length, kind.thickness, kind.width)
         : chamferedBox(kind.length, kind.thickness, kind.width, kind.chamfer);
-
       const material = createToonMaterial({ color: 0xffffff });
-      const mesh = giveInstanceColor(
-        new THREE.InstancedMesh(geometry, material, INITIAL_CAPACITY),
-      );
-      mesh.count = 0;
-      mesh.castShadow = true;
-      mesh.receiveShadow = true;
-      // Instances are scattered across the whole yard, so the mesh's own
-      // bounding sphere is meaningless; culling it as one object would pop the
-      // entire fort out of view when its origin left the frustum.
-      mesh.frustumCulled = false;
-      mesh.name = `parts:${kind.key}`;
-
       const outlineMaterial = createOutlineMaterial(OUTLINE_COLORS[kind.material], outlineThickness);
-      this.outlineMaterials.push(outlineMaterial);
+      this.kinds.push({ kind, geometry, material, outlineMaterial });
 
-      const outline = new THREE.InstancedMesh(geometry, outlineMaterial, INITIAL_CAPACITY);
-      outline.count = 0;
-      outline.frustumCulled = false;
-      outline.castShadow = false;
-      outline.receiveShadow = false;
-      outline.name = `outline:${kind.key}`;
-      // The shell reads the parent's transforms directly — one upload, two draws.
-      outline.instanceMatrix = mesh.instanceMatrix;
-
-      this.group.add(mesh, outline);
-
-      this.buckets.push({
-        baseColor: new Float32Array(INITIAL_CAPACITY * 3),
-        kind,
-        mesh,
-        outline,
-        slotToPart: new Int32Array(INITIAL_CAPACITY).fill(-1),
-        used: 0,
-        capacity: INITIAL_CAPACITY,
-      });
+      // A seed bucket per kind, empty, at the origin chunk. This is what the
+      // boot-time warm-up compiles: every later bucket shares this one's
+      // geometry and materials, so it looks identical to the shader compiler
+      // and the soak's "zero mid-round programs" assertion holds however many
+      // chunks a session touches.
+      this.ensureBucket(kind.id, 0, 0);
     }
   }
 
-  /** Grow a bucket's instance buffers, preserving what is already in them. */
-  private grow(bucket: KindBucket): void {
+  private ensureBucket(kindId: number, cx: number, cz: number): ChunkBucket {
+    const key = `${kindId}:${cx},${cz}`;
+    const existing = this.buckets.get(key);
+    if (existing !== undefined) return existing;
+
+    const shared = this.kinds[kindId]!;
+    const mesh = giveInstanceColor(
+      new THREE.InstancedMesh(shared.geometry, shared.material, INITIAL_CAPACITY),
+    );
+    mesh.count = 0;
+    mesh.visible = false;
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+    // The whole point of chunking: a bucket's instances all sit inside one
+    // cell, so its bounding sphere means something and culling can be on.
+    mesh.frustumCulled = true;
+    mesh.name = `parts:${shared.kind.key}:${cx},${cz}`;
+
+    const outline = new THREE.InstancedMesh(shared.geometry, shared.outlineMaterial, INITIAL_CAPACITY);
+    outline.count = 0;
+    outline.visible = false;
+    outline.frustumCulled = true;
+    outline.castShadow = false;
+    outline.receiveShadow = false;
+    outline.name = `outline:${shared.kind.key}:${cx},${cz}`;
+    // The shell reads the parent's transforms directly — one upload, two draws.
+    outline.instanceMatrix = mesh.instanceMatrix;
+
+    this.group.add(mesh, outline);
+    const bucket: ChunkBucket = {
+      kindId,
+      mesh,
+      outline,
+      slotToPart: new Int32Array(INITIAL_CAPACITY).fill(-1),
+      baseColor: new Float32Array(INITIAL_CAPACITY * 3),
+      used: 0,
+      capacity: INITIAL_CAPACITY,
+    };
+    this.buckets.set(key, bucket);
+    return bucket;
+  }
+
+  /**
+   * Recompute what the frustum tests, after a change.
+   *
+   * The outline shares the parent's Sphere *object*, so one recompute serves
+   * both — `computeBoundingSphere` mutates in place once the sphere exists.
+   */
+  private refreshBounds(bucket: ChunkBucket): void {
+    const populated = bucket.used > 0;
+    bucket.mesh.visible = populated;
+    bucket.outline.visible = populated && this.outlinesOn;
+    if (!populated) return;
+    bucket.mesh.computeBoundingSphere();
+    bucket.outline.boundingSphere = bucket.mesh.boundingSphere;
+  }
+
+  private grow(bucket: ChunkBucket): void {
     const next = bucket.capacity * 2;
     const oldMesh = bucket.mesh;
     const oldOutline = bucket.outline;
+    const shared = this.kinds[bucket.kindId]!;
 
     const mesh = giveInstanceColor(
-      new THREE.InstancedMesh(oldMesh.geometry, oldMesh.material, next),
+      new THREE.InstancedMesh(shared.geometry, shared.material, next),
     );
     mesh.instanceMatrix.array.set(oldMesh.instanceMatrix.array);
     mesh.count = oldMesh.count;
+    mesh.visible = oldMesh.visible;
     mesh.castShadow = true;
     mesh.receiveShadow = true;
-    mesh.frustumCulled = false;
+    mesh.frustumCulled = true;
     mesh.name = oldMesh.name;
 
     // Both buffers exist by construction now, so this is a copy rather than a
@@ -132,9 +221,10 @@ export class PartRenderer {
       mesh.instanceColor.needsUpdate = true;
     }
 
-    const outline = new THREE.InstancedMesh(oldMesh.geometry, oldOutline.material, next);
+    const outline = new THREE.InstancedMesh(shared.geometry, shared.outlineMaterial, next);
     outline.count = oldOutline.count;
-    outline.frustumCulled = false;
+    outline.visible = oldOutline.visible;
+    outline.frustumCulled = true;
     outline.name = oldOutline.name;
     outline.instanceMatrix = mesh.instanceMatrix;
 
@@ -154,6 +244,7 @@ export class PartRenderer {
     bucket.outline = outline;
     bucket.slotToPart = slotToPart;
     bucket.capacity = next;
+    this.refreshBounds(bucket);
   }
 
   /**
@@ -169,8 +260,8 @@ export class PartRenderer {
     cx: number, cy: number, cz: number,
     qx: number, qy: number, qz: number, qw: number,
   ): void {
-    const bucket = this.buckets[kindId];
-    if (bucket === undefined) return;
+    if (this.kinds[kindId] === undefined) return;
+    const bucket = this.ensureBucket(kindId, Math.floor(cx / CHUNK), Math.floor(cz / CHUNK));
     if (bucket.used >= bucket.capacity) this.grow(bucket);
 
     const slot = bucket.used++;
@@ -204,14 +295,15 @@ export class PartRenderer {
     bucket.mesh.instanceMatrix.needsUpdate = true;
     if (bucket.mesh.instanceColor !== null) bucket.mesh.instanceColor.needsUpdate = true;
 
-    this.location.set(id, { kind: kindId, slot });
+    this.location.set(id, { bucket, slot });
+    this.refreshBounds(bucket);
   }
 
   /** Remove a part's instance by moving the last one into its slot. */
   remove(id: PartId): boolean {
     const loc = this.location.get(id);
     if (loc === undefined) return false;
-    const bucket = this.buckets[loc.kind]!;
+    const bucket = loc.bucket;
     const last = bucket.used - 1;
 
     if (loc.slot !== last) {
@@ -240,14 +332,19 @@ export class PartRenderer {
 
     this.location.delete(id);
     this.shades.delete(id);
+    this.refreshBounds(bucket);
     return true;
   }
 
   clear(): void {
-    for (const bucket of this.buckets) {
+    // Buckets are kept, empty and invisible — see the file comment. A cleared
+    // world rebuilt in the same places allocates nothing.
+    for (const bucket of this.buckets.values()) {
       bucket.used = 0;
       bucket.mesh.count = 0;
       bucket.outline.count = 0;
+      bucket.mesh.visible = false;
+      bucket.outline.visible = false;
       bucket.slotToPart.fill(-1);
     }
     this.location.clear();
@@ -267,7 +364,7 @@ export class PartRenderer {
     if (Math.abs(current - factor) < 1e-3) return;
     const loc = this.location.get(id);
     if (loc === undefined) return;
-    const bucket = this.buckets[loc.kind]!;
+    const bucket = loc.bucket;
     const at = loc.slot * 3;
     this.color.setRGB(
       bucket.baseColor[at]! * factor,
@@ -294,8 +391,7 @@ export class PartRenderer {
   colorOf(id: PartId): { r: number; g: number; b: number } | null {
     const loc = this.location.get(id);
     if (loc === undefined) return null;
-    const bucket = this.buckets[loc.kind]!;
-    bucket.mesh.getColorAt(loc.slot, this.color);
+    loc.bucket.mesh.getColorAt(loc.slot, this.color);
     return { r: this.color.r, g: this.color.g, b: this.color.b };
   }
 
@@ -315,18 +411,28 @@ export class PartRenderer {
 
   /** Outline width is measured in pixels, so it depends on the viewport. */
   setViewportHeight(height: number): void {
-    for (const material of this.outlineMaterials) {
-      material.uniforms.viewportHeight!.value = height;
+    for (const shared of this.kinds) {
+      shared.outlineMaterial.uniforms.viewportHeight!.value = height;
     }
   }
 
   setOutlinesVisible(visible: boolean): void {
-    for (const bucket of this.buckets) bucket.outline.visible = visible;
+    this.outlinesOn = visible;
+    for (const bucket of this.buckets.values()) {
+      bucket.outline.visible = visible && bucket.used > 0;
+    }
   }
 
+  /**
+   * Draw calls if nothing were culled — the *ceiling*, not the frame's cost.
+   *
+   * The whole point of chunking is that the real number is lower whenever the
+   * camera is not looking at everything; `renderer.info.render.calls` is where
+   * the real number lives.
+   */
   get drawCalls(): number {
     let n = 0;
-    for (const bucket of this.buckets) {
+    for (const bucket of this.buckets.values()) {
       if (bucket.used > 0) n += bucket.outline.visible ? 2 : 1;
     }
     return n;
@@ -334,17 +440,24 @@ export class PartRenderer {
 
   get instanceCount(): number {
     let n = 0;
-    for (const bucket of this.buckets) n += bucket.used;
+    for (const bucket of this.buckets.values()) n += bucket.used;
     return n;
   }
 
+  /** How many chunk buckets exist, for tests and the harness. */
+  get bucketCount(): number {
+    return this.buckets.size;
+  }
+
   dispose(): void {
-    for (const bucket of this.buckets) {
+    for (const bucket of this.buckets.values()) {
       bucket.mesh.dispose();
       bucket.outline.dispose();
-      bucket.mesh.geometry.dispose();
-      (bucket.mesh.material as THREE.Material).dispose();
-      (bucket.outline.material as THREE.Material).dispose();
+    }
+    for (const shared of this.kinds) {
+      shared.geometry.dispose();
+      shared.material.dispose();
+      shared.outlineMaterial.dispose();
     }
   }
 }
