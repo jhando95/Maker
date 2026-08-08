@@ -21,6 +21,7 @@
  */
 
 import * as THREE from 'three';
+import { giveInstanceColor } from './instanceColor.ts';
 import { markGeometries } from './markShapes.ts';
 import { TAG_COLORS, TAG_LIFT, TAG_SHAPES, type TagRecord } from '../game/spray.ts';
 import { WORLD_LIMIT } from '../game/spray.ts';
@@ -54,7 +55,9 @@ export class TagDecals {
     for (let i = 0; i < TAG_SHAPES.length; i++) {
       const geometry = geometries.get(TAG_SHAPES[i]!);
       if (geometry === undefined) continue;
-      const mesh = new THREE.InstancedMesh(geometry, this.material, WORLD_LIMIT);
+      const mesh = giveInstanceColor(
+        new THREE.InstancedMesh(geometry, this.material, WORLD_LIMIT),
+      );
       mesh.name = `tag:${TAG_SHAPES[i]}`;
       mesh.count = 0;
       mesh.castShadow = false;

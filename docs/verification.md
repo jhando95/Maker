@@ -277,6 +277,12 @@ an inference. It also confirms, rather than merely suspects, that every
 performance figure this repository has taken from CI is a figure about a
 software rasteriser.
 
+A lesson worth keeping separately: four of those five probes asked "which object
+is missing?" and the answer was "none". The question that worked asked what
+changed about the objects that were already there. When a hypothesis fails
+twice, the next move is to change the question rather than to sharpen the
+instrument.
+
 ## The soak, and the two plants it took to make it mean anything
 
 `scenarios/soak.mjs` runs twenty-four identical rounds of building, painting,
@@ -342,12 +348,32 @@ already — and lifting the counts is now part of the warm-up and tested. It
 changed no number here, because those programs were already compiled by meshes
 sharing a key. It is in because it is correct, not because it fixed anything.
 
-**Still unexplained.** One `depth` program is compiled when Tag first runs. Its
-key differs from an already-compiled one by two boolean feature bits. Four
-probes failed to name the object: every pooled marker, every character mesh and
-every hidden group is demonstrably reached by the warm-up. The soak asserts a
-bound of one rather than zero, as a ratchet — it cannot go back to the two it
-was — and this paragraph is here instead of a tidier claim.
+**And then found, on the fifth probe, by asking a different question.** One
+`depth` program was still compiled when Tag first ran, and four probes had gone
+looking for an object the warm-up had missed. There wasn't one. The warm-up
+reaches everything; the mistake was assuming a program is determined by *which*
+objects are drawn.
+
+`setColorAt` creates `instanceColor` the first time it is called, and **the
+presence of that buffer is part of a shader's identity** — a mesh with one
+compiles `USE_INSTANCING_COLOR`, in the shadow pass as much as the colour pass.
+On a title screen nobody has been coloured yet, so every character mesh still
+had `instanceColor === null`; the warm-up faithfully compiled the
+no-instance-colour variant of each, and the first kid posed needed the other
+one. Nothing was missing. An object was in a different *shape* than it would
+later be.
+
+The probe that found it took thirty seconds to write and should have been the
+first: rather than diffing shader cache keys, walk every mesh in the scene
+before and after and diff the properties that *feed* a cache key — instancing,
+instance colour, morphs, side, alpha test, vertex colours. Twenty-odd meshes
+came back `icolor: false -> true`, all of them the cast.
+
+`giveInstanceColor` allocates the buffer at construction, filled with white so
+an instance nobody has coloured draws exactly as it did. Programs across
+twenty-four rounds now go **18 → 18 → 18**, and the total is one *lower* than
+before, because unifying the state removed a variant rather than adding one.
+The soak asserts zero now instead of a ratchet at one.
 
 **And a plant that missed for its own reasons.** Nine were planted on the
 warm-up and eight failed immediately. The ninth — leaving the shadow map

@@ -13,6 +13,7 @@
  */
 
 import * as THREE from 'three';
+import { giveInstanceColor } from './instanceColor.ts';
 import { PART_KINDS, COLORWAYS, OUTLINE_COLORS, type PartKind } from '../build/partKit.ts';
 import { chamferedBox, wedge } from './geometry.ts';
 import { createToonMaterial, createOutlineMaterial } from './toonMaterial.ts';
@@ -58,7 +59,9 @@ export class PartRenderer {
         : chamferedBox(kind.length, kind.thickness, kind.width, kind.chamfer);
 
       const material = createToonMaterial({ color: 0xffffff });
-      const mesh = new THREE.InstancedMesh(geometry, material, INITIAL_CAPACITY);
+      const mesh = giveInstanceColor(
+        new THREE.InstancedMesh(geometry, material, INITIAL_CAPACITY),
+      );
       mesh.count = 0;
       mesh.castShadow = true;
       mesh.receiveShadow = true;
@@ -99,7 +102,9 @@ export class PartRenderer {
     const oldMesh = bucket.mesh;
     const oldOutline = bucket.outline;
 
-    const mesh = new THREE.InstancedMesh(oldMesh.geometry, oldMesh.material, next);
+    const mesh = giveInstanceColor(
+      new THREE.InstancedMesh(oldMesh.geometry, oldMesh.material, next),
+    );
     mesh.instanceMatrix.array.set(oldMesh.instanceMatrix.array);
     mesh.count = oldMesh.count;
     mesh.castShadow = true;
@@ -107,8 +112,9 @@ export class PartRenderer {
     mesh.frustumCulled = false;
     mesh.name = oldMesh.name;
 
-    if (oldMesh.instanceColor !== null) {
-      mesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(next * 3).fill(1), 3);
+    // Both buffers exist by construction now, so this is a copy rather than a
+    // conditional creation — and the new one is already the right length.
+    if (oldMesh.instanceColor !== null && mesh.instanceColor !== null) {
       mesh.instanceColor.array.set(oldMesh.instanceColor.array);
       mesh.instanceColor.needsUpdate = true;
     }

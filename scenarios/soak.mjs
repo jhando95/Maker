@@ -132,21 +132,20 @@ export default async function (page) {
   // claim rather than the soak's: an upload is not a compile, so the others are
   // allowed a cache-filling half and this is not.
   //
-  // The bound is one rather than zero, and that is a measurement rather than a
-  // margin. Before the warm-up, two programs compiled mid-session — one when
-  // Tag first ran and one on the first spray. The warm-up removed the spray
-  // one. The survivor is a `depth` program, so a shadow, and its cache key
-  // differs from one already compiled by two boolean feature bits; four
-  // separate probes failed to say which object needs it, and every pooled
-  // marker, every character mesh and every hidden group is demonstrably
-  // reached. It is written down as unexplained rather than dressed up, and the
-  // bound is here as a ratchet: it cannot go back to two.
-  const KNOWN_LATE = 1;
+  // Zero, and it took three goes to earn that. The warm-up alone left one
+  // `depth` program compiling the first time Tag ran, and the cause was not a
+  // missing object — it was an object in a different *shape* than it would
+  // later be. `setColorAt` creates `instanceColor` on first use, and the
+  // presence of that buffer is part of a shader's identity, so on a title
+  // screen where nobody has been coloured yet the warm-up compiled the
+  // no-instance-colour variant of every character mesh and the real one still
+  // had to be compiled later. Allocating the buffer at construction makes a
+  // mesh look the same to the compiler at boot as in the tenth minute.
   assert(
-    mid.programs - base.programs <= KNOWN_LATE,
+    mid.programs === base.programs,
     `rounds compiled ${mid.programs - base.programs} new programs after the boot-time`
-    + ` warm-up (${base.programs} -> ${mid.programs}), and at most ${KNOWN_LATE} is`
-    + ` accounted for — a program compiled mid-round is a hitch on whatever drew it`,
+    + ` warm-up (${base.programs} -> ${mid.programs}) — a program compiled mid-round is`
+    + ` a hitch on whatever drew it first`,
   );
 
   for (const key of ['geometries', 'textures', 'programs', 'nodes']) {

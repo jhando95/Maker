@@ -71,6 +71,7 @@
 
 import * as THREE from 'three';
 import { createToonMaterial, createOutlineMaterial } from './toonMaterial.ts';
+import { giveInstanceColor } from './instanceColor.ts';
 import { chamferedBox, blob } from './geometry.ts';
 import { markGeometries } from './markShapes.ts';
 import { Rng } from '../core/rng.ts';
@@ -659,7 +660,9 @@ export class CharacterBatch {
   private makeMesh(
     name: string, geometry: THREE.BufferGeometry, color: number, slots = this.capacity,
   ): THREE.InstancedMesh {
-    const mesh = new THREE.InstancedMesh(geometry, createToonMaterial({ color }), slots);
+    const mesh = giveInstanceColor(
+      new THREE.InstancedMesh(geometry, createToonMaterial({ color }), slots),
+    );
     // Named because a test that finds a leg by counting children is testing
     // whichever mesh happens to be sixth, and goes on passing when that stops
     // being a leg.
