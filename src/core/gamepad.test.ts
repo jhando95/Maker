@@ -5,6 +5,7 @@ import {
 } from './gamepad.ts';
 import { GamepadManager, type ActionSink } from './gamepadManager.ts';
 import { ACTIONS, type Action } from './input.ts';
+import { NAV_DEADZONE } from '../ui/spatialNav.ts';
 
 const OPTS: PadOptions = { ...DEFAULT_PAD_OPTIONS };
 
@@ -210,6 +211,76 @@ describe('trigger hysteresis', () => {
   it('a fully released trigger is never held', () => {
     const held = mapPad(rt(1), OPTS);
     expect(mapPad(rt(0), OPTS, held).down.has('placePart')).toBe(false);
+  });
+});
+
+describe('the menu controls, which are deliberately not rebindable', () => {
+  it('reads A and B off the pad rather than through the binding table', () => {
+    // Every other pad control here can be moved. These cannot, on purpose: a
+    // player who has rebound A to something else has not asked for a menu they
+    // can no longer confirm out of.
+    expect(mapPad(pad({ buttons: { [PAD.A]: 1 } }), OPTS).menu.confirm).toBe(true);
+    expect(mapPad(pad({ buttons: { [PAD.B]: 1 } }), OPTS).menu.back).toBe(true);
+    expect(mapPad(pad(), OPTS).menu.confirm).toBe(false);
+    expect(mapPad(pad(), OPTS).menu.back).toBe(false);
+  });
+
+  it('and they are two different buttons', () => {
+    const a = mapPad(pad({ buttons: { [PAD.A]: 1 } }), OPTS).menu;
+    const b = mapPad(pad({ buttons: { [PAD.B]: 1 } }), OPTS).menu;
+    expect(a.confirm && !a.back).toBe(true);
+    expect(b.back && !b.confirm).toBe(true);
+  });
+
+  it('reports the stick with y positive downward, as a screen has it', () => {
+    // The stick's own sense is +y down already; the game's move axis flips it
+    // because forward is +z. A menu wants the screen's sense, and getting this
+    // backwards is a highlight that goes up when the stick goes down.
+    expect(mapPad(pad({ axes: [0, 1, 0, 0] }), OPTS).menu.y).toBeGreaterThan(0);
+    expect(mapPad(pad({ axes: [0, -1, 0, 0] }), OPTS).menu.y).toBeLessThan(0);
+    expect(mapPad(pad({ axes: [1, 0, 0, 0] }), OPTS).menu.x).toBeGreaterThan(0);
+    // And it is the opposite of the movement axis, which is the whole point.
+    expect(mapPad(pad({ axes: [0, 1, 0, 0] }), OPTS).moveZ).toBeLessThan(0);
+  });
+
+  it('folds the d-pad in with the stick, so a menu needs to know about one', () => {
+    expect(mapPad(pad({ buttons: { [PAD.DDOWN]: 1 } }), OPTS).menu.y).toBeGreaterThan(0);
+    expect(mapPad(pad({ buttons: { [PAD.DUP]: 1 } }), OPTS).menu.y).toBeLessThan(0);
+    expect(mapPad(pad({ buttons: { [PAD.DRIGHT]: 1 } }), OPTS).menu.x).toBeGreaterThan(0);
+    expect(mapPad(pad({ buttons: { [PAD.DLEFT]: 1 } }), OPTS).menu.x).toBeLessThan(0);
+  });
+
+  it('passes the stick through raw, because a menu applies its own threshold', () => {
+    // A menu wants a shove, not a nudge, and its deadzone is far higher than the
+    // aiming one. Running it through the aiming deadzone first would mean the
+    // two disagree about what "pushed" means.
+    const gentle = mapPad(pad({ axes: [0, 0.1, 0, 0] }), OPTS);
+    expect(gentle.moveZ).toBe(0);
+    expect(gentle.menu.y).toBeCloseTo(0.1, 6);
+    // A menu ignores it too — but by its own rule, further out.
+    expect(NAV_DEADZONE).toBeGreaterThan(DEFAULT_PAD_OPTIONS.deadzone);
+  });
+
+  it('is idle on an idle pad', () => {
+    expect(IDLE_INTENT.menu).toEqual({ x: 0, y: 0, confirm: false, back: false });
+    expect(mergePads([], OPTS).menu).toEqual(IDLE_INTENT.menu);
+  });
+
+  it('takes whichever pad is being pushed hardest, and any pad that pressed A', () => {
+    const merged = mergePads(
+      [pad({ axes: [0, 0.3, 0, 0] }), pad({ axes: [0, 0.9, 0, 0], buttons: { [PAD.A]: 1 } })],
+      OPTS,
+    );
+    expect(merged.menu.y).toBeCloseTo(0.9, 6);
+    expect(merged.menu.confirm).toBe(true);
+    expect(merged.menu.back).toBe(false);
+  });
+
+  it('keeps the sign when the harder push is the negative one', () => {
+    // `Math.abs` compares them and the value keeps its direction — taking the
+    // larger number rather than the larger push would turn up into down.
+    const merged = mergePads([pad({ axes: [0, 0.3, 0, 0] }), pad({ axes: [0, -0.9, 0, 0] })], OPTS);
+    expect(merged.menu.y).toBeCloseTo(-0.9, 6);
   });
 });
 

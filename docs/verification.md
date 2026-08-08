@@ -958,6 +958,51 @@ timeout was passed as an unused argument and the wait ran on the thirty-second
 default. It is only visible in an error message that says thirty seconds when
 the source says fifteen, which is how it survived until it fired.
 
+## A menu a controller can reach, and four checks that could not fail
+
+Every screen in this project was click-only. There was a gamepad layer and it
+drove the *game*, so a player on a controller had to put it down and find the
+mouse to change a setting or pick a mode. On a PC that is a papercut; for the
+console build this project is now aiming at, it is the whole job, and the cost
+grows with every screen added.
+
+The geometry is a pure module with its own tests. The interesting part of the
+verification is the browser scenario, where four assertions were written that
+could not have failed — three of them the same mistake in different clothes.
+
+**"Something changed" is not "the right thing changed."** The first version of
+the stick test pushed down and asserted the highlight moved. Up and down both
+move it, so a stick wired upside down passed. It is an *equivalence* now: from
+one starting point, pushing the stick down and pressing Down must land on the
+same item. That is the property, and it fails immediately when the sign flips.
+
+**"One ring is drawn" was asserted once, before there was a second.** Checking
+the ring count after the *first* arrow press cannot catch a highlight that never
+takes the old ring off, because at that point only one element has ever had it.
+The count is asserted after moving as well now, which is where two would show.
+
+**"The highlight survived" was read off the model, not the screen.** The check
+after a change of screen read `menu.focused`, which is derived from an index —
+and the index survives a render whether or not anything is drawn. What is
+actually lost when a rebuilt card is not re-decorated is the *ring*, so the ring
+is what is counted.
+
+**And the layout assumption that was simply wrong.** The scenario walked down the
+title screen looking for Settings and never found it, which read as a bug in the
+navigation and was a bug in my model of the screen: Free Build, Locker, Saved
+Builds, Blueprints and Settings are a single row, not a column. The scenario
+walks down and then right now — which is a better test than the one intended,
+because it exercises both axes and because it is exactly the case a flat
+next/previous cursor gets wrong.
+
+Nine plants on the wiring, all caught: the key listener never installed; the pad
+never reaching the menu; confirm and back on the same button; back doing nothing;
+the highlight not put back after a render; the ring never drawn; the old ring
+never removed; the highlight switched on before anybody asked; and the stick
+upside down. Fourteen more on the geometry, twelve caught first time — one of the
+two was a no-op plant of mine, and the other was a `reset` whose effect is
+indistinguishable from clearing a timer until the step *after* the next one.
+
 ## Every bug that was planted on purpose
 
 Each of these was introduced deliberately, to watch one assertion fail, and then

@@ -2500,7 +2500,17 @@ function draw(alpha: number, frameDt: number): void {
   // already works — devices write into a pending buffer whenever they like and
   // the tick boundary folds it — and it keeps the pad alive while paused, which
   // is what lets Start reopen the game.
-  gamepad.poll();
+  const pad = gamepad.poll();
+
+  // And while a menu is up, the same pad drives that instead.
+  //
+  // On the frame rather than the tick because a menu is not simulated — it is a
+  // page, it repaints when something changes, and the tick loop is paused for
+  // most of the screens this has to work on. `frameDt` is what the repeat rate
+  // is measured against for the same reason.
+  if (menu.current !== 'none') {
+    menu.padNavigate(pad.menu.x, pad.menu.y, frameDt, pad.menu.confirm, pad.menu.back);
+  }
 
   // Measured on the frame, not the tick: the tick rate is fixed and says
   // nothing about whether the machine is keeping up.

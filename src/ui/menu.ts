@@ -15,6 +15,7 @@ import { formatCode, MAX_NAME } from '../app/identity.ts';
 import type { BuildSlot } from '../app/buildStore.ts';
 import type { BlueprintSlot } from '../app/blueprintStore.ts';
 import { installTheme } from './theme.ts';
+import { StepRepeat, nextInDirection, type Direction } from './spatialNav.ts';
 import type { Look } from '../net/lobbyProtocol.ts';
 import { describeKey } from '../core/input.ts';
 import {
@@ -92,6 +93,15 @@ const STYLE = `
 }
 .mk-btn:hover { filter: brightness(1.07); transform: translateY(-1px); }
 .mk-btn:focus-visible { outline: 3px solid var(--water); outline-offset: 3px; }
+
+/* The highlight a stick or an arrow key moves around.
+   Its own class rather than leaning on :focus-visible, which is the browser's
+   guess about whether the focus came from a keyboard — and a gamepad produces no
+   key events at all, so on a controller the guess is always no and the ring
+   never appears. Drawn on top of everything with an offset ring rather than a
+   background change, so it reads the same on a button, a mode card, a slider and
+   a text field without any of them knowing about it. */
+.mk-focus { outline: 3px solid var(--water) !important; outline-offset: 3px; }
 /* Press moves the button onto its own shadow, which is most of what makes a
    flat cartoon button feel physical. */
 .mk-btn:active { transform: translateY(3px); border-bottom-width: 2px; }
@@ -501,6 +511,14 @@ export interface ResultInfo {
   lines: ReadonlyArray<{ label: string; value: string }>;
 }
 
+/** The four keys, and nothing else — a menu is not a text editor. */
+const ARROWS: Readonly<Record<string, Direction | undefined>> = {
+  ArrowUp: 'up',
+  ArrowDown: 'down',
+  ArrowLeft: 'left',
+  ArrowRight: 'right',
+};
+
 export class Menu {
   /**
    * The menu's own element.
@@ -519,6 +537,21 @@ export class Menu {
   /** Where Back goes, since settings and builds are reachable from two places. */
   private returnTo: Screen = 'title';
 
+  /**
+   * Which focusable the highlight is on, or -1 for "nobody is driving".
+   *
+   * Starts at -1 and stays there until an arrow key or a stick moves it, so a
+   * player using the mouse never has a ring appear on a button they were not
+   * looking at. Once it exists it survives a re-render and a change of screen,
+   * because somebody on a controller who has put the mouse down has no other way
+   * to get it back.
+   */
+  private focusIndex = -1;
+  private readonly navX = new StepRepeat();
+  private readonly navY = new StepRepeat();
+  private confirmHeld = false;
+  private backHeld = false;
+
   constructor(parent: HTMLElement, settings: SettingsStore, callbacks: MenuCallbacks) {
     this.settings = settings;
     this.callbacks = callbacks;
@@ -535,7 +568,140 @@ export class Menu {
     this.root.appendChild(this.card);
     parent.appendChild(this.root);
 
+    // On window rather than on the card, because the card is rebuilt on every
+    // render and a listener attached to it would be thrown away with it.
+    window.addEventListener('keydown', (e) => this.onKey(e));
+
     this.show('title');
+  }
+
+  /**
+   * Arrow keys move the highlight. Enter and Space are the browser's business.
+   *
+   * Deliberately not handling activation: the highlight is real DOM focus, so a
+   * focused button already does the right thing on Enter and on Space, already
+   * announces itself to a screen reader, and already cannot be activated twice
+   * by one press — which is exactly what a hand-rolled `click()` on keydown does
+   * beside the browser's own.
+   */
+  private onKey(e: KeyboardEvent): void {
+    if (this.screen === 'none') return;
+    // Not while a rebind is waiting for a key: on that screen an arrow *is* the
+    // answer to the question being asked.
+    if (this.listening !== null) return;
+    // And not inside something somebody is typing in, where left and right move
+    // a caret. Up and down do nothing in a one-line field, so they are taken.
+    const target = e.target;
+    const typing = target instanceof HTMLInputElement && target.type === 'text';
+    if (typing && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) return;
+
+    const direction = ARROWS[e.key];
+    if (direction === undefined) return;
+    e.preventDefault();
+    this.moveFocus(direction);
+  }
+
+  /**
+   * Everything on the current screen that a player can point the highlight at.
+   *
+   * Read off the DOM on every move rather than kept in a list, because the card
+   * is rebuilt from scratch on every render and a kept list would be a second
+   * description of the screen — which is the shape of bug this project has lost
+   * to four times. The filter matters as much as the query: a disabled button
+   * and one that a section is scrolled past are both things the highlight has to
+   * skip, and both are invisible to a selector.
+   */
+  private focusables(): HTMLElement[] {
+    return Array.from(this.card.querySelectorAll<HTMLElement>('button, input, select'))
+      .filter((el) => !el.hasAttribute('disabled') && el.getClientRects().length > 0);
+  }
+
+  private moveFocus(direction: Direction): void {
+    const items = this.focusables();
+    if (items.length === 0) return;
+    // The first press wakes the highlight up rather than moving it, so a player
+    // reaching for a controller does not have to guess where it started.
+    if (this.focusIndex < 0 || this.focusIndex >= items.length) {
+      this.putFocus(items, 0);
+      return;
+    }
+    const rects = items.map((el) => el.getBoundingClientRect());
+    // Wrapping up and down but not left and right: a column of six that stops
+    // dead at both ends makes a player press a key that does nothing twice per
+    // screen, while a row that wrapped would send the highlight from Delete on
+    // one blueprint to the name of the same one, which reads as a bug.
+    const wrap = direction === 'up' || direction === 'down';
+    const next = nextInDirection(rects, this.focusIndex, direction, wrap);
+    if (next !== null) this.putFocus(items, next);
+  }
+
+  private putFocus(items: readonly HTMLElement[], index: number): void {
+    for (const el of items) el.classList.remove('mk-focus');
+    this.focusIndex = index;
+    const el = items[index];
+    if (el === undefined) return;
+    el.classList.add('mk-focus');
+    // Scrolled by the browser rather than by hand, and `nearest` so a highlight
+    // moving down a long settings list nudges rather than recentres.
+    el.focus({ preventScroll: true });
+    el.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  }
+
+  /**
+   * Put the highlight back after a render, which throws the card away.
+   *
+   * By index rather than by element, because the element is gone — every render
+   * builds new ones. Clamped, since a screen can come back shorter: a blueprint
+   * was deleted, a section collapsed.
+   */
+  private restoreFocus(): void {
+    if (this.focusIndex < 0) return;
+    const items = this.focusables();
+    if (items.length === 0) {
+      this.focusIndex = -1;
+      return;
+    }
+    this.putFocus(items, Math.min(this.focusIndex, items.length - 1));
+  }
+
+  /**
+   * Drive the highlight from a pad. Called every frame a menu is up.
+   *
+   * `y` is positive downward, matching the screen rather than the stick, so the
+   * caller does the one flip and this does not have to know which.
+   */
+  padNavigate(x: number, y: number, dt: number, confirm: boolean, back: boolean): void {
+    if (this.screen === 'none' || this.listening !== null) {
+      this.navX.reset();
+      this.navY.reset();
+      return;
+    }
+    const down = this.navY.step(y, dt);
+    if (down !== 0) this.moveFocus(down > 0 ? 'down' : 'up');
+    const across = this.navX.step(x, dt);
+    if (across !== 0) this.moveFocus(across > 0 ? 'right' : 'left');
+
+    // Edges rather than levels, or holding A on the pause screen resumes the
+    // game and then immediately pauses it again on whatever the highlight
+    // landed on.
+    if (confirm && !this.confirmHeld) this.activateFocused();
+    this.confirmHeld = confirm;
+    if (back && !this.backHeld) this.handleEscape();
+    this.backHeld = back;
+  }
+
+  /** Press what the highlight is on. Reports whether there was anything. */
+  activateFocused(): boolean {
+    const el = this.focusables()[this.focusIndex];
+    if (el === undefined) return false;
+    el.click();
+    return true;
+  }
+
+  /** What the highlight is on, for a test and for a status line. */
+  get focused(): string | null {
+    const el = this.focusables()[this.focusIndex];
+    return el === undefined ? null : (el.textContent ?? '').trim();
   }
 
   get current(): Screen {
@@ -561,6 +727,11 @@ export class Menu {
 
   show(screen: Screen, result?: ResultInfo): void {
     const wasLocker = this.screen === 'locker';
+    // A new screen starts at the top — but only for somebody who was already
+    // driving with a stick or the arrows. Waking the highlight up because a
+    // mouse user clicked Settings would put a ring on a button they are not
+    // looking at.
+    if (screen !== this.screen && this.focusIndex >= 0) this.focusIndex = 0;
     this.screen = screen;
     if (result !== undefined) this.result = result;
     this.root.classList.toggle('mk-off', screen === 'none');
@@ -614,6 +785,7 @@ export class Menu {
       case 'blueprints': this.renderBlueprints(); break;
       case 'none': break;
     }
+    this.restoreFocus();
   }
 
   /**

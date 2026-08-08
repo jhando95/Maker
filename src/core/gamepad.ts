@@ -134,6 +134,25 @@ export interface PadIntent {
   active: boolean;
   /** Start was down this poll; the caller edge-detects it. */
   start: boolean;
+  /**
+   * Driving a menu, which is deliberately not rebindable.
+   *
+   * Every other pad control on this page goes through `PAD_BINDINGS` and can be
+   * moved. These four cannot, on purpose: a player who has rebound A to
+   * something else has not asked for a menu they can no longer confirm out of,
+   * and "A is confirm, B is back" is a convention older than any of them.
+   *
+   * `y` is positive *downward* — the screen's sense rather than the stick's —
+   * because the only thing that ever reads it is a highlight moving down a list.
+   * The d-pad is folded in here as well as the stick, so both work without the
+   * menu knowing there are two.
+   */
+  menu: {
+    x: number;
+    y: number;
+    confirm: boolean;
+    back: boolean;
+  };
 }
 
 export const IDLE_INTENT: PadIntent = {
@@ -142,6 +161,7 @@ export const IDLE_INTENT: PadIntent = {
   lookYawRate: 0, lookPitchRate: 0,
   active: false,
   start: false,
+  menu: { x: 0, y: 0, confirm: false, back: false },
 };
 
 /**
@@ -228,6 +248,17 @@ export function mapPad(
     lookPitchRate: zeroed(lookCurve(look.y) * options.lookSpeed * pitchSign),
     active: down.size > 0 || move.magnitude > 0 || look.magnitude > 0,
     start: buttonValue(snapshot, PAD.START) > PRESS_AT,
+    menu: {
+      // The raw stick rather than the deadzoned one: a menu applies its own,
+      // much larger threshold, and running it through the aiming deadzone first
+      // would mean the two disagree about what "pushed" means.
+      x: lx + (buttonValue(snapshot, PAD.DRIGHT) > PRESS_AT ? 1 : 0)
+        - (buttonValue(snapshot, PAD.DLEFT) > PRESS_AT ? 1 : 0),
+      y: ly + (buttonValue(snapshot, PAD.DDOWN) > PRESS_AT ? 1 : 0)
+        - (buttonValue(snapshot, PAD.DUP) > PRESS_AT ? 1 : 0),
+      confirm: buttonValue(snapshot, PAD.A) > PRESS_AT,
+      back: buttonValue(snapshot, PAD.B) > PRESS_AT,
+    },
   };
 }
 
@@ -253,6 +284,7 @@ export function mergePads(
     lookYawRate: 0, lookPitchRate: 0,
     active: false,
     start: false,
+    menu: { x: 0, y: 0, confirm: false, back: false },
   };
   const down = merged.down as Set<Action>;
 
@@ -270,6 +302,10 @@ export function mergePads(
     }
     merged.active ||= intent.active;
     merged.start ||= intent.start;
+    if (Math.abs(intent.menu.x) > Math.abs(merged.menu.x)) merged.menu.x = intent.menu.x;
+    if (Math.abs(intent.menu.y) > Math.abs(merged.menu.y)) merged.menu.y = intent.menu.y;
+    merged.menu.confirm ||= intent.menu.confirm;
+    merged.menu.back ||= intent.menu.back;
   }
   return merged;
 }
