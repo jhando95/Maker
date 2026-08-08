@@ -680,6 +680,55 @@ immediately. This is the third time on this project that a check has asserted
 over a collection the bug removes the subject from, and it will not be the last:
 the tell is an `every` or a `some` whose subject is the thing under test.
 
+## A network that is bad on purpose, and a guard with nothing to guard
+
+`loopbackPair` delivers every message instantly, in order, and never loses one.
+Every rule in `session.ts` has been verified against it, which means every rule
+in `session.ts` has been verified against a network that cannot misbehave. The
+failure modes a real session meets on an ordinary evening — a command that
+arrives behind the one after it, a snapshot that never comes, a hello sent into
+thirty seconds of dead wifi — have never been exercised at all.
+
+`src/net/unreliable.ts` wraps a `Transport` and gives it four dials and a clock
+the test owns. Twelve plants; eleven caught first time. Two design notes worth
+keeping:
+
+**There is no reorder dial**, because reordering is not something a network
+decides to do — it is what jitter *is*. Delivery is by due time rather than send
+order, so reordering falls out at exactly the rate the jitter implies. A second
+dial would be a second, disagreeing model of one phenomenon. The plant that
+proves it works removes the sort and delivers in send order.
+
+**Both directions get their own generator**, seeded apart. One shared generator
+would drop the same packet numbers up and down, which no real network does, and
+would hide any bug whose trigger is a one-way hole. The plant is a one-line
+change to `unreliablePair` and the assertion that catches it is that the two
+directions did not lose the same number of messages.
+
+### The one that could not fail
+
+`hold` clamps the delay at zero, so a jitter wider than the latency cannot
+schedule a message in the past. The test drove three hundred messages through
+`latency: 0.01, jitter: 0.5` and asserted that nothing arrived before it was
+sent. Taking the clamp out changed nothing, and it took a while to see why:
+
+**a due time of zero and a due time of minus four hundred milliseconds are
+indistinguishable at this interface.** Both are `<= now`, so both deliver on the
+very next `advance`, in the same batch, in the same order. There is no arrival
+that can tell them apart. The clamp was not being tested — it was unobservable,
+which is a different and worse thing than untested.
+
+Two honest options: delete the guard, or make what it guards visible. The link
+now reports `fastest` and `slowest` — the delay envelope it actually applied —
+which is a diagnostic a network harness wants for its own sake, because a
+condition set that silently failed to apply is a whole suite quietly running on
+a perfect network. With them, the clamp is a floor that can be violated and
+observed, and the plant is caught immediately.
+
+The assertion also checks that the envelope was *explored* (`fastest` under a
+millisecond, `slowest` past four hundred), because bounds on a distribution
+nothing sampled are bounds that hold vacuously.
+
 ## Every bug that was planted on purpose
 
 Each of these was introduced deliberately, to watch one assertion fail, and then
@@ -762,6 +811,16 @@ folded anyway; two different sounds folded together; coalescing against the
 oldest line instead of the newest; a repeat that keeps its old place in the
 list; a repeat that does not update its direction; the newest line refused
 instead of the oldest dropped; and a repeat that does not refresh the age.
+
+And on the network that is bad on purpose, twelve: a delay allowed to go
+negative; delivery in send order rather than due order; no tiebreak, so messages
+due at the same instant come out backwards; loss that is silent and never
+counted; a blackout that swallows nothing; a close that flushes its backlog
+instead of dropping it; both directions sharing one generator; a duplicate
+counted but never sent twice; a closed link that still accepts sends; a clock
+that never moves; a hostile preset gentler than the mild one; and an envelope
+that never widens past its first message. Eleven caught first time, and the
+twelfth only after the guard it tests was made observable at all.
 
 And on the blueprint picker, eight: Hold acting without redrawing the screen;
 every row lit rather than the held one; a built-in offered Rename and Delete; no

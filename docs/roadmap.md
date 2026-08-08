@@ -7,9 +7,9 @@ ask what is actually wrong with it rather than what is broken in it.
 The short version: **the engineering is ahead of the game.** What exists is a
 well-verified, well-instrumented, honestly-documented engine with five modes
 bolted to it, and almost nothing that makes somebody open it twice. The next
-phase is not more systems. It is reach, retention and robustness under
-conditions nobody has tested — in that order, because a party game nobody can
-join on a phone is a party game with a party of one.
+phase is not more systems. It is robustness under conditions nobody has tested,
+then retention, then reach on the platforms this game is actually for — which
+are PC now, possibly console later, and never a phone.
 
 ---
 
@@ -37,24 +37,33 @@ opens with four pages of praise is not a review.
 
 Ranked by what it costs, not by how hard it is to fix.
 
-### A. Nobody can play it on a phone
+### A. Every menu is mouse-only, and the controller stops at the door
 
-There is **no touch input anywhere in the codebase** — no `touchstart`, no
-`pointerdown`, no virtual stick, no tap-to-place. The game is keyboard, mouse
-and pointer lock.
+**The platform decision is made: this is a PC game, possibly a console game
+later, and never a phone game.** That is recorded here because the first version
+of this document argued at length for touch input, and it was wrong to — the
+reach argument is real for a game aiming at a phone audience and irrelevant to
+one that is not. Touch is off the roadmap and is not coming back.
 
-This is the single largest gap in the project and it is not close either. The
-premise is *party games friends play together*; the search for what this genre
-knows returned one number that reframes everything else on this list: **over 80%
-of Roblox gameplay happens on mobile.** A browser game shared by link is
-overwhelmingly opened on a phone, and this one shows a phone a black canvas with
-a crosshair and no way to move.
+What the decision does *not* dispose of is the input gap underneath it, which
+survives the change and gets more important because of it. There is a gamepad
+layer (`src/core/gamepad.ts`, `gamepadManager.ts`, a scenario, bindings in
+Settings) and it drives the *game* only. Every menu in this project — title,
+mode select, pause, settings, locker, lobby, blueprints — is click-only. There is
+no arrow-key navigation, no focus ring, no A-to-confirm, no B-to-back. Searching
+`menu.ts` for `ArrowDown`, `focus()` or `tabIndex` finds nothing at all.
 
-It is also not a small job, and pretending otherwise would be dishonest. Pointer
-lock does not exist on touch, the radial wheel is a gesture that has to be
-redesigned rather than ported, and building — aim, snap, confirm — is the hardest
-thing to make work with a thumb. But the alternative is a party game with a
-desktop-only party.
+Two things follow. On PC it is a papercut with teeth: a player on a controller
+has to put it down and find the mouse to change a setting, pick a mode, or hold
+a blueprint. On console it is not a papercut, it is a wall — a console build is
+not a port of the renderer, it is the entire UI learning to be driven by a stick
+and two buttons, and every screen added between now and then is another screen
+that has to learn it.
+
+That is the argument for doing it early rather than at porting time: the cost is
+proportional to how many screens exist, and screens are the thing this project
+keeps adding. It is also the same work as keyboard navigation, and therefore the
+same work as being usable without a mouse at all.
 
 ### B. The netcode has no failure story
 
@@ -121,7 +130,9 @@ project has the building depth and none of the sharing.
 Concrete things worth taking, and from where.
 
 **Roblox / Fortnite Creative — the creator pipeline.** The wall between playing
-and building is the thing to remove. Here that means: a blueprint gets a share
+and building is the thing to remove. (Taken for the pipeline only. The platform
+lesson usually drawn from Roblox is a mobile one, and this project has decided
+against that.) Here that means: a blueprint gets a share
 code, a code can be pasted, and a yard remembers what was stamped in it. That is
 a small feature with an outsized effect, because it turns every player into a
 supplier of content for every other player.
@@ -227,10 +238,11 @@ hash on the wire that says *when* two worlds parted. Highest value per hour in
 the document, and it is testing infrastructure, so it pays out on everything
 after it.
 
-**2. Touch.** A virtual stick, a look area, tap-to-place, and the wheel
-redesigned as a press-and-drag rather than a mouse gesture. Big, unavoidable,
-and the difference between a game friends can play and a game friends with
-laptops can play.
+**2. Menu navigation by stick and by key.** A focus model shared by every
+screen, arrow keys and the left stick to move through it, A to confirm and B to
+back out, a visible focus ring in the existing design language. Do it now rather
+than at porting time, because the cost scales with the number of screens and
+this project keeps adding screens.
 
 **3. Break up `main.ts`.** Not a rewrite — extract the four cohesive lumps that
 are already visually delimited by its own section comments (comms plumbing, the
