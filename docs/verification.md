@@ -813,6 +813,95 @@ half-second round trip against a third-of-a-second retry, so a guest *always*
 asks again before the first answer can arrive. Six plants on these fixes, five
 caught immediately, and the sixth is the one that needed the slow link to exist.
 
+## Two worlds that drift apart, and the smoke alarm that notices
+
+A `built` broadcast is sent once and never repeated. One dropped packet leaves a
+guest permanently missing a plank — silently, for the rest of the round, with no
+way for either side to find out. A guest standing on a wall the host cannot see
+is not a graphical glitch; it is two people playing different games, and it is
+the failure this netcode was most afraid of and had no answer to.
+
+`hashWorld` is one number that says whether two machines are looking at the same
+world. It rides on a snapshot about once a second, a guest compares it against
+its own, and three disagreements in a row buy a request for the world back.
+
+**Order-independent, because the two sides do not agree on part ids.** The host's
+are the order it placed them; a guest's are the order they arrived, which a lossy
+network reorders and a late joiner gets wholesale from the middle of a game. So
+parts combine by addition rather than by mixing one into the next. The plant that
+proves it works swaps the sum for a chained mix and the "does not care what order
+the parts came in" test fails immediately.
+
+**Hashed from the serialized form**, which quantises to a millimetre and 1e-4 and
+is what both sides were built from. Hashing the physics store instead would
+compare two numbers that reached the same place by different arithmetic and
+disagree in the last bit for reasons that are not a desync.
+
+**Three in a row rather than one**, because a placement can be in flight at the
+instant the host hashes, and a guest that asked for the whole yard every time
+anybody put down a plank would be worse than the bug.
+
+Twelve plants. Seven caught immediately; four needed better tests; one cannot be
+caught at all and is labelled in the source rather than left looking verified.
+
+### The four tests that could not fail, and what each was missing
+
+**The run-of-three had nothing to run against.** The first version placed planks
+over a link with half a second of steady delay, on the theory that a placement
+would be in flight when the hash went out. It never was — a `built` and the
+snapshot carrying the hash travel the *same link*, so a steady delay always
+delivers the plank first and no limit at all would have fired. It takes
+*reordering* for a hash to overtake the plank it counts. With jitter and no loss
+the false alarm is real, and a limit of one fails within a second.
+
+**"The repair is the parts and nothing else" was asserted too late.** The test
+walked the guest, forced a resync, and checked at the end that it had not been
+teleported to the spawn. It had — and prediction and reconciliation had already
+healed it, so the final position looked perfect. What a player sees is the jump,
+so the jump is what is measured now: the largest single-tick movement across the
+whole run, which a tick of walking keeps at a few centimetres and a teleport does
+not.
+
+**Nothing checked that a repaired world was *relearned*.** Host and guest allocate
+part ids independently, so "take down part 3" means two different planks unless
+the translation table is rebuilt alongside the parts. Deleting the relearn line
+changed nothing observable, because the next thing any test did was let the hash
+run again. The test now takes a part down sixty ticks after the repair — far
+inside the three seconds the hash needs — so the id map is the only thing that
+can make it work.
+
+**And a session that was merely lossy was called merely building.** The
+"no false alarm" test ran on a 3% link and found four desyncs, which is not a
+false alarm: some of the announcements really were dropped and the guest really
+did diverge and really was repaired. The premise was wrong, not the code. It is
+two tests now — one on a perfect link asserting nothing is ever reported, and one
+on a lossy link asserting the twelve planks arrive anyway *and* that it took the
+repair to get them there.
+
+### And one that cannot be falsified at all
+
+`hashWorld` mixes the part count in as well as the sum. Without it, a world whose
+part hashes happen to add up to zero is the same number as an empty one — and
+"nothing has been built" is the state a guest is most likely to be wrongly in.
+
+Removing `count++` breaks no test, and not because the tests are weak. Any
+function of `(sum, count)` differs from a function of `(sum)` only on two worlds
+that share a sum and differ in count, and there is no way to construct one:
+falsifying it needs two parts whose hashes sum to zero mod 2^32, and a search
+over two million single-part variants produced no such pair, because `mix` is a
+bijection over a contiguous range and its outputs are not birthday-random.
+
+So it stays, it costs one multiply a second, and it is **labelled in the source
+as unfalsifiable** rather than left looking covered. That is the difference
+between this and the earlier cases: a guard nobody can break is not the same as a
+guard nobody checked, and the honest thing is to say which one you have.
+
+An earlier version also nudged a part hashing to zero up to one, on the same
+reasoning, with a five-thousand-sample sweep asserting no part ever hashed to
+zero — a test that could not fail, guarding a case that could not happen. That
+one was deleted outright rather than labelled, because with the count mixed in a
+part hashing to zero still changes the world hash: it still changes the count.
+
 ## Every bug that was planted on purpose
 
 Each of these was introduced deliberately, to watch one assertion fail, and then
@@ -895,6 +984,16 @@ folded anyway; two different sounds folded together; coalescing against the
 oldest line instead of the newest; a repeat that keeps its old place in the
 list; a repeat that does not update its direction; the newest line refused
 instead of the oldest dropped; and a repeat that does not refresh the age.
+
+And on the world hash and its repair, twelve: the hash never sent; a mismatch
+that never leads to asking; a run of mismatches that resets on every snapshot;
+one disagreement being enough to ask; a host that answers every resync however
+fast they come; a cooldown that never ticks down; a resync that re-initialises
+the guest like a welcome; a repaired world that never relearns its part ids; a
+hash that depends on the order the parts arrived in; position left out of a
+part's identity; a part that hashes to zero being invisible; and the count left
+out of the world. Eleven caught — the last two after the guard they tested was
+either deleted or labelled, because neither could be caught as written.
 
 And on the session over that network, six: a stale snapshot applied like any
 other; a snapshot read before the guest knew which player it was; a repeated

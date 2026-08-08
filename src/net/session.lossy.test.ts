@@ -24,7 +24,7 @@ import { commandToIntent, makeCommand, type Command } from '../core/command.ts';
 import { DT } from '../physics/constants.ts';
 import { loopbackPair } from './transport.ts';
 import { AWFUL, PERFECT, POOR, unreliablePair, type LinkConditions, type UnreliablePair } from './unreliable.ts';
-import { NetHost, NetClient, type SessionContext } from './session.ts';
+import { NetHost, NetClient, RESYNC_COOLDOWN_TICKS, type SessionContext } from './session.ts';
 
 type Machine = SessionContext & { local: CharacterController };
 
@@ -277,6 +277,203 @@ describe('a hole in the network', () => {
     play(s, 60);
     // Sixty ticks of blackout is twenty snapshots plus whatever else, all gone.
     expect(s.pipe.host.dropped).toBeGreaterThan(dropped + 15);
+  });
+});
+
+describe('a world that has drifted', () => {
+  const plank = (x: number, y: number, z: number) => ({
+    kind: 0, colorway: 0, x, y, z, qx: 0, qy: 0, qz: 0, qw: 1,
+  });
+
+  it('is noticed and repaired, which nothing could do before', () => {
+    // The failure this design was most afraid of and had no answer to. A
+    // `built` broadcast is sent once and never repeated, so one dropped packet
+    // leaves a guest permanently missing a plank — silently, for the rest of
+    // the round. A guest standing on a wall the host cannot see is not a
+    // graphical glitch; it is two people playing different games.
+    const s = connect(PERFECT, 'drift');
+    play(s, 60);
+    expect(s.clientCtx.world.partCount).toBe(0);
+
+    // Swallow exactly the announcement.
+    s.pipe.host.blackout(0.2);
+    const record = plank(3, 0.5, 3);
+    s.hostCtx.build.applyPlace(record);
+    s.host.announcePlacement(s.hostCtx.build.lastPlacedId!, record);
+    play(s, 30);
+    expect(s.hostCtx.world.partCount).toBe(1);
+    expect(s.clientCtx.world.partCount).toBe(0);
+
+    // The hash goes out about once a second; three in a row disagreeing is
+    // three seconds of being wrong with nothing in flight.
+    play(s, 480);
+    expect(s.client.desyncs).toBe(1);
+    expect(s.clientCtx.world.partCount).toBe(1);
+  });
+
+  it('does not throw the player about on the way, as a second welcome would', () => {
+    // A resync could have been a welcome and must not be: that reassigns the
+    // id, puts the player back at the spawn and resets their side.
+    //
+    // Watched tick by tick rather than at the end, because prediction and
+    // reconciliation would heal a spurious teleport within a few frames and
+    // leave the final position looking perfect. What a player would actually
+    // see is the jump, so the jump is what is measured.
+    const s = connect(PERFECT, 'repair');
+    play(s, 60);
+    const team = s.clientCtx.actors.local.team;
+
+    s.pipe.host.blackout(0.2);
+    const record = plank(3, 0.5, 3);
+    s.hostCtx.build.applyPlace(record);
+    s.host.announcePlacement(s.hostCtx.build.lastPlacedId!, record);
+
+    let last = s.clientCtx.actors.local.controller.z;
+    let jump = 0;
+    play(s, 480, { client: (c) => { c.moveZ = 1; } }, () => {
+      const now = s.clientCtx.actors.local.controller.z;
+      jump = Math.max(jump, Math.abs(now - last));
+      last = now;
+    });
+
+    expect(s.client.desyncs).toBe(1);
+    expect(s.clientCtx.world.partCount).toBe(1);
+    // A tick of walking is a few centimetres. A teleport to the spawn is metres.
+    expect(jump).toBeLessThan(0.5);
+    expect(s.clientCtx.actors.local.team).toBe(team);
+    expect(s.client.status.localId).toBe(1);
+  });
+
+  it('and leaves the guest able to be told about the next removal', () => {
+    // The repaired world has to be relearned, not just rebuilt. Host and guest
+    // allocate part ids independently, so "take down part 3" means two
+    // different planks unless the translation table is rebuilt with the parts —
+    // and a guest that cannot act on a removal has a world that will drift
+    // again the moment anybody takes something down.
+    const s = connect(PERFECT, 'relearn');
+    play(s, 60);
+    for (const x of [3, 6]) {
+      const record = plank(x, 0.5, 3);
+      s.hostCtx.build.applyPlace(record);
+      s.host.announcePlacement(s.hostCtx.build.lastPlacedId!, record);
+      play(s, 20);
+    }
+
+    // Miss one, so the guest has to be repaired.
+    s.pipe.host.blackout(0.2);
+    const missed = plank(9, 0.5, 3);
+    s.hostCtx.build.applyPlace(missed);
+    const missedId = s.hostCtx.build.lastPlacedId!;
+    s.host.announcePlacement(missedId, missed);
+    play(s, 480);
+    expect(s.client.desyncs).toBe(1);
+    expect(s.clientCtx.world.partCount).toBe(3);
+
+    // Now take that one down. Sixty ticks is far inside the three seconds the
+    // hash would need to notice, so this is the id map working and not the
+    // repair running twice.
+    s.hostCtx.build.applyRemove(missedId);
+    s.host.announceRemoval(missedId);
+    play(s, 60);
+    expect(s.hostCtx.world.partCount).toBe(2);
+    expect(s.clientCtx.world.partCount).toBe(2);
+    expect(s.client.desyncs).toBe(1);
+  });
+
+  it('does not cry desync at a placement that is merely in flight', () => {
+    // Jitter and no loss, which is the exact condition that produces a false
+    // alarm and nothing else: a `built` and the snapshot carrying the hash
+    // travel the same link, so on a link with a *steady* delay the placement
+    // always lands first and no limit at all would ever fire. It takes
+    // reordering for the hash to overtake the plank it counts. That was the
+    // first version of this test and it could not fail.
+    const s = connect({ latency: 0.15, jitter: 0.13, loss: 0, duplicate: 0 }, 'inflight');
+    play(s, 120);
+    for (let i = 0; i < 14; i++) {
+      const record = plank(3 + i * 1.5, 0.5, 3);
+      s.hostCtx.build.applyPlace(record);
+      s.host.announcePlacement(s.hostCtx.build.lastPlacedId!, record);
+      play(s, 12);
+    }
+    play(s, 300);
+    expect(s.hostCtx.world.partCount).toBe(14);
+    expect(s.clientCtx.world.partCount).toBe(14);
+    expect(s.client.desyncs).toBe(0);
+  });
+
+  it('does not cry desync at a session that is merely building', () => {
+    // A placement can be in flight in either direction at the instant the host
+    // hashes, so one disagreement is the normal cost of building at all. A
+    // guest that asked for the whole yard every time anybody put down a plank
+    // would be worse than the bug.
+    //
+    // Spaced a metre and a half apart, which is not decoration: at half a metre
+    // they overlap, and a guest applies a placement through `applyPlaceIfClear`
+    // while this test forces the host's through `applyPlace`. The first version
+    // built a tower the guest was right to refuse and then called the guest
+    // wrong for refusing it — a desync the hash reported correctly and which
+    // was in the test.
+    const s = connect(PERFECT, 'quiet');
+    play(s, 120);
+    for (let i = 0; i < 12; i++) {
+      const record = plank(3 + i * 1.5, 0.5, 3);
+      s.hostCtx.build.applyPlace(record);
+      s.host.announcePlacement(s.hostCtx.build.lastPlacedId!, record);
+      play(s, 40);
+    }
+    play(s, 300);
+    expect(s.hostCtx.world.partCount).toBe(12);
+    expect(s.clientCtx.world.partCount).toBe(12);
+    expect(s.client.desyncs).toBe(0);
+  });
+
+  it('and a lossy one that misses some of them still ends up agreeing', () => {
+    // The same twelve planks over a link that drops one packet in thirty. Some
+    // of the announcements do not arrive, so this is not a hypothetical: the
+    // guest really does end up with a different yard, several times, and the
+    // hash is what puts it back. Before this the difference was permanent.
+    const s = connect(POOR, 'noisy-build');
+    play(s, 120);
+    for (let i = 0; i < 12; i++) {
+      const record = plank(3 + i * 1.5, 0.5, 3);
+      s.hostCtx.build.applyPlace(record);
+      s.host.announcePlacement(s.hostCtx.build.lastPlacedId!, record);
+      play(s, 40);
+    }
+    play(s, 600);
+    expect(s.hostCtx.world.partCount).toBe(12);
+    expect(s.clientCtx.world.partCount).toBe(12);
+    // And it took the repair to get there, or the link was not lossy enough for
+    // this to have been a test of it.
+    expect(s.client.desyncs).toBeGreaterThan(0);
+  });
+
+  it('is answered once and then not again for a while, however often it is asked', () => {
+    // The most expensive message a client can ask a host for is every part in
+    // the yard, and a client is not under our control. Asked straight down the
+    // wire rather than through the guest, because what is being tested is what
+    // the host does with the message and not how a well-behaved guest sends it.
+    const s = connect(PERFECT, 'cooldown');
+    play(s, 60);
+
+    let worlds = 0;
+    const inner = s.pipe.client.drain.bind(s.pipe.client);
+    s.pipe.client.drain = () => {
+      const out = inner();
+      for (const m of out) if (m.t === 'world') worlds++;
+      return out;
+    };
+
+    for (let i = 0; i < 6; i++) s.pipe.client.send({ t: 'resync' });
+    play(s, 30);
+    expect(worlds).toBe(1);
+
+    // And it is a cooldown rather than a one-off: a guest that really has
+    // drifted twice must be able to ask twice.
+    play(s, RESYNC_COOLDOWN_TICKS + 10);
+    s.pipe.client.send({ t: 'resync' });
+    play(s, 30);
+    expect(worlds).toBe(2);
   });
 });
 

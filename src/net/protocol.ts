@@ -41,7 +41,7 @@ import type { EmoteKind, PingKind } from '../game/comms.ts';
 import type { Team } from '../game/actor.ts';
 
 /** Bumped whenever a message shape changes. Mismatched peers are turned away. */
-export const PROTOCOL_VERSION = 8;
+export const PROTOCOL_VERSION = 9;
 
 /**
  * One step of a WebRTC handshake, on its way between two players.
@@ -206,6 +206,15 @@ export type ClientMessage =
   | { t: 'hello'; version: number; name: string }
   /** One tick of input. Sent every tick; the newest wins if any are dropped. */
   | { t: 'cmd'; c: PackedCommand }
+  /**
+   * "My world does not match yours. Send me yours."
+   *
+   * Asked for rather than pushed, because the host cannot tell: it knows what it
+   * sent, not what arrived. Only a guest can compare the hash on a snapshot
+   * against its own, and only a guest knows it has been wrong three times
+   * running rather than caught mid-placement.
+   */
+  | { t: 'resync' }
   /** "I would like to place this." The host decides. */
   | { t: 'build'; r: PlacementRecord }
   /** "I would like to take that down." */
@@ -291,6 +300,15 @@ export type HostMessage =
   }
   | { t: 'refused'; reason: string }
   /**
+   * The world again, whole, because a guest said theirs had drifted.
+   *
+   * The same pairs a `welcome` carries and deliberately not a `welcome`: this
+   * repairs the parts and touches nothing else. Sending a welcome instead would
+   * also reassign the guest's id, put them back at the spawn and clear their
+   * side — a cure that hurts more than a missing plank.
+   */
+  | { t: 'world'; parts: Array<[number, PlacementRecord]> }
+  /**
    * Where everybody is, and which of your commands I have run.
    *
    * `ack` is what makes prediction work: the client replays everything after it
@@ -328,6 +346,18 @@ export type HostMessage =
      * invisible.
      */
     balloons: Array<[x: number, y: number, z: number]>;
+    /**
+     * What the host's world hashes to, when it feels like saying.
+     *
+     * Optional and sent about once a second rather than on every snapshot,
+     * because it is a smoke alarm and not a clock: a divergence noticed a second
+     * late is repaired a second late, and a divergence never noticed is a guest
+     * standing on a wall nobody else can see for the rest of the round.
+     *
+     * A `built` broadcast is sent once and never repeated, so one dropped packet
+     * is exactly that. This is how either side finds out.
+     */
+    w?: number;
   }
   /** Somebody built something. Includes the host's own placements. */
   | { t: 'built'; id: number; r: PlacementRecord }

@@ -69,6 +69,7 @@ import {
 } from '../game/comms.ts';
 import { cleanName } from '../app/identity.ts';
 import { packRound } from './roundPacket.ts';
+import { hashWorld } from '../build/worldHash.ts';
 import type { Transport } from './transport.ts';
 
 /**
@@ -112,6 +113,29 @@ export const MAX_PEERS = 7;
  * which opened a socket and then said nothing cannot sit in the queue forever.
  */
 export const HELLO_GRACE_TICKS = 300;
+
+/**
+ * How long a guest must wait before asking for the whole world again. Two
+ * seconds.
+ *
+ * Long enough that the answer to the last request has arrived and been applied
+ * on any link worth playing on, and short enough that a guest who really has
+ * drifted is not stuck watching a wrong world. It is a limit on the most
+ * expensive thing a client can ask a host for, and clients are not under our
+ * control.
+ */
+export const RESYNC_COOLDOWN_TICKS = 120;
+
+/**
+ * Consecutive mismatched world hashes before a guest asks for the world.
+ *
+ * One would be wrong. A placement can be in flight in either direction at the
+ * instant the host hashed, so a single disagreement is the normal cost of
+ * building at all, and reacting to one would mean fetching the entire yard every
+ * time anybody put down a plank. Three, at one hash a second, is three seconds
+ * of disagreeing with nothing in flight.
+ */
+export const WRONG_WORLD_LIMIT = 3;
 
 /** Unacknowledged commands a guest keeps for replay. Two seconds' worth. */
 const COMMAND_HISTORY = 120;
@@ -253,6 +277,8 @@ interface Peer {
   transport: Transport;
   actor: Actor;
   latest: Command | null;
+  /** Ticks before this peer may ask for the world again. */
+  resyncIn: number;
   /** The newest command tick actually run, echoed back so they can reconcile. */
   ack: number;
   /**
@@ -300,6 +326,13 @@ export class NetHost {
   private readonly headings = new Map<number, number>();
   private nextId = FIRST_REMOTE_ID;
   private tick = 0;
+
+  /**
+   * Snapshots between world hashes. Twenty, which is one a second.
+   */
+  private static readonly HASH_EVERY = SNAPSHOT_HZ;
+
+  private hashIn = 1;
   private sinceSnapshot = 0;
   private message: string | null = null;
 
@@ -406,7 +439,7 @@ export class NetHost {
     const controller = new CharacterController(this.ctx.world, where.x, where.y, where.z);
     const actor = makeRemoteActor(id, team, controller, () => this.headings.get(id) ?? 0);
     this.peers.set(id, {
-      id, transport, actor, latest: null, ack: -1, wasFiring: false,
+      id, transport, actor, latest: null, ack: -1, wasFiring: false, resyncIn: 0,
       name: cleanName(first.name),
     });
     this.ctx.actors.addRemote(actor);
@@ -476,6 +509,20 @@ export class NetHost {
       // mean the first welcome went missing. Say it again.
       case 'hello':
         this.introduce(peer);
+        break;
+
+      // "My world does not match yours." Only a guest can know that, because the
+      // host knows what it sent and not what arrived.
+      //
+      // Rate-limited per peer rather than trusted, for the ordinary reason: this
+      // is the most expensive message a client can ask for — every part in the
+      // yard — and a client is not under our control. The limit is generous
+      // against how often a real one asks, which is approximately never, and
+      // tight against a loop.
+      case 'resync':
+        if (peer.resyncIn > 0) break;
+        peer.resyncIn = RESYNC_COOLDOWN_TICKS;
+        peer.transport.send({ t: 'world', parts: this.ctx.build.serializeWithIds() });
         break;
 
       case 'cmd': {
@@ -621,6 +668,9 @@ export class NetHost {
     this.sayLimit.tick(dt);
     this.pingLimit.tick(dt);
     this.signalBudget.tick(dt);
+    for (const peer of this.peers.values()) {
+      if (peer.resyncIn > 0) peer.resyncIn--;
+    }
 
     const mode = this.ctx.mode?.() ?? null;
     for (const peer of this.peers.values()) {
@@ -698,6 +748,23 @@ export class NetHost {
     this.ctx.projectiles.forEachActive((_index, x, y, z) => {
       balloons.push([round3(x), round3(y), round3(z)]);
     });
+    // What the world hashes to, about once a second.
+    //
+    // Computed here rather than per peer, because `serialize` walks every part
+    // and re-derives each one's own centre and orientation from the collision
+    // proxy — cheap once a second and not something to do seven times a second
+    // because seven people are in the yard.
+    //
+    // A rate rather than every snapshot because it is a smoke alarm: a
+    // divergence found a second late is repaired a second late, and one never
+    // found is a guest standing on a wall nobody else can see for the rest of
+    // the round.
+    let world: number | undefined;
+    if (--this.hashIn <= 0) {
+      this.hashIn = NetHost.HASH_EVERY;
+      world = hashWorld(this.ctx.build.serialize());
+    }
+
     // One array, but each peer needs its own ack — and now its own tank, which
     // is the other reason this message could never have been a broadcast.
     for (const peer of this.peers.values()) {
@@ -709,6 +776,7 @@ export class NetHost {
         round,
         you: packSelf(mode, peer.id),
         balloons,
+        w: world,
       });
     }
   }
@@ -1098,6 +1166,20 @@ export class NetClient {
   stale = 0;
 
   /**
+   * Consecutive world hashes that did not match, and how many times that has
+   * ended in asking the host for the world again.
+   *
+   * Three in a row rather than one, because a single disagreement is routine: a
+   * placement can be in flight in either direction at the instant the host
+   * hashed, and a guest that cried desync at that would ask for the whole world
+   * every time anybody built anything. Three consecutive means three seconds of
+   * being wrong with nothing in flight, which is not a race.
+   */
+  private wrongInARow = 0;
+  /** How many times this guest has had to ask for the world again. */
+  desyncs = 0;
+
+  /**
    * How often to say hello again while waiting to be welcomed.
    *
    * A third of a second, which is frequent enough that a player does not
@@ -1286,6 +1368,20 @@ export class NetClient {
         // After the actors, so the shell sees a round whose objectives and
         // people came out of the same instant.
         this.ctx.setRound?.(message.round ?? null);
+        if (message.w !== undefined) this.checkWorld(message.w);
+        break;
+
+      // The world again, whole, because this guest said theirs had drifted.
+      // Deliberately not a `welcome`: this repairs the parts and touches
+      // nothing else, where a welcome would also reassign the id, put the
+      // player back at the spawn and reset their side.
+      case 'world':
+        this.ctx.build.deserialize(message.parts.map(([, record]) => record));
+        this.hostIds.clear();
+        this.localIds.clear();
+        message.parts.forEach(([hostId], index) => this.learn(index, hostId));
+        this.ctx.worldChanged();
+        this.wrongInARow = 0;
         break;
 
       case 'built': {
@@ -1361,6 +1457,31 @@ export class NetClient {
     // the shape of ghost this list exists to prevent.
     this.ctx.wearing?.(id, null);
     this.ctx.actors.removeRemote(id);
+  }
+
+  /**
+   * Compare the host's world with ours, and ask for theirs if it stays wrong.
+   *
+   * The parts are the one thing in this session that is supposed to be
+   * *identical* on both machines rather than merely close, and nothing was
+   * checking. A `built` broadcast is sent once and never repeated, so a single
+   * dropped packet leaves a guest permanently missing a plank — silently, for
+   * the rest of the round, with no way for either side to find out. That is the
+   * failure this whole design was most afraid of and the only one it had no
+   * answer to.
+   *
+   * Repair is a request rather than a push, because the host cannot tell: it
+   * knows what it sent and not what arrived.
+   */
+  private checkWorld(theirs: number): void {
+    if (hashWorld(this.ctx.build.serialize()) === theirs) {
+      this.wrongInARow = 0;
+      return;
+    }
+    if (++this.wrongInARow < WRONG_WORLD_LIMIT) return;
+    this.wrongInARow = 0;
+    this.desyncs++;
+    this.transport.send({ t: 'resync' });
   }
 
   private applySnapshot(tick: number, ack: number, actors: PackedActor[]): void {
