@@ -1044,6 +1044,42 @@ everything off-screen without asking. A function with no caller is dead code
 however good its tests are, so it went, and this is the note saying why rather
 than a `void onMap` somewhere.
 
+## A list written down twice, in a workflow file
+
+CI ran twenty-seven scenarios one after another, as twenty-seven near-identical
+steps in `ci.yml`. Two problems in one shape.
+
+**Serial work that is embarrassingly parallel.** Each scenario is its own
+process with its own dev server and its own browser and shares state with none
+of the others. Half an hour of that spent waiting on a scheduler. Four shards
+balanced by measured cost put the longest at about five and a half minutes —
+which is `voice.mjs` alone, and therefore the floor until that scenario gets
+cheaper. That is worth saying rather than hiding: sharding does not make the
+suite faster, it makes the *slowest scenario* the whole suite's cost.
+
+**And the list existed in two places.** A new scenario meant a file in
+`scenarios/` and a step in the workflow, and forgetting the second is silent —
+the scenario simply never runs and nothing anywhere says so. That is the fourth
+time on this project that two things which had to agree were written down twice,
+and the second time the second copy was outside the game. The list is read off
+the directory now.
+
+Balanced by longest-processing-time rather than round-robin, which is four lines
+and within a third of optimal: round-robin over this set puts `voice` and one of
+the forty-second scenarios on one shard while another finishes in ninety seconds.
+
+Seven plants, all caught. The two worth noting are **ties broken by name** —
+without it the split depends on the order the directory happened to be read in,
+so a failure on shard 3 cannot be reproduced by running shard 3 — and **an
+untimed scenario costed as expensive rather than free**, so something nobody has
+measured lands on a light shard instead of on top of the heaviest one.
+
+The test that matters most is the dull one: every scenario appears in exactly one
+shard, checked across seven different shard counts. A split that drops one is a
+scenario that silently never runs, which is precisely the failure this change
+exists to make impossible — so it would have been a poor joke to reintroduce it
+in the fix.
+
 ## Every bug that was planted on purpose
 
 Each of these was introduced deliberately, to watch one assertion fail, and then

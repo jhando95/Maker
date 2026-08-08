@@ -80,10 +80,11 @@ concurrency:
 # job and runner speed varies by more than that. This is not a queue fix — see
 # above — it is a fix for the job genuinely being twice as long as it was.
 jobs:
+  # Typecheck, unit tests, the production build and a smoke boot. Everything
+  # that is fast, and everything a scenario would be pointless without.
   check:
     runs-on: ubuntu-latest
-    # ~20 minutes of work as measured on run 68, with room for a slow runner.
-    timeout-minutes: 45
+    timeout-minutes: 20
 
     steps:
       - uses: actions/checkout@v4
@@ -114,252 +115,56 @@ jobs:
       - name: Headless smoke test
         run: node tools/shoot.mjs --out /tmp/ci-smoke.png --settle 3000
 
-      # The crash handler's claim is that a throw inside the render loop is
-      # survivable and visible. Nothing short of a real browser can check that,
-      # so the scenario throws for real and asserts on what a player would see.
-      - name: Crash-handler scenario
-        run: node tools/shoot.mjs --scenario scenarios/crash.mjs --allow-errors --out /tmp/ci-crash.png
+  # ── The scenarios ────────────────────────────────────────────────────────────
+  #
+  # Their own job, sharded, and read off the directory rather than listed here.
+  # Both halves of that are fixes.
+  #
+  # They were twenty-seven steps in this file run strictly one after another, and
+  # each one is an independent process with its own dev server and its own
+  # browser, sharing state with none of the others. Half an hour of embarrassingly
+  # parallel work spent waiting on a scheduler. Four shards balanced by measured
+  # cost put the longest at about five and a half minutes, which is `voice.mjs`
+  # on its own and therefore the floor until that scenario gets cheaper.
+  #
+  # And the list was written down twice — once as a file in `scenarios/` and once
+  # as a step here. Adding the first without the second is silent: the scenario
+  # never runs and nothing says so. `tools/scenarios.mjs` reads the directory, so
+  # this file says only how many pieces to cut it into.
+  #
+  # `fail-fast: false` because four shards are four independent questions, and
+  # cancelling the other three the moment one fails throws away three answers to
+  # save a few minutes of a machine nobody is waiting on.
+  scenarios:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
 
-      # Same reasoning: how a stick maps to intent is unit-tested, but whether
-      # that intent survives the poll, the buffer, the tick and the character
-      # controller is a chain that only exists in a browser.
-      - name: Controller scenario
-        run: node tools/shoot.mjs --scenario scenarios/gamepad.mjs --out /tmp/ci-gamepad.png
+    steps:
+      - uses: actions/checkout@v4
 
-      - name: Part-wheel scenario
-        run: node tools/shoot.mjs --scenario scenarios/wheel.mjs --out /tmp/ci-wheel.png
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
 
-      # The water fight is a loop across the mode, the shell and the HUD: run
-      # dry, find a tap, fill up, hose someone. Each piece is unit-tested and
-      # each seam between them has broken at least once with the suite green.
-      - name: Water-fight scenario
-        run: node tools/shoot.mjs --scenario scenarios/water.mjs --auto-quality --out /tmp/ci-water.png
+      - run: npm ci
 
-      # Multiple people in one world, with no network yet to bring them. The
-      # roster and teams are unit-tested; that a second body reaches the
-      # renderer's instance buffers, wears the right shirt and moves on its own
-      # commands only happens in a browser.
-      - name: Multiple-actor scenario
-        run: node tools/shoot.mjs --scenario scenarios/actors.mjs --auto-quality --out /tmp/ci-actors.png
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
 
-      # The HUD's job is to say what a mode knows, and every part of that is a
-      # seam between two systems rather than logic inside either — so the unit
-      # suite stays green with the objective compass, the hit marker and the
-      # damage cue all broken.
-      - name: HUD scenario
-        run: node tools/shoot.mjs --scenario scenarios/hud.mjs --auto-quality --out /tmp/ci-hud.png
-
-      # Two people in one world over the real wire format. The session is
-      # unit-tested end to end against a loopback pair, but whether somebody who
-      # joined ever reaches the renderer is a different question — and the answer
-      # was no, once, because the roster was only rebuilt by a running mode.
-      - name: Multiplayer scenario
-        run: node tools/shoot.mjs --scenario scenarios/multiplayer.mjs --auto-quality --out /tmp/ci-multiplayer.png
-
-      # Mantling against a wall a player actually built, on the real map,
-      # through the real movement code. The unit tests build a ledge out of two
-      # boxes in an empty world; this asks whether a fort yields to a pull-up,
-      # which is the question the mechanic exists to answer.
-      - name: Mantle scenario
-        run: node tools/shoot.mjs --scenario scenarios/mantle.mjs --auto-quality --out /tmp/ci-mantle.png
-
-      # The garden's items, which are two claims about the map rather than
-      # about the effect: that the prop is where the effect thinks it is, and
-      # that a launch reaches the thing it was sized against. The unit suite
-      # can check neither, and both have been wrong once — a mat left under
-      # the treehouse deck, and a speed picked against a gravity the game does
-      # not use.
-      - name: Items scenario
-        run: node tools/shoot.mjs --scenario scenarios/items.mjs --auto-quality --out /tmp/ci-items.png
-
-      # Tag, which is two claims a unit test cannot reach. The field is the one
-      # place no other mode goes — outside the fence, on the cul-de-sac — and
-      # "outside the fence" is not a setting but a routing grid and a set of
-      # bots willing to follow it out of the gate. And it is the first mode with
-      # no plank and no soaker, so it is the first to find out what a HUD
-      # written for modes that have both does with a mode that has neither.
-      - name: Tag scenario
-        run: node tools/shoot.mjs --scenario scenarios/tag.mjs --auto-quality --out /tmp/ci-tag.png
-
-      # The lava mode, whose single rule is a raycast against the real map: the
-      # ground plane has to come back as ground under your feet on the grass and
-      # as a part under your feet on a plank you laid five centimetres above it.
-      # There is nowhere else that question can be asked honestly, and if the
-      # answer is ever wrong the mode is either unplayable or trivial with
-      # nothing in between.
-      - name: Lava scenario
-        run: node tools/shoot.mjs --scenario scenarios/lava.mjs --auto-quality --out /tmp/ci-lava.png
-
-      # Whether what you build holds itself up. The rule is unit-tested against
-      # thirty-odd shapes and every one of those is an argument about boxes;
-      # what only exists here is whether the collision world and the support
-      # rule agree about contact, and whether a player three metres up on a
-      # tower is on the lawn a second after somebody takes its leg out. A list
-      # of ids is not a collapse.
-      - name: Collapse scenario
-        run: node tools/shoot.mjs --scenario scenarios/collapse.mjs --auto-quality --out /tmp/ci-collapse.png
-
-      # Whether a can of paint paints. The rules are arithmetic and the decals
-      # are matrices; what only exists here is the join — a raycast has to come
-      # back with a surface normal a mark can lie in, and the mark has to go
-      # when the plank it is on does.
-      - name: Spray scenario
-        run: node tools/shoot.mjs --scenario scenarios/spray.mjs --auto-quality --out /tmp/ci-spray.png
-
-      # Where the frame goes, on frames that really rendered a yard. It asserts
-      # nothing about milliseconds — this runs through SwiftShader on a shared
-      # runner, and a budget here would be a claim about GitHub's fleet — only
-      # that the sections account for the whole frame and that the attribution
-      # moves when the work does. What it leaves behind is the table in the log,
-      # so a change that doubles the cost of posing characters is visible in the
-      # run that introduced it.
-      - name: Frame-profile scenario
-        run: node tools/shoot.mjs --scenario scenarios/profile.mjs --auto-quality --out /tmp/ci-profile.png
-
-      # Whether a long session grows. Every other check here asks whether
-      # something works; this asks whether doing it two dozen times costs more
-      # than doing it twice, which is the one question no unit test can reach —
-      # a leak is invisible in the code that causes it and in a thirty-second
-      # playtest, and it arrives as "the game gets worse the longer you play"
-      # three weeks later. Two halves rather than a threshold, because a cache
-      # filling and a leak of the same size look identical as a total and only
-      # one of them flattens. Costs about three minutes, which is the price of
-      # a class of bug this project could not otherwise see at all.
-      - name: Soak scenario
-        run: node tools/shoot.mjs --scenario scenarios/soak.mjs --auto-quality --out /tmp/ci-soak.png
-
-      # The edge of the world, and the only way to find out where it is: walk
-      # at it. All three holes this closes were found by driving the real player
-      # around and none of them was visible to a unit test — an infinite ground
-      # plane, a fence that is a picture, and a body under the world wedged in
-      # place. A boundary is a claim about what happens after twenty seconds of
-      # sprinting, which is a thing only a browser can spend.
-      - name: Bounds scenario
-        run: node tools/shoot.mjs --scenario scenarios/bounds.mjs --auto-quality --out /tmp/ci-bounds.png
-
-      # The screens a player meets before they play, and the readout for when
-      # they do. Menus are the one part of this game with no simulation behind
-      # them, so every way they go wrong is a layout — the title screen ran off
-      # the bottom of a 720-line window with no way to scroll, which put
-      # Settings out of reach entirely and is invisible to every kind of test
-      # except one that measures the card against the window.
-      - name: Front-end scenario
-        run: node tools/shoot.mjs --scenario scenarios/frontend.mjs --auto-quality --out /tmp/ci-frontend.png
-
-      # Talking, pinging and waving. Who may hear what is a rule, and rules are
-      # unit-tested against a loopback pair; what only a browser can answer is
-      # whether any of it reaches a player. Two of these have exactly one
-      # possible home: a chat box has to take the keyboard away from the
-      # character controller, which is a question about which layer got the key
-      # and has no meaning outside a real document; and a ping has to become a
-      # mark in the world rather than only on the compass, which it did not.
-      - name: Comms scenario
-        run: node tools/shoot.mjs --scenario scenarios/comms.mjs --auto-quality --out /tmp/ci-comms.png
-
-      # Proximity voice, and the only question worth asking about it: can a
-      # person in one browser hear a person in another. Two contexts, a real
-      # relay, real WebRTC and Chromium's fake microphone — which is a genuine
-      # audio track, so what crosses the connection is genuine Opus. The check
-      # counts inbound packets rather than trusting `connectionState`, because a
-      # peer connection reports itself perfectly healthy while carrying silence,
-      # and then reads the gain off the AudioParam the browser is really using.
-      # Slower than the rest; it waits on ICE, on a snapshot, and on a gain ramp.
-      # Saving a structure and stamping it down again. The arithmetic is all
-      # unit-tested; what only a browser can answer is whether the pieces are
-      # joined up — that the flood fill runs against the real collision world
-      # rather than a list of boxes a test wrote, that a stamp goes through the
-      # same placement path a single plank does, and that the preview a player
-      # judges by is drawn from the same records that get placed. All three of
-      # those were wrong at some point while both sides of each seam were right.
-      - name: Blueprint scenario
-        run: node tools/shoot.mjs --scenario scenarios/blueprint.mjs --auto-quality --out /tmp/ci-blueprint.png
-
-      - name: Voice scenario
-        run: node tools/shoot.mjs --scenario scenarios/voice.mjs --auto-quality --out /tmp/ci-voice.png
-
-      # The locker, whose preview *is* the game: the character behind the card is
-      # the real one, so "did the picture change" and "did the player change" are
-      # the same question and only a browser can answer either.
-      - name: Locker scenario
-        run: node tools/shoot.mjs --scenario scenarios/locker.mjs --auto-quality --out /tmp/ci-locker.png
-
-      # The whole of the lobby, end to end against a real server: two browser
-      # contexts, two friend codes, a party, a queue, and a round running in the
-      # room it was matched into. It is also the only thing that exercises the
-      # real relay — every other multiplayer check uses an in-page transport,
-      # which is why a guest's hello being dropped before the socket opened went
-      # unnoticed for as long as it did.
-      - name: Lobby scenario
-        run: node tools/shoot.mjs --scenario scenarios/lobby.mjs --auto-quality --out /tmp/ci-lobby.png
-
-      # The other half of a session, and a different claim: that a round nobody
-      # on this machine is running arrives as pixels. The page joins and the
-      # scenario plays host, which is the mirror of the one above.
-      - name: Guest-in-a-round scenario
-        run: node tools/shoot.mjs --scenario scenarios/party.mjs --auto-quality --out /tmp/ci-party.png
-
-      # The character rig is almost entirely a claim about pixels, and two of the
-      # three things it is for went wrong in ways no unit test would have caught:
-      # eyes placed inside the skull, and hair that grew down over the face. The
-      # ink check works by diffing two screenshots, because a one-pixel line is
-      # invisible to the eye and unmistakable in a pixel count.
-      - name: Character scenario
-        run: node tools/shoot.mjs --scenario scenarios/kids.mjs --auto-quality --out /tmp/ci-kids.png
-
-      # The budget is the first rule that can make a legal placement fail. The
-      # arithmetic is unit-tested; whether the player is ever told — a counter
-      # on the banner, a price on the chip, a ghost that turns red — is a chain
-      # from the mode to a pixel that only exists in a browser.
-      - name: Lumber-budget scenario
-        run: node tools/shoot.mjs --scenario scenarios/lumber.mjs --auto-quality --out /tmp/ci-lumber.png
-
-      # The ground is the largest surface in every frame the game draws, and
-      # both halves of it are claims about pixels that the unit suite cannot
-      # follow: a vertex colour attribute that has to survive the toon shader,
-      # and ten thousand instanced clumps that have to survive InstancedMesh
-      # tinting. The second one already rendered every blade black once.
-      - name: Lawn scenario
-        run: node tools/shoot.mjs --scenario scenarios/lawn.mjs --auto-quality --out /tmp/ci-lawn.png
-
-      # A CI runner has no GPU either, so it is a genuine instance of the case
-      # adaptive quality exists for. The decision logic is unit-tested; this
-      # checks the decision reaches the drawing buffer.
-      - name: Adaptive quality scenario
-        run: node tools/shoot.mjs --scenario scenarios/quality.mjs --auto-quality --out /tmp/ci-quality.png
+      - name: Scenarios
+        run: node tools/scenarios.mjs ${{ matrix.shard }} 4
 
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: screenshots
-          path: |
-            /tmp/ci-smoke.png
-            /tmp/ci-crash.png
-            /tmp/ci-gamepad.png
-            /tmp/ci-quality.png
-            /tmp/ci-wheel.png
-            /tmp/ci-water.png
-            /tmp/ci-actors.png
-            /tmp/ci-hud.png
-            /tmp/ci-lumber.png
-            /tmp/ci-kids.png
-            /tmp/ci-lawn.png
-            /tmp/ci-party.png
-            /tmp/ci-multiplayer.png
-            /tmp/ci-lobby.png
-            /tmp/ci-mantle.png
-            /tmp/ci-items.png
-            /tmp/ci-tag.png
-            /tmp/ci-lava.png
-            /tmp/ci-collapse.png
-            /tmp/ci-spray.png
-            /tmp/ci-profile.png
-            /tmp/ci-bounds.png
-            /tmp/ci-frontend.png
-            /tmp/ci-comms.png
-            /tmp/ci-voice.png
-            /tmp/ci-blueprint.png
-            /tmp/ci-locker.png
-            /tmp/ci-lobby-friends.png
+          # One artifact per shard, since four jobs cannot write into one.
+          name: screenshots-${{ matrix.shard }}
+          path: ${{ runner.temp }}/ci-*.png
           if-no-files-found: ignore
 
   benchmark:
