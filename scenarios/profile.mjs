@@ -144,6 +144,24 @@ export default async function (page) {
   await frames(page, 150);
   await measure(page, 'Fort Defense');
 
+  // ── The order the tick is declared in ──────────────────────────────────────
+  //
+  // Checked by reading the list rather than by running it. A stage that reads
+  // something nothing before it has written is a bug in the *arrangement*, which
+  // survives unit tests because every part of it is individually correct — the
+  // Overwatch rule, mechanised. Asked here rather than thrown at boot, because
+  // the one failure worse than a mis-ordered frame is a game that will not start
+  // and cannot say why.
+  const order = await page.evaluate(() => window.__maker.frameOrder());
+  assert(
+    order.problems.length === 0,
+    `the tick's declared order cannot be satisfied: ${JSON.stringify(order.problems)}`,
+  );
+  assert(
+    order.names.length >= 2 && order.names[0] === 'wire-in',
+    `whatever arrived has to be applied before the tick that reads it, got ${order.names.join(' -> ')}`,
+  );
+
   console.log('[profile] verified: the sections account for the whole frame with nothing'
     + ' negative and nothing lost, and simulation cost rises with a crowd —'
     + ` ${simIdle.toFixed(2)}ms empty against ${simBusy.toFixed(2)}ms in Tag;`

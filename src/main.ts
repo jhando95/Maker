@@ -77,6 +77,7 @@ import { BuildStore } from './app/buildStore.ts';
 import { Menu, type LobbyView, type MenuCallbacks } from './ui/menu.ts';
 import { CrashHandler } from './app/crashHandler.ts';
 import { GamepadManager } from './core/gamepadManager.ts';
+import { Schedule } from './core/schedule.ts';
 import { Minimap, type MapBox, type MapMarker } from './ui/minimap.ts';
 import { PerformanceGovernor } from './app/performanceGovernor.ts';
 import { FrameStats } from './app/frameStats.ts';
@@ -2142,16 +2143,44 @@ function fixedUpdate(dt: number): void {
   crash.guard('simulation', () => simulate(dt));
 }
 
+/**
+ * The order a tick happens in, as a list rather than as a sequence of
+ * statements.
+ *
+ * Two coarse stages today, which is honest: the second is four hundred lines
+ * and splitting it further is the `main.ts` job on the roadmap rather than a
+ * drive-by. What this buys immediately is the two things a list gives that
+ * statements do not — the order is declared, so `check` can read it, and the
+ * measurement is opened and closed by the thing that runs the stage rather than
+ * by hand.
+ *
+ * That second half was already a small defect. Six sections were bracketed by
+ * hand across the frame and exactly one pair sat inside a `try/finally`, with a
+ * comment explaining precisely why it had to: a section left open across a
+ * frame blanks the readout for the one frame that would explain the throw. The
+ * other five were one exception away from the same thing.
+ */
+const tick = new Schedule<number>([
+  {
+    name: 'wire-in',
+    section: 'net',
+    // Before anything else this tick: whatever arrived is applied at a tick
+    // boundary, never in the middle of one. A socket that could deliver
+    // mid-step is a socket that can split one tick's inputs across two.
+    writes: ['wire'],
+    run: () => net?.beforeTick(),
+  },
+  {
+    name: 'simulate',
+    section: 'sim',
+    reads: ['wire'],
+    writes: ['world'],
+    run: (dt) => simulateBody(dt),
+  },
+]);
+
 function simulate(dt: number): void {
-  profile.start('sim');
-  try {
-    simulateBody(dt);
-  } finally {
-    // In a `finally`: a section left open across a frame is dropped rather than
-    // carried, so a throw on one tick would otherwise blank the readout for the
-    // very frame that explains it.
-    profile.stop('sim');
-  }
+  tick.run(dt, profile);
 }
 
 function simulateBody(dt: number): void {
@@ -2159,13 +2188,6 @@ function simulateBody(dt: number): void {
     pendingCrash = false;
     throw new Error('deliberate scenario crash');
   }
-
-  // Before anything else this tick: whatever arrived is applied at a tick
-  // boundary, never in the middle of one. A socket that could deliver mid-step
-  // is a socket that can split one tick's inputs across two.
-  profile.start('net');
-  net?.beforeTick();
-  profile.stop('net');
 
   input.beginTick();
 
@@ -3390,6 +3412,15 @@ window.__maker = {
   crashNextTick: () => {
     pendingCrash = true;
   },
+  /**
+   * The tick's declared order, and anything the order cannot satisfy.
+   *
+   * Exposed rather than asserted at boot because a throw at module scope is a
+   * black canvas: the one failure mode worse than a mis-ordered frame is a game
+   * that will not start and cannot say why. A scenario asks instead, so a bad
+   * order is a red check rather than a bricked build.
+   */
+  frameOrder: () => ({ names: [...tick.names], problems: tick.check() }),
   isPaused: () => loop.isPaused,
   isRunning: () => loop.isRunning,
   /**

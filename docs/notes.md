@@ -1106,6 +1106,56 @@ of a check that asserts over a collection the bug removes its subject from.
 
 ---
 
+# 24. The order the game does things in, written down
+
+Two published arguments meet here and point the same way, which is the reason
+this is a list and not a message bus.
+
+[Tim Ford's GDC talk on Overwatch's architecture](https://www.gdcvault.com/play/1024001/-Overwatch-Gameplay-Architecture-and)
+makes the strong version: systems run in a fixed, declared order, each one
+states what it reads and what it writes, and that ordering is what makes the
+simulation deterministic enough to network. The retrospective note is the part
+worth copying — the team spent about eighteen months settling those rules, and
+the code that predated or broke them stayed the largest source of bugs for the
+rest of the project. The rules earn their keep by being *checkable*, not by
+being agreed.
+
+[Robert Nystrom's chapter on the event queue](https://gameprogrammingpatterns.com/event-queue.html)
+runs the other way and lands in the same place: decoupling who sends from who
+receives costs you the ability to read the order off the source, because all the
+coupling becomes visible only at run time. This project has already lost to a
+milder version of that four times — every time two things that had to agree were
+written down twice — so a bus would be buying a known problem to solve one we do
+not have.
+
+So `src/core/schedule.ts` is a list, in order, where each entry says what it
+touches. The novel clause is the last one: **a stage that reads something nothing
+before it has written is an ordering bug, and `check` finds it by reading the
+list rather than by running the game.** That is the Overwatch rule mechanised,
+and it catches the species of bug that survives unit tests because every part of
+it is individually correct.
+
+**It also fixes something small that was already wrong.** Six sections were
+bracketed by hand across the frame, and exactly one pair sat inside a
+`try/finally` — with a comment explaining precisely why it had to, since a
+section left open across a frame blanks the readout for the one frame that would
+explain the throw. The other five were one exception away from the same thing. A
+runner closes what it opens because it is the only thing that opens it.
+
+**The tick declares two stages today, which is honest rather than modest.** The
+second is four hundred lines, and splitting it further is the `main.ts` job on
+the roadmap rather than a drive-by — an attempt to carve the *draw* half the same
+way ran straight into the reason that file is what it is: the HUD stage closes
+over two dozen locals. That is the finding, not a setback. The schedule is the
+tool for that job and the job is the next one.
+
+The order is checked by a scenario rather than thrown at boot, because the one
+failure worse than a mis-ordered frame is a game that will not start and cannot
+say why.
+
+
+---
+
 ## Verification
 
 **1,413 unit tests** across 63 files, and **twenty-eight browser runs** — a

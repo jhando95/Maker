@@ -1080,6 +1080,27 @@ scenario that silently never runs, which is precisely the failure this change
 exists to make impossible — so it would have been a poor joke to reintroduce it
 in the fix.
 
+## A schedule, and a plant that could not be seen from either end
+
+Eleven plants on `schedule.ts`, ten caught immediately. The one that survived is
+a good example of a check with two loops that agree:
+
+`check` builds two sets — everything written *so far*, and everything written
+*anywhere* — and uses the first to decide whether a read is satisfied and the
+second only to say whether an unsatisfied read is `late` or `missing`. The plant
+made a conditional stage stop counting as a writer, and it changed nothing,
+because the test asked whether a conditional writer satisfied a *later* reader —
+which is decided by the first set, which the plant did not touch.
+
+The half that can see it is the other order: a reader *before* a conditional
+writer should be told `late` rather than `missing`, because the two have
+different fixes — `late` is a reordering, `missing` is a stage nobody wrote. One
+extra assertion, and the plant fails immediately.
+
+The general shape, which has now appeared three times on this project: **a
+function with two internal paths needs a test that separates them, and a test
+that exercises both at once separates neither.**
+
 ## Every bug that was planted on purpose
 
 Each of these was introduced deliberately, to watch one assertion fail, and then
