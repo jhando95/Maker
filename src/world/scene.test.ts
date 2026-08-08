@@ -89,6 +89,62 @@ describe('the assembled yard', () => {
     expect(a.length).toBe(b.length);
     expect(a.map((p) => p.toArray())).toEqual(b.map((p) => p.toArray()));
   });
+
+  it('plants the garden', () => {
+    // The turned props live in their own named group precisely so that this
+    // test can tell "the garden exists" from "getObjectByName found nothing".
+    // Fourteen children today: bath and shell, the water, two pots with shells,
+    // the shrub, three rocks with shells. More is fine; fewer means something
+    // was dropped.
+    const garden = createScene('garden-check').scene.getObjectByName('garden');
+    expect(garden, 'no garden group in the scene — addGarden never ran').toBeDefined();
+    expect(garden!.children.length).toBeGreaterThanOrEqual(14);
+  });
+
+  it('stands every garden prop clear of everything the map builds', () => {
+    // Born from a real bug: the first birdbath went down at (4.6, 9.2), which
+    // is inside the crate by the back deck, and the only thing that noticed was
+    // a screenshot. The slab list is the map; a decoration that intersects it
+    // is buried scenery paying triangle cost for nothing.
+    //
+    // Several seeds, because the garden's coordinates are fixed while the
+    // clutter jitters per match — the tyre stack wanders ±0.12 m and every
+    // crate rotates freely, so "clear on one seed" is not the claim that
+    // matters. The first version of this test promptly caught the *second*
+    // birdbath spot too: (6.9, 8.3) is inside the tyre stack.
+    for (const seed of ['garden-check', 'backyard-01', 'match-7741']) {
+      const built = createScene(seed);
+      built.scene.updateMatrixWorld(true);
+      const garden = built.scene.getObjectByName('garden')!;
+
+      // Each slab's world-space bounds: oriented box widened to the
+      // axis-aligned box that contains it. Conservative in the strict
+      // direction — a prop this test passes clears the real slab too.
+      const slabBoxes = built.slabs.map((s) => {
+        const rot = new THREE.Matrix4().makeRotationFromEuler(
+          new THREE.Euler(s.rx ?? 0, s.ry ?? 0, s.rz ?? 0),
+        );
+        const e = rot.elements;
+        const half = new THREE.Vector3(
+          Math.abs(e[0]) * s.w / 2 + Math.abs(e[4]) * s.h / 2 + Math.abs(e[8]) * s.d / 2,
+          Math.abs(e[1]) * s.w / 2 + Math.abs(e[5]) * s.h / 2 + Math.abs(e[9]) * s.d / 2,
+          Math.abs(e[2]) * s.w / 2 + Math.abs(e[6]) * s.h / 2 + Math.abs(e[10]) * s.d / 2,
+        );
+        const c = new THREE.Vector3(s.x, s.y, s.z);
+        return new THREE.Box3(c.clone().sub(half), c.clone().add(half));
+      });
+
+      for (const child of garden.children) {
+        const box = new THREE.Box3().setFromObject(child);
+        const hit = slabBoxes.findIndex((slab) => slab.intersectsBox(box));
+        expect(
+          hit,
+          `[seed ${seed}] garden prop at (${child.position.x}, ${child.position.z}) intersects `
+          + `the map slab at (${built.slabs[hit]?.x}, ${built.slabs[hit]?.z})`,
+        ).toBe(-1);
+      }
+    }
+  });
 });
 
 describe('the time of day, wired into the scene', () => {

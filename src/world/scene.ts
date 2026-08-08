@@ -12,6 +12,8 @@ import { Rng } from '../core/rng.ts';
 import { clampDay, daylightAt, type DayTime, type Daylight } from './daylight.ts';
 import { createToonMaterial } from '../render/toonMaterial.ts';
 import { chamferedBox, blob, addOutlineNormals } from '../render/geometry.ts';
+import { lathe, rock } from '../render/lathe.ts';
+import { createOutlineMaterial } from '../render/toonMaterial.ts';
 import { PropBatch, chunkInstanced } from '../render/propBatch.ts';
 import { NightLights } from '../render/nightLights.ts';
 import { neighborhoodSlabs, wearPoints, TREEHOUSE, type Slab } from './neighborhood.ts';
@@ -182,6 +184,7 @@ export function createScene(seed: string | number = 'backyard-01'): SceneBuild {
   }
 
   addTrees(scene, props, cache, rng.fork());
+  addGarden(scene, rng.fork());
   scene.add(props.build());
 
   // Read off the same list that was just drawn, so a lamp and its light cannot
@@ -514,6 +517,83 @@ function jitter(hex: number, rng: Rng, amount: number): number {
   c.getHSL(hsl);
   c.setHSL(hsl.h, hsl.s, Math.max(0, Math.min(1, hsl.l + rng.signed(amount))));
   return c.getHex(THREE.SRGBColorSpace);
+}
+
+/**
+ * The turned and the lumpy: props a chamfered box cannot be.
+ *
+ * This block exists as much to answer a question as to dress the lawn. The
+ * worry was that procedural shapes top out at "primitive and boxy" — and for
+ * lumber that is correct and correct on purpose, but a birdbath is a profile
+ * swept in a circle and a rock is an icosahedron with opinions, and both are a
+ * dozen lines against `lathe.ts`. Faceted flat shading and palette colours are
+ * what let them sit beside the boxes as one style; the ink outline is the same
+ * inverted hull the lumber wears.
+ *
+ * All ghost scenery: nothing here blocks movement or aim, so it can be walked
+ * through exactly like the grass tufts — decoration has no collision opinions.
+ */
+function addGarden(scene: THREE.Scene, rng: Rng): void {
+  // One named group, so a test can find the garden — and find it *gone*.
+  const garden = new THREE.Group();
+  garden.name = 'garden';
+  scene.add(garden);
+  const ink = createOutlineMaterial(0x2b201c, 0.014);
+
+  const prop = (
+    geometry: THREE.BufferGeometry, color: number, x: number, z: number, ry = 0,
+  ): void => {
+    const mesh = new THREE.Mesh(geometry, createToonMaterial({ color }));
+    mesh.position.set(x, 0, z);
+    mesh.rotation.y = ry;
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+    garden.add(mesh);
+
+    const shell = new THREE.Mesh(addOutlineNormals(geometry.clone()), ink);
+    shell.position.copy(mesh.position);
+    shell.rotation.copy(mesh.rotation);
+    garden.add(shell);
+  };
+
+  // A birdbath on the right-side lawn, past the deck: pedestal, basin, and a
+  // coin of water that sits proud of the rim so it reads from a kid's eye
+  // height. The stretch of grass between the deck crates and the picnic table
+  // is the one patch back here nothing else claims.
+  const bath = lathe([
+    { r: 0, y: 0 }, { r: 0.30, y: 0 }, { r: 0.30, y: 0.06 }, { r: 0.10, y: 0.10 },
+    { r: 0.085, y: 0.62 }, { r: 0.34, y: 0.72 }, { r: 0.38, y: 0.80 },
+    { r: 0.34, y: 0.82 }, { r: 0.30, y: 0.76 }, { r: 0, y: 0.74 },
+  ], 12);
+  prop(bath, 0xb9b4a8, 9.6, 7.6);
+  const water = lathe([{ r: 0, y: 0.765 }, { r: 0.3, y: 0.765 }, { r: 0, y: 0.77 }], 12);
+  const pond = new THREE.Mesh(water, createToonMaterial({ color: 0x7fb4d8 }));
+  pond.position.set(9.6, 0, 7.6);
+  garden.add(pond);
+
+  // Terracotta pots around the back corner of the house, keeping the gnome
+  // company, planted with the same foliage blobs the canopies use so the
+  // greens agree.
+  const pot = lathe([
+    { r: 0, y: 0 }, { r: 0.15, y: 0 }, { r: 0.20, y: 0.26 },
+    { r: 0.235, y: 0.27 }, { r: 0.235, y: 0.33 }, { r: 0.21, y: 0.33 },
+    { r: 0.18, y: 0.30 }, { r: 0, y: 0.30 },
+  ], 10);
+  prop(pot, 0xc16f4a, 5.5, 6.8);
+  prop(pot, 0xc16f4a, 6.1, 6.45, 1.2);
+  const shrub = new THREE.Mesh(
+    blob(0.26, 1, 0.22, () => rng.next()),
+    createToonMaterial({ color: PALETTE.foliage }),
+  );
+  shrub.position.set(5.5, 0.45, 6.8);
+  shrub.castShadow = true;
+  garden.add(shrub);
+
+  // Rocks where the lawn meets the fence, three sizes from one family, seeded
+  // so every client grows the same garden.
+  for (const [x, z, r] of [[-7.5, 12.5, 0.34], [-6.9, 12.9, 0.22], [11.5, 2.0, 0.28]] as const) {
+    prop(rock(r, () => rng.next()), 0x9a958c, x, z, rng.next() * Math.PI);
+  }
 }
 
 function addTrees(scene: THREE.Scene, props: PropBatch, cache: GeometryCache, rng: Rng): void {
