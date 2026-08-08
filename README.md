@@ -603,6 +603,12 @@ checked against positions and tone spreads rather than pixels. A browser
 assertion that cannot fail is worse than no assertion, and the way to find out
 is to take the fix back out and watch.
 
+## Where it goes next
+
+A review of the whole project and the plan that came out of it — what is strong,
+what is weak, what the genre knows that this does not, and the order to do it in
+— is in [`docs/roadmap.md`](docs/roadmap.md).
+
 ## Why things are the way they are
 
 Per-feature engineering notes — what each system does, why it is shaped that
