@@ -928,6 +928,36 @@ The general rule, restated because it keeps needing restating: **a scenario may
 wait for a condition and may not wait for a duration.** Any duration is a guess
 about a machine you are not running on.
 
+## A fixture that hand-wrote its tick numbers
+
+`scenarios/party.mjs` drives a guest by sending it snapshots the host never sent,
+which is the right way to test a guest's *reaction* to a round it did not start.
+The tick number on each was the first argument and the fixtures typed them by
+hand: 1, 2, 3, 6, 7 — and then 4, and then 5.
+
+That was harmless for as long as nothing read the number, and it stopped being
+harmless the moment a guest started refusing snapshots older than the newest it
+had applied. The round-over snapshot was numbered 4, arrived after 7, and was
+dropped exactly as designed. No result screen, and a scenario that sat there
+until it timed out.
+
+**The rule is right and the fixture was wrong.** A real host's counter only ever
+goes up; nothing else can happen. So the fix is not to soften the rule, it is to
+stop the fixture from being able to break it: the tick is generated inside the
+helper now and is not a parameter at all. A fixture cannot hand-write a stale
+tick if it cannot hand-write a tick.
+
+This is the fourth time on this project that two things which had to agree were
+written down twice, and the first time the second copy was in a test rather than
+in the game.
+
+**And the wait that was never fifteen seconds.** The same scenario called
+`page.waitForFunction(fn, { timeout: 15000 })`. Playwright's second parameter is
+the *argument* handed to the function and the third is the options — so the
+timeout was passed as an unused argument and the wait ran on the thirty-second
+default. It is only visible in an error message that says thirty seconds when
+the source says fifteen, which is how it survived until it fired.
+
 ## Every bug that was planted on purpose
 
 Each of these was introduced deliberately, to watch one assertion fail, and then

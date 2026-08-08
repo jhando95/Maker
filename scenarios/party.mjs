@@ -55,8 +55,25 @@ const banner = (page) =>
  * guest from outside — a scenario that got its message from the code under test
  * would agree with it no matter what either of them did.
  */
-function snapshot(tick, ack, round, actors, you = null, balloons = []) {
-  return { t: 'snap', tick, ack, actors, round, you, balloons };
+/**
+ * The tick a hand-written snapshot carries, which is nobody's business but this
+ * helper's.
+ *
+ * It used to be the first argument and the fixtures numbered them by hand: 1, 2,
+ * 3, 6, 7, and then 4 and 5. That was harmless while nothing read the number,
+ * and it stopped being harmless the day a guest started refusing snapshots older
+ * than the newest it had applied — which is a correct rule, because a real host's
+ * counter only ever goes up. The round-over snapshot was numbered 4, arrived
+ * after 7, and was dropped; the result screen never came and the scenario waited
+ * out its timeout.
+ *
+ * So the number is generated rather than typed. A fixture cannot hand-write a
+ * stale tick if it cannot hand-write a tick.
+ */
+let snapshotTick = 0;
+
+function snapshot(ack, round, actors, you = null, balloons = []) {
+  return { t: 'snap', tick: ++snapshotTick, ack, actors, round, you, balloons };
 }
 
 /** How this guest's own fight is going, as the host would describe it. */
@@ -132,7 +149,7 @@ export default async function (page) {
   assert(status.localId === 3, `the guest should take the id it was given, saw ${status.localId}`);
 
   // ── No round yet: the shell must not invent one ────────────────────────────
-  await send(page, snapshot(1, 0, null, [[3, 1, 0, 0.5, 6, 0, 0, 0, 0, 3, 0]]));
+  await send(page, snapshot(0, null, [[3, 1, 0, 0.5, 6, 0, 0, 0, 0, 3, 0]]));
   await frames(page, 4);
   const quiet = await page.evaluate(() => window.__maker.roundInfo());
   assert(
@@ -141,7 +158,7 @@ export default async function (page) {
   );
 
   // ── The host starts a round, and this screen joins it ──────────────────────
-  await send(page, snapshot(2, 0, round(), [[3, 1, 0, 0.5, 6, 0, 0, 0, 0, 3, 0]]));
+  await send(page, snapshot(0, round(), [[3, 1, 0, 0.5, 6, 0, 0, 0, 0, 3, 0]]));
   await frames(page, 6);
 
   const playing = await page.evaluate(() => window.__maker.roundInfo());
@@ -168,7 +185,7 @@ export default async function (page) {
   // which looks perfect for a few seconds and then drifts — and drifts fastest
   // on the machine having the worst time, which is the one you least want
   // guessing.
-  await send(page, snapshot(3, 0, round(null, { timer: 12 }), [[3, 1, 0, 0.5, 6, 0, 0, 0, 0, 3, 0]]));
+  await send(page, snapshot(0, round(null, { timer: 12 }), [[3, 1, 0, 0.5, 6, 0, 0, 0, 0, 3, 0]]));
   await frames(page, 6);
   const wound = await banner(page);
   assert(
@@ -191,7 +208,7 @@ export default async function (page) {
   // `RemoteMode` reads them; only this can notice that the HUD paints the
   // personal half of a round exclusively when it is the one running it.
   await send(page, snapshot(
-    6, 0,
+    0,
     round(null, { build: false }),
     [[3, 1, 0, 0.5, 6, 0, 0, 0, 0, 3, 0.62]],
     self(),
@@ -227,7 +244,7 @@ export default async function (page) {
   // the lawn is silent and the first sign of an incoming balloon is being wet.
   const before = await page.evaluate(() => window.__maker.balloonsDrawn());
   await send(page, snapshot(
-    7, 0,
+    0,
     round(null, { build: false }),
     [[3, 1, 0, 0.5, 6, 0, 0, 0, 0, 3, 0.62]],
     self(),
@@ -243,7 +260,7 @@ export default async function (page) {
   await page.screenshot({ path: `${process.env.RUNNER_TEMP ?? '/tmp'}/party-meters.png` });
 
   // ── And the round ends for everybody ───────────────────────────────────────
-  await send(page, snapshot(4, 0, round({
+  await send(page, snapshot(0, round({
     won: true,
     headline: 'Your side won!',
     lines: [['captures', '3']],
@@ -253,9 +270,15 @@ export default async function (page) {
   // than skipped: that countdown lives in the tick loop, not in the mode, so
   // fast-forwarding the mode would step straight past the very thing being
   // checked — and on a guest the mode has nothing to fast-forward anyway.
+  // `null` for the argument, because Playwright's second parameter is what gets
+  // handed to the function and the third is the options. Written without it, the
+  // fifteen-second timeout was passed as an unused argument and the wait quietly
+  // ran on the thirty-second default — which is how a scenario that hung for
+  // half a minute reported a timeout nobody had asked for.
   await page.waitForFunction(
     () => document.querySelector('.mk-result-big') !== null,
-    { timeout: 15000 },
+    null,
+    { timeout: 20_000 },
   );
 
   const result = await page.evaluate(() => ({
@@ -280,7 +303,7 @@ export default async function (page) {
   // nothing for "stop" to clear, so removing the code that clears it changes
   // nothing. The failure only exists once a guest is holding a round — and then
   // it holds it forever, a frozen clock over a game that has moved on.
-  await send(page, snapshot(5, 0, null, [[3, 1, 0, 0.5, 6, 0, 0, 0, 0, 3, 0]]));
+  await send(page, snapshot(0, null, [[3, 1, 0, 0.5, 6, 0, 0, 0, 0, 3, 0]]));
   await frames(page, 6);
   const after = await page.evaluate(() => window.__maker.roundInfo());
   assert(
