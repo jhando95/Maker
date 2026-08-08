@@ -74,7 +74,7 @@ import type {
 import { SettingsStore, ghostColors, loadBindings, saveBindings, clearBindings } from './app/settings.ts';
 import { BINDING_GROUPS, describeKey, labelFor, type Action } from './core/input.ts';
 import { BuildStore } from './app/buildStore.ts';
-import { Menu, type LobbyView } from './ui/menu.ts';
+import { Menu, type LobbyView, type MenuCallbacks } from './ui/menu.ts';
 import { CrashHandler } from './app/crashHandler.ts';
 import { GamepadManager } from './core/gamepadManager.ts';
 import { PerformanceGovernor } from './app/performanceGovernor.ts';
@@ -1459,7 +1459,15 @@ function resetPlayerToSpawn(id: ModeId = lastModeId): void {
 
 const buildStore = new BuildStore();
 
-const menu = new Menu(app, settings, {
+/**
+ * Everything the menus can ask the game to do.
+ *
+ * Named rather than passed inline, so a scenario can drive a screen through the
+ * exact object its buttons call. A check that reached past this into the stores
+ * would pass with the screen disconnected, which is the failure that matters
+ * for a screen that did not exist until now.
+ */
+const menuCallbacks: MenuCallbacks = {
   listModes: () => MODES,
   onPlayMode: (id: string) => {
     startRound(id as ModeId);
@@ -1561,7 +1569,47 @@ const menu = new Menu(app, settings, {
     return true;
   },
   onLockerDelete: (name) => locker.remove(name),
-});
+
+  // ── Blueprints ──────────────────────────────────────────────────────────────
+  //
+  // `held` is read off the game rather than tracked by the screen, so a key
+  // that puts the blueprint away behind the menu's back cannot leave the list
+  // pointing at something nobody is holding.
+  listBlueprints: () => blueprints.all().map((b) => ({
+    id: b.id,
+    name: b.name,
+    parts: b.parts.length,
+    wood: blueprintCost(b.parts),
+    builtIn: b.builtIn === true,
+    held: heldBlueprint?.id === b.id,
+  })),
+  onBlueprintHold: (id) => {
+    heldBlueprint = id === null ? null : blueprints.get(id) ?? null;
+    // A fresh one starts unturned, exactly as cycling to it does — otherwise a
+    // blueprint picked from the menu arrives at whatever angle the last one was
+    // left at, which reads as the preview being broken.
+    blueprintTurns = 0;
+  },
+  onBlueprintRename: (id, name) => {
+    const existing = blueprints.get(id);
+    if (existing === undefined || existing.builtIn === true) return false;
+    // Through `save` with the id, which is what makes a rename a rename: the id
+    // is stable across one, so anything pointing at this blueprint keeps
+    // pointing at it.
+    const saved = blueprints.save(name, existing.parts, id);
+    if (saved !== null && heldBlueprint?.id === id) heldBlueprint = saved;
+    return saved !== null;
+  },
+  onBlueprintDelete: (id) => {
+    const gone = blueprints.remove(id);
+    // Nobody can hold a blueprint that no longer exists. Without this the
+    // preview goes on showing a shape that cannot be stamped.
+    if (gone && heldBlueprint?.id === id) heldBlueprint = null;
+    return gone;
+  },
+};
+
+const menu = new Menu(app, settings, menuCallbacks);
 
 function enterPlay(): void {
   menu.show('none');
@@ -2724,6 +2772,30 @@ window.addEventListener('resize', () => {
 });
 
 // ── Debug API, also driven by the headless screenshot harness ────────────────
+
+/**
+ * A row on the blueprint screen, found by the id the menu stamps on it.
+ *
+ * `null` finds the "holding nothing" row, which is the one row that carries no
+ * id — found by its absence rather than by a second marker, so there is one
+ * fact on the row rather than two that can disagree.
+ */
+function blueprintRow(id: string | null): HTMLElement | null {
+  const selector = id === null
+    ? '.mk-preset:not([data-blueprint])'
+    : `.mk-preset[data-blueprint="${CSS.escape(id)}"]`;
+  return menu.root.querySelector(selector);
+}
+
+/** Press a named button on that row, reporting whether it was there to press. */
+function pressBlueprint(id: string | null, label: string): boolean {
+  const button = Array.from(blueprintRow(id)?.querySelectorAll('button') ?? [])
+    .find((b) => b.textContent === label);
+  if (button === undefined) return false;
+  button.click();
+  return true;
+}
+
 declare global {
   interface Window {
     __maker?: Record<string, unknown>;
@@ -3125,6 +3197,45 @@ window.__maker = {
       camera.pitch = Math.atan2(y - ey, Math.hypot(x - ex, z - ez));
       return sprayWithFeedback();
     },
+  },
+  /**
+   * The blueprint picker, driven by pressing its own buttons.
+   *
+   * Calling the callbacks directly would have been easier and would have proved
+   * nothing: the callbacks are shared with the store, so a screen whose buttons
+   * were wired to nothing — or which never redrew after acting — would pass.
+   * The first version of this hook did exactly that and the screen's own
+   * assertion caught it, which is the argument for doing it this way. Clicking
+   * exercises the row, the listener, the callback and the redraw, and every one
+   * of those is a thing that has been broken here before.
+   */
+  blueprintScreen: {
+    list: () => menuCallbacks.listBlueprints(),
+    hold: (id: string | null) => pressBlueprint(id, id === null ? 'Put away' : 'Hold'),
+    remove: (id: string) => pressBlueprint(id, 'Delete'),
+    /**
+     * Rename the way a player does: the button turns the row into a field, and
+     * Enter commits it. Nothing types the letters, because what is being
+     * checked is the commit path rather than the browser's text editing.
+     */
+    rename: (id: string, name: string): boolean => {
+      if (!pressBlueprint(id, 'Rename')) return false;
+      const field = blueprintRow(id)?.querySelector('input');
+      if (!(field instanceof HTMLInputElement)) return false;
+      field.value = name;
+      field.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+      return true;
+    },
+    /** What the rendered screen actually shows, so the DOM is checked too. */
+    rows: () => Array.from(
+      menu.root.querySelectorAll('.mk-preset'),
+      (el) => ({
+        id: (el as HTMLElement).dataset.blueprint ?? null,
+        text: (el.querySelector('.who')?.textContent ?? '').trim(),
+        held: el.classList.contains('mk-held'),
+        buttons: Array.from(el.querySelectorAll('button'), (b) => b.textContent ?? ''),
+      }),
+    ),
   },
   /** Where the last placement landed, so a scenario can aim back at it. */
   lastPlacedAt: () => build.lastPlacedAt,

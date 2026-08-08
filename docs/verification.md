@@ -636,6 +636,50 @@ The detail line is deliberately empty for emotes. Parts have a size and weapons
 have a reason they are greyed; "wave" has nothing to add, and a second line
 repeating the first is noise in a menu that is open for half a second.
 
+## The blueprint picker, and a hook that proved nothing
+
+`BlueprintStore` has had `save(name, parts, id)` and `remove(id)` since it was
+written, and nothing ever called either with intent. Renaming and deleting a
+blueprint existed in the model and in no interface; picking one meant tapping a
+key until the right name went past. The screen is the missing half.
+
+The first version of the test hook called the menu's callbacks directly:
+
+```ts
+hold: (id: string | null) => { menuCallbacks.onBlueprintHold(id); },
+```
+
+That is the shape this project normally wants — drive the same calls the buttons
+make, rather than reaching past them into the store — and here it is not enough,
+because the callbacks are shared with the store. A screen whose buttons were
+wired to nothing would have passed. So would one that acted and never redrew,
+which is what actually happened: the model changed, the rows did not, and the
+one assertion that read the DOM failed. The hook now finds the row by the id the
+menu stamps on it and **presses the button**, which exercises the row, the
+listener, the callback and the redraw — every one of which has been broken here
+before.
+
+Seven plants on that, all caught: Hold acting without redrawing; `mk-held` put
+on every row instead of the held one; a built-in offered Rename and Delete; no
+way to put a blueprint away; Delete leaving the row on screen; and a rename that
+drops the id, which makes a second blueprint rather than renaming the first.
+
+**And one that was missed, for the usual reason.** Deleting the blueprint in
+your hand has to empty the hand, or the preview goes on showing a shape that
+cannot be stamped. The check was:
+
+```js
+const nothingHeld = m.blueprintScreen.list().every((b) => !b.held);
+```
+
+Which cannot fail. `list()` reports `held` per row, and a deleted blueprint has
+no row — `every` over a list that no longer contains it is vacuously true
+whatever the hand is holding. Deleting the line that clears it changed nothing.
+Asked of the hand instead (`m.blueprints.held() === null`) the plant is caught
+immediately. This is the third time on this project that a check has asserted
+over a collection the bug removes the subject from, and it will not be the last:
+the tell is an `every` or a `some` whose subject is the thing under test.
+
 ## Every bug that was planted on purpose
 
 Each of these was introduced deliberately, to watch one assertion fail, and then
@@ -718,6 +762,12 @@ folded anyway; two different sounds folded together; coalescing against the
 oldest line instead of the newest; a repeat that keeps its old place in the
 list; a repeat that does not update its direction; the newest line refused
 instead of the oldest dropped; and a repeat that does not refresh the age.
+
+And on the blueprint picker, eight: Hold acting without redrawing the screen;
+every row lit rather than the held one; a built-in offered Rename and Delete; no
+way to put one away; Delete leaving the row on screen; a rename that drops the
+id and makes a second blueprint; and — missed first time, against a check that
+could not fail — a delete that leaves the deleted blueprint in your hand.
 
 And on the boot-time warm-up, nine: a restore that does nothing; a restore that
 switches everything on instead of putting back what was off; counts never

@@ -31,6 +31,26 @@ const KEY = 'maker.blueprints.v1';
  * something to press the key on, which is the difference between discovering a
  * feature and concluding it is broken.
  */
+/**
+ * One blueprint, as the picker screen needs to show it.
+ *
+ * A flattened view rather than the `Blueprint` itself, for the reason the whole
+ * menu is written this way: a screen that held the real record would be holding
+ * a list of `PlacementRecord`s it has no use for, and `held` is a fact about
+ * the game rather than about the blueprint.
+ */
+export interface BlueprintSlot {
+  id: string;
+  name: string;
+  parts: number;
+  /** What stamping it would cost, so the choice can be made before the wood is. */
+  wood: number;
+  /** Ships with the game: cannot be renamed or deleted. */
+  builtIn: boolean;
+  /** Currently in hand. */
+  held: boolean;
+}
+
 export class BlueprintStore {
   private mine: Blueprint[] = [];
 

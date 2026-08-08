@@ -13,6 +13,7 @@
 import { SettingsStore, type Settings } from '../app/settings.ts';
 import { formatCode, MAX_NAME } from '../app/identity.ts';
 import type { BuildSlot } from '../app/buildStore.ts';
+import type { BlueprintSlot } from '../app/blueprintStore.ts';
 import { installTheme } from './theme.ts';
 import type { Look } from '../net/lobbyProtocol.ts';
 import { describeKey } from '../core/input.ts';
@@ -24,7 +25,7 @@ import {
 
 export type Screen =
   | 'none' | 'title' | 'settings' | 'builds' | 'pause' | 'result' | 'controls' | 'lobby'
-  | 'together' | 'locker';
+  | 'together' | 'locker' | 'blueprints';
 
 const STYLE = `
 .mk-menu {
@@ -331,6 +332,9 @@ const STYLE = `
   display: flex; align-items: center; gap: 8px;
   padding: 6px 0; border-bottom: 2px solid rgba(43,32,28,0.12);
 }
+/* The one in hand. A ring rather than a fill, so the row is still readable and
+   the highlight cannot be mistaken for a disabled state. */
+.mk-preset.mk-held { box-shadow: inset 0 0 0 2px var(--accent); }
 .mk-preset .who { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis;
   white-space: nowrap; font-weight: 700; }
 .mk-preset button {
@@ -437,6 +441,19 @@ export interface MenuCallbacks {
   onResume(): void;
   onRestart(): void;
   onQuitToTitle(): void;
+  /**
+   * Every blueprint, with what it would cost and whether it is the held one.
+   *
+   * `held` comes back rather than being tracked here, for the reason the whole
+   * menu is written this way: the screen is a view of the game's state and not
+   * a second copy of it. A picker that remembered its own selection would be
+   * wrong the first time a key put the blueprint away behind its back.
+   */
+  listBlueprints(): BlueprintSlot[];
+  /** Hold this one, or `null` to put whatever is held away. */
+  onBlueprintHold(id: string | null): void;
+  onBlueprintRename(id: string, name: string): boolean;
+  onBlueprintDelete(id: string): boolean;
   onSaveBuild(name: string): boolean;
   onLoadBuild(id: string): boolean;
   onDeleteBuild(id: string): void;
@@ -485,7 +502,14 @@ export interface ResultInfo {
 }
 
 export class Menu {
-  private readonly root: HTMLDivElement;
+  /**
+   * The menu's own element.
+   *
+   * Readable so a scenario can check what a screen actually rendered rather
+   * than only what the callbacks returned — the two can disagree, and when they
+   * do it is the screen that is wrong.
+   */
+  readonly root: HTMLDivElement;
   private readonly card: HTMLDivElement;
   private readonly settings: SettingsStore;
   private readonly callbacks: MenuCallbacks;
@@ -566,6 +590,7 @@ export class Menu {
       case 'locker':
       case 'settings':
       case 'builds':
+      case 'blueprints':
         this.show(this.returnTo);
         break;
       case 'result':
@@ -586,6 +611,7 @@ export class Menu {
       case 'result': this.renderResult(); break;
       case 'controls': this.renderControls(); break;
       case 'locker': this.renderLocker(); break;
+      case 'blueprints': this.renderBlueprints(); break;
       case 'none': break;
     }
   }
@@ -707,6 +733,7 @@ export class Menu {
       ['Free Build', () => this.callbacks.onPlaySandbox()],
       ['Locker', () => { this.returnTo = 'title'; this.show('locker'); }],
       ['Saved Builds', () => { this.returnTo = 'title'; this.show('builds'); }],
+      ['Blueprints', () => { this.returnTo = 'title'; this.show('blueprints'); }],
       ['Settings', () => { this.returnTo = 'title'; this.show('settings'); }],
     ] as Array<[string, () => void]>) {
       const b = document.createElement('button');
@@ -1061,6 +1088,10 @@ export class Menu {
     this.button('Locker', () => {
       this.returnTo = 'pause';
       this.show('locker');
+    }, 'mk-secondary');
+    this.button('Blueprints', () => {
+      this.returnTo = 'pause';
+      this.show('blueprints');
     }, 'mk-secondary');
     this.button('Saved Builds', () => {
       this.returnTo = 'pause';
@@ -1667,6 +1698,130 @@ export class Menu {
     row.appendChild(group);
 
     this.card.appendChild(row);
+  }
+
+  /**
+   * The blueprints, with somewhere to hold, rename and throw one away.
+   *
+   * `blueprintStore` has had `save(name, parts, id)` and `remove(id)` since the
+   * day it was written and nothing ever called either with intent — renaming
+   * and deleting existed in the model and in no interface at all, and picking
+   * one meant tapping a key until the right name went past. A wheel was the
+   * obvious reach after the emotes went on one, and it is wrong here: the count
+   * is whatever somebody has saved, the names are whatever they typed, and
+   * neither renaming nor deleting is a thing you point at.
+   */
+  private renderBlueprints(): void {
+    this.heading('Blueprints');
+
+    const hint = document.createElement('p');
+    hint.className = 'mk-hint';
+    hint.textContent = 'A blueprint is a shape you saved, stamped down in one go.'
+      + ' Hold one and it follows your aim until you put it away.';
+    this.card.appendChild(hint);
+
+    const slots = this.callbacks.listBlueprints();
+
+    // "Nothing" first and always, because putting the blueprint away is the
+    // thing somebody wants most often and it should not be at the bottom of a
+    // list that grows.
+    const none = document.createElement('div');
+    none.className = 'mk-preset';
+    const noneName = document.createElement('span');
+    noneName.className = 'who';
+    noneName.textContent = slots.some((b) => b.held) ? 'Hold nothing' : 'Holding nothing';
+    none.appendChild(noneName);
+    if (slots.some((b) => b.held)) {
+      const put = document.createElement('button');
+      put.textContent = 'Put away';
+      put.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this.callbacks.onBlueprintHold(null);
+        this.render();
+      });
+      none.appendChild(put);
+    }
+    this.card.appendChild(none);
+
+    if (slots.length === 0) {
+      const empty = document.createElement('p');
+      empty.className = 'mk-hint';
+      empty.textContent = 'Nothing saved yet. Build something, then save it as a'
+        + ' blueprint and you can stamp it down again in one go.';
+      this.card.appendChild(empty);
+      return;
+    }
+
+    for (const slot of slots) {
+      const row = document.createElement('div');
+      row.className = 'mk-preset';
+      // The id on the row is what lets anything outside this file find the
+      // right one — a test harness, and any future keyboard navigation. The
+      // "nothing" row above deliberately carries none, so it is the one row
+      // that can be found by its absence.
+      row.dataset.blueprint = slot.id;
+      if (slot.held) row.classList.add('mk-held');
+
+      const who = document.createElement('span');
+      who.className = 'who';
+      // The cost on the same line as the name, because choosing between two
+      // blueprints is choosing between two prices as much as two shapes.
+      who.textContent = `${slot.name} — ${slot.parts} parts, ${slot.wood} wood`;
+      row.appendChild(who);
+
+      if (!slot.held) {
+        const hold = document.createElement('button');
+        hold.textContent = 'Hold';
+        hold.addEventListener('click', (e) => {
+          e.stopPropagation();
+          this.callbacks.onBlueprintHold(slot.id);
+          this.render();
+        });
+        row.appendChild(hold);
+      }
+
+      // The ones that ship with the game keep their names and cannot be thrown
+      // away, so the two buttons that would fail are not offered.
+      if (!slot.builtIn) {
+        const rename = document.createElement('button');
+        rename.textContent = 'Rename';
+        rename.addEventListener('click', (e) => {
+          e.stopPropagation();
+          // The row becomes the editor rather than opening a dialog: one place
+          // to look, and Escape puts it back.
+          const field = document.createElement('input');
+          field.className = 'mk-name-input';
+          field.value = slot.name;
+          field.maxLength = 40;
+          const commit = (): void => {
+            const wanted = field.value.trim();
+            if (wanted.length > 0) this.callbacks.onBlueprintRename(slot.id, wanted);
+            this.render();
+          };
+          field.addEventListener('keydown', (ev) => {
+            ev.stopPropagation();
+            if (ev.key === 'Enter') commit();
+            else if (ev.key === 'Escape') this.render();
+          });
+          field.addEventListener('blur', commit);
+          row.replaceChildren(field);
+          field.focus();
+          field.select();
+        });
+        row.appendChild(rename);
+
+        const remove = document.createElement('button');
+        remove.textContent = 'Delete';
+        remove.addEventListener('click', (e) => {
+          e.stopPropagation();
+          this.callbacks.onBlueprintDelete(slot.id);
+          this.render();
+        });
+        row.appendChild(remove);
+      }
+
+      this.card.appendChild(row);
+    }
   }
 
   private renderBuilds(): void {

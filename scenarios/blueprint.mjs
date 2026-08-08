@@ -209,6 +209,107 @@ export default async function (page) {
   assert(cleared.held === null, 'selecting nothing should hold nothing');
   assert(cleared.drawn === 0, 'and take the preview off the lawn');
 
+  // ── The picker screen ───────────────────────────────────────────────────────
+  //
+  // `BlueprintStore` has had `save(name, parts, id)` and `remove(id)` since it
+  // was written and nothing ever called either with intent: renaming and
+  // deleting existed in the model and in no interface, and picking one meant
+  // tapping a key until the right name went past.
+  //
+  // Driven through the menu's own callbacks and read back off the rendered DOM,
+  // because those are the two halves that can disagree — and when they do it is
+  // the screen that is wrong.
+  const picker = await page.evaluate(async () => {
+    const m = window.__maker;
+    m.menu.show('blueprints');
+    await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+    const mine = m.blueprintScreen.list().find((b) => !b.builtIn);
+    const builtIn = m.blueprintScreen.list().find((b) => b.builtIn);
+    return { mine, builtIn, rows: m.blueprintScreen.rows() };
+  });
+
+  assert(picker.mine !== undefined, 'the flood-fill save above should be in the list');
+  assert(picker.builtIn !== undefined, 'and the built-ins should be too');
+  assert(
+    picker.rows.length >= 3,
+    `the screen should draw a row each plus "hold nothing", saw ${picker.rows.length}`,
+  );
+  assert(
+    picker.rows.some((r) => r.text.includes(`${picker.mine.parts} parts`)),
+    `a row should price what it would cost: ${JSON.stringify(picker.rows.map((r) => r.text))}`,
+  );
+
+  // A built-in ships with the game and cannot be renamed or thrown away, so the
+  // two buttons that would fail are not offered rather than offered and refused.
+  const builtInRow = picker.rows.find((r) => r.text.startsWith(picker.builtIn.name));
+  assert(builtInRow !== undefined, 'the built-in should have a row');
+  assert(
+    !builtInRow.buttons.includes('Delete') && !builtInRow.buttons.includes('Rename'),
+    `a built-in should offer neither: ${JSON.stringify(builtInRow.buttons)}`,
+  );
+
+  const worked = await page.evaluate(async () => {
+    const m = window.__maker;
+    const frame = () => new Promise((r) => requestAnimationFrame(r));
+    const mine = m.blueprintScreen.list().find((b) => !b.builtIn);
+
+    const pressed = m.blueprintScreen.hold(mine.id);
+    await frame();
+    const holding = m.blueprintScreen.list().find((b) => b.id === mine.id).held;
+    // The row for *that* blueprint, not any lit row: a screen that marked all
+    // of them would be as wrong as one that marked none.
+    const marked = m.blueprintScreen.rows().filter((r) => r.held);
+    const markedInDom = marked.length === 1 && marked[0].id === mine.id;
+
+    const renamed = m.blueprintScreen.rename(mine.id, 'A better name');
+    await frame();
+    const after = m.blueprintScreen.list().find((b) => b.id === mine.id);
+
+    // Still held after a rename: the id is stable across one, which is the
+    // whole reason `save` takes an id rather than making a second blueprint.
+    const stillHeld = after.held;
+
+    const putBack = m.blueprintScreen.hold(null);
+    await frame();
+    const putAway = m.blueprintScreen.list().every((b) => !b.held)
+      && m.blueprintScreen.rows().every((r) => !r.held);
+
+    m.blueprintScreen.hold(mine.id);
+    await frame();
+    const gone = m.blueprintScreen.remove(mine.id);
+    await frame();
+    const left = m.blueprintScreen.list().some((b) => b.id === mine.id);
+    // Nobody can hold a blueprint that no longer exists, or the preview goes on
+    // showing a shape that cannot be stamped.
+    //
+    // Asked of the hand rather than of the list, because a deleted blueprint
+    // has no row for `held` to be false on: the first version of this check
+    // walked the list, which cannot be anything but true once the entry is
+    // gone, and it passed with the clearing deleted.
+    const nothingHeld = m.blueprints.held() === null;
+
+    const stillDrawn = m.blueprintScreen.rows().some((r) => r.id === mine.id);
+
+    return {
+      pressed, holding, markedInDom, renamed, name: after.name, stillHeld, putBack,
+      putAway, gone, left, nothingHeld, stillDrawn,
+    };
+  });
+
+  assert(worked.pressed, 'the screen should offer a Hold button to press');
+  assert(worked.holding, 'holding one from the screen should hold it');
+  assert(worked.markedInDom, 'and the row should say so, not just the model');
+  assert(worked.renamed && worked.name === 'A better name', `renaming failed: ${worked.name}`);
+  assert(worked.stillHeld, 'a rename keeps the id, so it should still be the one in hand');
+  assert(worked.putBack, 'and a "Put away" row while something is held');
+  assert(worked.putAway, 'putting it away should leave nothing held');
+  assert(worked.gone && !worked.left, 'deleting should remove it from the list');
+  assert(!worked.stillDrawn, 'and take its row off the screen');
+  assert(worked.nothingHeld, 'and nobody should be left holding what was deleted');
+
+  await page.evaluate(() => window.__maker.hideOverlay());
+  await frames(page, 4);
+
   // Frame the stamped staircase for the artifact.
   await page.evaluate(() => {
     window.__maker.teleport(4, 0.6, 41);
@@ -220,5 +321,7 @@ export default async function (page) {
   console.log('[blueprint] verified: the built-ins are there and priced, a stamp draws every'
     + ' part it is about to place and places all of them at once, stamping into itself is'
     + ' refused without leaving a partial one behind, a flood fill off the real world saves'
-    + ' the connected group, and four quarter turns land exactly where they started');
+    + ' the connected group, four quarter turns land exactly where they started, and'
+    + ' a picker screen holds, renames and deletes them — refusing to offer either on a'
+    + ' built-in, and leaving nobody holding what it just threw away');
 }
