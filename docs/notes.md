@@ -1276,6 +1276,42 @@ the only place that wiring exists.
 
 ---
 
+# 27. Defeat keels over, and the economy holds the gravity knob
+
+Three things from one batch, related by what they share: the joint between feel
+and rules.
+
+**The knockdown.** A stunned kid used to slump — a lean of 0.42 and a washed-out
+shirt. They keel over now: one rigid rotation about a pivot at their feet takes
+the whole assembly — head, hair, ink shells, painted marks, eyes — to the lawn
+in a piece, like a fainting goat, and the get-up is the same rotation played
+backwards at half the speed. Deliberately not a ragdoll: the body is assembled
+part by part each frame, so one premultiplied world transform at every matrix
+writer is the entire implementation, it costs nothing, and it is networked for
+free because it hangs off `stunned`, which every machine already knows. Falling
+is faster than rising because falling over is an event and getting up is a
+recovery. Six plants, all caught — and one test rewritten after asking the
+wrong part to stand still, since a leg's own matrix sits at its hip pivot and
+arcs with the body; what separates a rotation about the feet from one about the
+middle is that everything swings the *same way*, ordered by height.
+
+**The motion knobs, and why the fall ships symmetric.** Gravity, jump height
+and fall weight are live multipliers on the developer panel. Jump speed is
+derived from sqrt(2gh) with the knobs in, so gravity changes how *fast* the arc
+happens and never how far it reaches. The finding is written up in the
+verification record: auditioning the classic heavier-fall at 1.25 moved three
+balance tests that simulate whole bot rounds, because a wall's worth in Water
+War is measured in jump arcs. **Gravity is economy.** The mechanism shipped
+with the default at 1; the knob is how the heavier fall gets auditioned, and
+the default moves when the balance claims are re-derived with it.
+
+**And the chunked renderer** (section: the roadmap's Part 7 item, now done):
+one InstancedMesh per part kind per 12-metre chunk, culling back on, the fort's
+triangles gone from the frame the moment the camera leaves them.
+
+
+---
+
 ## Verification
 
 **1,413 unit tests** across 63 files, and **twenty-eight browser runs** — a

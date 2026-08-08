@@ -448,6 +448,8 @@ const OUTLINE_THICKNESS = 0.03;
 /** Per-kid animation state, carried between frames. See `CharacterBatch.state`. */
 interface KidState {
   stride: number;
+  /** 0 upright to 1 flat on their back, eased. */
+  down: number;
   lean: number;
   idle: number;
   /** The last frame this kid was posed on. Anything older is not here any more. */
@@ -528,6 +530,23 @@ export class CharacterBatch {
   private frame = 0;
 
   private readonly matrix = new THREE.Matrix4();
+
+  /**
+   * The knockdown, as a world transform applied to every part of one kid.
+   *
+   * A defeated kid keels over rigid, like a fainting goat, rather than playing
+   * a per-limb animation: the body is assembled part by part from its feet, so
+   * one rotation about a pivot at the feet takes the whole assembly — head,
+   * hair, marks, ink shells — to the ground in a piece, and the get-up is the
+   * same rotation played backwards. Cheap, networked for free (it hangs off
+   * `stunned`, which every machine already knows), and funnier than dignity.
+   */
+  private downActive = false;
+  private readonly downMatrix = new THREE.Matrix4();
+  private readonly downUndo = new THREE.Matrix4();
+  private readonly downAxis = new THREE.Vector3();
+  private readonly downQuat = new THREE.Quaternion();
+  private readonly downPivot = new THREE.Vector3();
   private readonly pos = new THREE.Vector3();
   private readonly quat = new THREE.Quaternion();
   private readonly euler = new THREE.Euler();
@@ -729,7 +748,7 @@ export class CharacterBatch {
     // ── The walk cycle ────────────────────────────────────────────────────────
     let kid = this.state.get(p.id);
     if (kid === undefined) {
-      kid = { stride: 0, lean: 0, idle: look.idlePhase, seen: this.frame };
+      kid = { stride: 0, lean: 0, idle: look.idlePhase, down: 0, seen: this.frame };
       this.state.set(p.id, kid);
     }
     kid.seen = this.frame;
@@ -766,10 +785,35 @@ export class CharacterBatch {
     // about the local X axis does — that tips the chest backwards — so the sign
     // is flipped once, at the point the angle becomes a rotation, rather than
     // being carried inverted through every offset below.
-    const wantLean = p.stunned === true ? 0.42 : !p.onGround ? -0.14 : effort * LEAN_MAX;
+    // A light slump only, now that the knockdown does the talking — the old
+    // 0.42 slump plus a full keel-over read as a body folding in half.
+    const wantLean = p.stunned === true ? 0.12 : !p.onGround ? -0.14 : effort * LEAN_MAX;
     let lean = kid.lean;
     lean += (wantLean - lean) * Math.min(1, dt * 8);
     kid.lean = lean;
+
+    // ── The knockdown ─────────────────────────────────────────────────────────
+    //
+    // Faster down than up: falling over is an event and getting up is a
+    // recovery, and a kid who springs upright as fast as they dropped reads as
+    // a glitch rather than a character.
+    const wantDown = p.stunned === true ? 1 : 0;
+    kid.down += (wantDown - kid.down) * Math.min(1, dt * (wantDown > kid.down ? 6 : 3));
+    if (Math.abs(kid.down - wantDown) < 1e-3) kid.down = wantDown;
+    const downEase = kid.down * kid.down * (3 - 2 * kid.down);
+    // Just short of flat, so the body rests on the lawn rather than in it.
+    const downAngle = downEase * (Math.PI / 2 - 0.12);
+    this.downActive = downAngle > 1e-3;
+    if (this.downActive) {
+      // Backward, about the kid's own lateral axis through their feet: local +X
+      // turned by the facing. One rotation takes the whole assembly.
+      this.downAxis.set(cos, 0, -sin);
+      this.downQuat.setFromAxisAngle(this.downAxis, downAngle);
+      this.downPivot.set(p.x, p.y + 0.05, p.z);
+      this.downMatrix.compose(this.downPivot, this.downQuat, this.one);
+      this.downUndo.makeTranslation(-this.downPivot.x, -this.downPivot.y, -this.downPivot.z);
+      this.downMatrix.multiply(this.downUndo);
+    }
 
     // ── Torso ─────────────────────────────────────────────────────────────────
     //
@@ -875,15 +919,18 @@ export class CharacterBatch {
 
       this.seat(EYE_AIM.x * side, EYE_AIM.y, EYE_AIM.z, r);
       this.matrix.compose(this.pos, this.quat, this.scratchScale.setScalar(look.headScale));
+      if (this.downActive) this.matrix.premultiply(this.downMatrix);
       this.eyes.setMatrixAt(slot, this.matrix);
 
       this.seat(EYE_AIM.x * side, EYE_AIM.y, EYE_AIM.z, r + IRIS_OUT * look.headScale);
       this.matrix.compose(this.pos, this.quat, this.scratchScale.setScalar(look.headScale));
+      if (this.downActive) this.matrix.premultiply(this.downMatrix);
       this.irises.setMatrixAt(slot, this.matrix);
       this.irises.setColorAt(slot, look.eyes);
 
       this.seat(EYE_AIM.x * side, EYE_AIM.y, EYE_AIM.z, r + PUPIL_OUT * look.headScale);
       this.matrix.compose(this.pos, this.quat, this.scratchScale.setScalar(look.headScale));
+      if (this.downActive) this.matrix.premultiply(this.downMatrix);
       this.pupils.setMatrixAt(slot, this.matrix);
 
       // The brows do more for "this is a person" than the eyes under them, and
@@ -898,6 +945,7 @@ export class CharacterBatch {
         this.pos, this.browQuat,
         this.scratchScale.setScalar(drawBrows ? look.headScale : 0),
       );
+      if (this.downActive) this.matrix.premultiply(this.downMatrix);
       this.brows.setMatrixAt(slot, this.matrix);
       this.brows.setColorAt(slot, look.hair);
     }
@@ -924,14 +972,16 @@ export class CharacterBatch {
     this.browQuat.setFromEuler(this.euler);
     this.browQuat.premultiply(this.quat);
     this.matrix.compose(this.pos, this.browQuat, this.scratchScale);
-    this.mouth.setMatrixAt(index, this.matrix);
+    if (this.downActive) this.matrix.premultiply(this.downMatrix);
+      this.mouth.setMatrixAt(index, this.matrix);
 
     // The neck, bridging collar to jaw. Placed halfway between the two so it
     // covers the gap a small head leaves and disappears inside a large one.
     this.pos.copy(this.attach(0, -r * 0.86, 0));
     this.pos.y = (this.pos.y + p.y + TORSO_TOP + bob) / 2;
     this.matrix.compose(this.pos, this.quat, this.one);
-    this.neck.setMatrixAt(index, this.matrix);
+    if (this.downActive) this.matrix.premultiply(this.downMatrix);
+      this.neck.setMatrixAt(index, this.matrix);
     this.neck.setColorAt(index, look.skin);
 
     // ── Limbs ─────────────────────────────────────────────────────────────────
@@ -1046,6 +1096,7 @@ export class CharacterBatch {
       this.pos, this.markSpin,
       this.scratchScale.setScalar(markSizeOf(mark) * (1 - shrink * 0.55)),
     );
+    if (this.downActive) this.matrix.premultiply(this.downMatrix);
     mesh.setMatrixAt(slot, this.matrix);
     mesh.setColorAt(slot, this.markColour.setHex(
       CLOTH_COLOURS[mark.colour] ?? CLOTH_COLOURS[0], THREE.SRGBColorSpace,
@@ -1135,6 +1186,7 @@ export class CharacterBatch {
     this.euler.set(swing, facing, 0, 'YXZ');
     this.quat.setFromEuler(this.euler);
     this.matrix.compose(this.pos, this.quat, this.one);
+    if (this.downActive) this.matrix.premultiply(this.downMatrix);
     mesh.setMatrixAt(slot, this.matrix);
     mesh.setColorAt(slot, tint);
   }
@@ -1159,6 +1211,9 @@ export class CharacterBatch {
     pos: THREE.Vector3, quat: THREE.Quaternion, scale: THREE.Vector3,
   ): void {
     this.matrix.compose(pos, quat, scale);
+    // The knockdown is worn by every part or by none: a premultiplied world
+    // rotation about the feet, so the assembly keels over in one piece.
+    if (this.downActive) this.matrix.premultiply(this.downMatrix);
     part.mesh.setMatrixAt(index, this.matrix);
     part.outline?.setMatrixAt(index, this.matrix);
   }

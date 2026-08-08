@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import * as THREE from 'three';
 import {
   CharacterBatch, lookFor, dress, undressAll, HIP_Y, TORSO_TOP, HEAD_Y, HEAD_R,
+  type CharacterPose,
 } from './character.ts';
 import { defaultAppearance, HAIR_STYLES } from '../game/appearance.ts';
 import { shirtColor, SHIRTS } from '../game/shirts.ts';
@@ -536,5 +537,98 @@ describe('shirts', () => {
   it('allocates nothing, because it runs for everyone every frame', () => {
     const out = new THREE.Color();
     expect(shirtColor(out, 'right', 0.4)).toBe(out);
+  });
+});
+
+describe('the knockdown', () => {
+  const posed = (over: Partial<CharacterPose> = {}): CharacterPose => ({
+    id: 5, x: 0, y: 0, z: 0, facing: 0, speed: 0, onGround: true,
+    shirt: new THREE.Color(0x6e8bd8), ...over,
+  });
+
+  function headHeight(batch: CharacterBatch): number {
+    const m = new THREE.Matrix4();
+    (batch.group.getObjectByName('head') as THREE.InstancedMesh).getMatrixAt(0, m);
+    return new THREE.Vector3().setFromMatrixPosition(m).y;
+  }
+
+  function pose(batch: CharacterBatch, p: CharacterPose, frames: number): void {
+    for (let i = 0; i < frames; i++) {
+      batch.begin();
+      batch.pose(1 / 60, p);
+      batch.finish();
+    }
+  }
+
+  it('brings a stunned kid head to the lawn, and stands them back up', () => {
+    // A keel-over, not a slump: the head has to actually reach the ground, or
+    // the defeat reads as a posture change rather than an event. Two seconds
+    // is comfortably past both easings.
+    const batch = new CharacterBatch(4);
+    pose(batch, posed(), 30);
+    const upright = headHeight(batch);
+    expect(upright).toBeGreaterThan(1.1);
+
+    pose(batch, posed({ stunned: true }), 120);
+    const down = headHeight(batch);
+    expect(down).toBeLessThan(0.55);
+
+    pose(batch, posed(), 180);
+    expect(headHeight(batch)).toBeCloseTo(upright, 1);
+  });
+
+  it('keels over about the feet, so the body lies beside them rather than sinking', () => {
+    // Rotating about the middle pushes the legs through the lawn; about the
+    // feet, the head travels and the feet stay. Facing 0 means forward is -z,
+    // so a backward tip carries the head toward +z.
+    const batch = new CharacterBatch(4);
+    pose(batch, posed({ stunned: true }), 120);
+    const m = new THREE.Matrix4();
+    (batch.group.getObjectByName('head') as THREE.InstancedMesh).getMatrixAt(0, m);
+    const head = new THREE.Vector3().setFromMatrixPosition(m);
+    expect(Math.abs(head.z)).toBeGreaterThan(0.8);
+    expect(head.y).toBeGreaterThan(-0.1);
+
+    // The leg's own matrix sits at its hip pivot, 0.7m up, so it arcs too —
+    // asking it to stay put was the first version and it was asking the wrong
+    // part. What separates a rotation about the feet from one about the middle
+    // is the sign: about the feet, everything swings the *same* way, by an
+    // amount ordered by its height; about the middle, the head and the legs
+    // split in opposite directions.
+    const leg = new THREE.Matrix4();
+    (batch.group.getObjectByName('leg0') as THREE.InstancedMesh).getMatrixAt(0, leg);
+    const hip = new THREE.Vector3().setFromMatrixPosition(leg);
+    expect(Math.sign(hip.z)).toBe(Math.sign(head.z));
+    expect(Math.abs(hip.z)).toBeLessThan(Math.abs(head.z));
+  });
+
+  it('takes everything with it, ink and eyes included', () => {
+    // One premultiplied transform for every writer, or a knocked-down kid
+    // leaves their face hanging in the air where their head used to be.
+    const batch = new CharacterBatch(4);
+    pose(batch, posed({ stunned: true }), 120);
+    const m = new THREE.Matrix4();
+    (batch.group.getObjectByName('eyes') as THREE.InstancedMesh).getMatrixAt(0, m);
+    const eyes = new THREE.Vector3().setFromMatrixPosition(m);
+    expect(eyes.y).toBeLessThan(0.6);
+  });
+
+  it('falls faster than it gets up', () => {
+    const batch = new CharacterBatch(4);
+    pose(batch, posed(), 30);
+    const upright = headHeight(batch);
+
+    let fell = 0;
+    for (let i = 0; i < 300; i++) {
+      pose(batch, posed({ stunned: true }), 1);
+      if (headHeight(batch) < upright * 0.5) { fell = i; break; }
+    }
+    let rose = 0;
+    for (let i = 0; i < 600; i++) {
+      pose(batch, posed(), 1);
+      if (headHeight(batch) > upright * 0.9) { rose = i; break; }
+    }
+    expect(fell).toBeGreaterThan(0);
+    expect(rose).toBeGreaterThan(fell);
   });
 });

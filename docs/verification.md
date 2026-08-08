@@ -1101,6 +1101,12 @@ The general shape, which has now appeared three times on this project: **a
 function with two internal paths needs a test that separates them, and a test
 that exercises both at once separates neither.**
 
+And on the knockdown, six: a knockdown that never runs; a tip that stops at the
+slump angle instead of the ground; a body that never gets back up; a rotation
+about the middle rather than the feet; a face left hanging where the head used
+to be; and a get-up as fast as the fall. All caught — one test rewritten after
+asking a leg's hip pivot to stand still, which it does not do and should not.
+
 And on the motion knobs, five: a gravity knob that quietly shrinks the jump; a
 fall weight that drags the rise; a fall weight never applied; a jump knob that
 does nothing; and the shipped fall quietly asymmetric — which took three
