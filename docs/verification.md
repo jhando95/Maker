@@ -729,6 +729,90 @@ The assertion also checks that the envelope was *explored* (`fastest` under a
 millisecond, `slowest` past four hundred), because bounds on a distribution
 nothing sampled are bounds that hold vacuously.
 
+## Three real bugs, found the first time the network was allowed to misbehave
+
+The link from the previous section was built to be pointed at something. Pointed
+at a two-player session it found three bugs in an hour, all of them in code that
+had passed every test on this project for weeks. That is the argument for the
+whole technique, so it is worth being precise about what each one was and why a
+loopback could never have shown it.
+
+### A snapshot that arrives late used to be applied anyway
+
+`applySnapshot` took the tick and opened with `void tick`. Ten seconds of
+two-player traffic at 120ms with 40ms of jitter delivered seven of about two
+hundred snapshots out of order, and all seven were applied on arrival.
+
+What that costs is not subtle. An interpolation sample gets stamped *now* while
+carrying where somebody was two frames ago, so the picture of a player walking
+in a straight line goes backwards. Reconciliation runs against a stale
+acknowledgement. The round rolls back. And the sweep at the bottom — "anyone the
+host stopped mentioning is gone" — forgets anybody who joined in the gap, then
+re-adds them on the next snapshot with an empty interpolation buffer.
+
+Dropped whole rather than in part, because everything in a snapshot describes one
+instant: taking the actors from an old one and the round from a new one is a
+third world that never existed.
+
+### A guest read a snapshot before it knew which player it was
+
+Worse, and only reachable if a snapshot can overtake a welcome. Before the
+welcome, `this.localId` is -1, so `applySnapshot` treats every actor as somebody
+else. It builds a remote for the guest's own future id, and asks the roster for a
+remote carrying the host's id — which the roster **refuses**, because an
+unwelcomed guest is still id 0 and so is the host. The refusal is silent, the
+client records the remote as made, and it never asks again.
+
+The result is a guest who spends the entire session drawing a ghost of itself and
+never once seeing the host. The fix is a line: a snapshot cannot be read before
+the welcome, because the one thing needed to read one is which of those actors
+you are.
+
+The test forces it deterministically rather than waiting for jitter to do it —
+the welcome goes onto a link with half a second of delay, then the delay is taken
+away, so everything sent afterwards overtakes it.
+
+### A lost welcome was a permanently half-joined session
+
+The client repeats its hello until it is welcomed, which was added when a real
+server exposed a dropped one. Nothing repeated the *welcome*. There was no
+`case 'hello'` in the host's peer handler at all, so a second hello from an
+established peer fell through the switch in silence.
+
+So: the host makes the actor, gives it a side and a spawn, adds it to the roster
+and starts simulating it from a stream of commands — and the guest, whose welcome
+was the one packet in thirty that went missing, sits on "connecting…" forever
+while everybody else watches them stand on the lawn. One lost packet, one player
+who cannot play, and no error anywhere.
+
+A second hello means exactly one thing: *I never got your answer*. It is answered
+now. Everything in the answer is idempotent by construction — `welcome` carries
+the world wholesale and a guest adopts rather than merges, `wearing` and
+`sprayed` are last-writer-wins on an id — so answering one nobody needed costs a
+message, and not answering one costs a player.
+
+### And two the fix immediately created
+
+Both caught by the existing suite within a minute, which is the system working.
+
+**The first retry fired a sixtieth of a second after the first hello**, because
+the constructor sent one and left the counter at zero. Harmless while nothing
+answered a repeat; the moment something did, every guest got two welcomes on
+every join. The counter starts wound up now — that *was* the first hello.
+
+**And a second welcome re-initialised a player mid-round.** A welcome is an
+initialisation: an id, a side, a spawn, and the world wholesale. Applying one to
+a guest who already has all four teleports them back to the spawn, throws away
+the world they are standing in, and clears the part-id maps everything placed
+since was learned into. It is dropped now if the guest is already connected.
+
+That one needed a test written for it specifically, because with the retry
+counter fixed no test produced a second hello any more. The condition that does
+is a link slower than the retry interval: a quarter of a second each way is a
+half-second round trip against a third-of-a-second retry, so a guest *always*
+asks again before the first answer can arrive. Six plants on these fixes, five
+caught immediately, and the sixth is the one that needed the slow link to exist.
+
 ## Every bug that was planted on purpose
 
 Each of these was introduced deliberately, to watch one assertion fail, and then
@@ -811,6 +895,12 @@ folded anyway; two different sounds folded together; coalescing against the
 oldest line instead of the newest; a repeat that keeps its old place in the
 list; a repeat that does not update its direction; the newest line refused
 instead of the oldest dropped; and a repeat that does not refresh the age.
+
+And on the session over that network, six: a stale snapshot applied like any
+other; a snapshot read before the guest knew which player it was; a repeated
+hello left unanswered; a second welcome re-initialising a player mid-round; a
+first retry fired a sixtieth of a second after the first hello; and stale
+snapshots dropped but never counted.
 
 And on the network that is bad on purpose, twelve: a delay allowed to go
 negative; delivery in send order rather than due order; no tiebreak, so messages

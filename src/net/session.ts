@@ -411,10 +411,36 @@ export class NetHost {
     });
     this.ctx.actors.addRemote(actor);
 
-    transport.send({
+    this.introduce(this.peers.get(id)!);
+    this.message = `${first.name} joined`;
+  }
+
+  /**
+   * Everything a guest needs in order to start playing, sent to that guest.
+   *
+   * Its own function because it is sent twice: once when the peer is created,
+   * and again whenever that peer says hello a second time.
+   *
+   * A second hello means one thing — "I never got your answer" — because a
+   * client repeats it only until it is welcomed. Nothing answered it, and a
+   * host that does not answer it turns one lost packet into a permanently
+   * half-joined session: the host has already made the actor, given it a side
+   * and a spawn, and is simulating it from a stream of commands, while the
+   * guest sits on "connecting…" forever, never learning which of the people in
+   * the yard it is. On a loopback the welcome cannot be lost, which is why this
+   * survived every test until there was a link that could lose one.
+   *
+   * Everything here is idempotent by construction. `welcome` carries the world
+   * wholesale and a guest adopts it rather than merging; `wearing` and
+   * `sprayed` are last-writer-wins on an id. So the cost of answering a hello
+   * nobody needed answered is one message, and the cost of not answering one is
+   * a player who cannot play.
+   */
+  private introduce(peer: Peer): void {
+    peer.transport.send({
       t: 'welcome',
-      id,
-      team,
+      id: peer.id,
+      team: peer.actor.team,
       tick: this.tick,
       // The world as it stands. Somebody joining halfway through has to see what
       // everybody built before they arrived, or they are playing a different map.
@@ -430,7 +456,7 @@ export class NetHost {
     // hosted and everybody who joined after you is a stranger in default
     // clothes, which is a bug you only see with three people in the yard.
     for (const [wornBy, appearance] of this.worn) {
-      transport.send({ t: 'wearing', id: wornBy, a: appearance });
+      peer.transport.send({ t: 'wearing', id: wornBy, a: appearance });
     }
 
     // And what is already painted on the fences. One message each rather than a
@@ -438,15 +464,20 @@ export class NetHost {
     // every later mark takes — a second path is a second thing to get wrong,
     // and this one would only be wrong for people who joined late.
     for (const tag of this.painted) {
-      transport.send({ t: 'sprayed', tag });
+      peer.transport.send({ t: 'sprayed', tag });
     }
-
-    this.message = `${first.name} joined`;
   }
 
   private handle(peer: Peer, message: ReturnType<typeof decode>): void {
     if (message === null) return;
     switch (message.t) {
+      // "I never got your answer." A client stops saying hello the moment it is
+      // welcomed, so a second one from somebody already in the yard can only
+      // mean the first welcome went missing. Say it again.
+      case 'hello':
+        this.introduce(peer);
+        break;
+
       case 'cmd': {
         const command = unpackCommand(message.c);
         // Newest wins. An old command arriving late is input for a tick that has
@@ -1050,6 +1081,23 @@ export class NetClient {
   private corrections = 0;
 
   /**
+   * The newest snapshot instant applied, so an older one can be recognised.
+   *
+   * The host's counter only ever goes up within a session and is never reset by
+   * a round change, which is what makes a plain comparison safe here rather
+   * than something that has to reason about wrapping.
+   */
+  private newestSnap = -1;
+
+  /**
+   * Snapshots dropped for arriving late, which is a network measurement rather
+   * than an error. A guest seeing a lot of these has a link that reorders, and
+   * knowing that is the difference between blaming the network and blaming the
+   * game.
+   */
+  stale = 0;
+
+  /**
    * How often to say hello again while waiting to be welcomed.
    *
    * A third of a second, which is frequent enough that a player does not
@@ -1067,6 +1115,11 @@ export class NetClient {
   ) {
     this.name = name;
     transport.send({ t: 'hello', version: PROTOCOL_VERSION, name });
+    // The retry counter starts wound up, because this *was* the first hello.
+    // Left at zero it fired again on the very next tick — a repeat a sixtieth
+    // of a second after the original, which cannot possibly mean the original
+    // was lost, and which the host now answers with a second welcome.
+    this.helloIn = NetClient.HELLO_RETRY_TICKS;
   }
 
   /**
@@ -1144,6 +1197,19 @@ export class NetClient {
     if (message === null) return;
     switch (message.t) {
       case 'welcome':
+        // Once is enough. A welcome initialises a guest — its id, its side, its
+        // spawn and the whole world — and doing that twice is not doing it
+        // twice as well: it yanks a player who has been running for two seconds
+        // back to the spawn, throws away the world they are standing in and
+        // rebuilds it, and clears the part-id maps that everything placed since
+        // was learned into.
+        //
+        // A second one is not a fault, which is why this drops it quietly
+        // rather than complaining. The host now answers a repeated hello with a
+        // fresh welcome, because a repeat means the first went missing — and on
+        // a link slower than the retry interval a guest will always ask again
+        // before the answer has had time to arrive.
+        if (this.connected) break;
         this.localId = message.id;
         // Stop being id 0: the host already is. Everything pointing at this
         // character holds the controller rather than the actor, so only the name
@@ -1178,6 +1244,39 @@ export class NetClient {
         break;
 
       case 'snap':
+        // Nothing can be read from a snapshot before the welcome, because the
+        // one thing a guest needs in order to read one is which of those actors
+        // it is. Without that `applySnapshot` treats every id as somebody else:
+        // it builds a remote for the guest's own future id, and asks the roster
+        // for a remote with the host's id — which the roster refuses, because
+        // an unwelcomed guest is still id 0 and so is the host. The refusal is
+        // silent and the client records the remote as made, so it never asks
+        // again. The guest ends up drawing a ghost of itself and never seeing
+        // the host at all, for the rest of the session.
+        //
+        // On a loopback the welcome always wins that race, which is why this
+        // survived every test until a link that reorders was pointed at it.
+        if (this.localId < 0) break;
+        // A snapshot is a picture of one instant, and an older picture arriving
+        // after a newer one is not news — it is a rewind.
+        //
+        // Nothing rejected one until a link that reorders was built to look:
+        // `applySnapshot` took the tick and opened with `void tick`. Ten
+        // seconds of two-player traffic at 120ms with 40ms of jitter reordered
+        // seven of two hundred snapshots, and every one of them was applied.
+        // What that costs is not subtle — an interpolation sample stamped
+        // *now* carrying where somebody was two frames ago, a reconciliation
+        // against a stale acknowledgement, a round rolled backwards, and an
+        // actor who joined in the gap forgotten and immediately re-added.
+        //
+        // Dropped whole rather than in part, because everything in a snapshot
+        // describes one instant: taking the actors from an old one and the
+        // round from a new one is a third world that never existed.
+        if (message.tick <= this.newestSnap) {
+          this.stale++;
+          break;
+        }
+        this.newestSnap = message.tick;
         this.applySnapshot(message.tick, message.ack, message.actors);
         this.self = message.you ?? null;
         // Shown rather than simulated. Nothing here integrates or collides —
@@ -1266,6 +1365,10 @@ export class NetClient {
 
   private applySnapshot(tick: number, ack: number, actors: PackedActor[]): void {
     void tick;
+    // The tick is the caller's business — it decides whether this snapshot is
+    // news at all before getting here, and by the time it does the answer is
+    // yes. Kept in the signature because a snapshot without its instant on it
+    // is the shape of the bug that was here.
     const seen = new Set<number>();
 
     for (const packed of actors) {
