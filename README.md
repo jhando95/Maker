@@ -603,6 +603,13 @@ checked against positions and tone spreads rather than pixels. A browser
 assertion that cannot fail is worse than no assertion, and the way to find out
 is to take the fix back out and watch.
 
+## Why things are the way they are
+
+Per-feature engineering notes — what each system does, why it is shaped that
+way, and what it cost — are in [`docs/notes.md`](docs/notes.md). They are the
+long-form companion to this file: this one says how to work on the project, that
+one says how it got here.
+
 ## What the tests could not see
 
 Checks on this project that **passed for the wrong reason**, and red builds that
