@@ -6,7 +6,7 @@ import {
 } from './character.ts';
 import { defaultAppearance, HAIR_STYLES } from '../game/appearance.ts';
 import { shirtColor, SHIRTS } from '../game/shirts.ts';
-import { CAP_HEIGHT } from '../physics/constants.ts';
+import { CAP_HEIGHT, CAP_RADIUS } from '../physics/constants.ts';
 import { SOAKED } from '../game/wetness.ts';
 
 const luma = (c: THREE.Color): number => 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b;
@@ -630,5 +630,56 @@ describe('the knockdown', () => {
     }
     expect(fell).toBeGreaterThan(0);
     expect(rose).toBeGreaterThan(fell);
+  });
+});
+
+describe('the turned bodies', () => {
+  it('keeps the chest at the depth the painted marks seat against', () => {
+    // The chest mark is placed at TORSO_D/2 + MARK_LIFT in the torso's own
+    // frame, at the torso's mid-height — a constant, not a measurement. The
+    // torso is a turned barrel now, so nothing forces the band at that height
+    // to reach that depth: re-sculpt the profile a little narrower and every
+    // chest and back mark hovers off the shirt.
+    //
+    // Measured at the mark's own height rather than over the whole shape — the
+    // first version read the bounding box, and a planted 10%-narrower chest
+    // sailed straight past it because the hip band still reached full depth.
+    // The lathe's seam puts a vertex exactly on +Z in every ring, so the
+    // band's true depth appears verbatim among the positions.
+    //
+    // TORSO_D is not exported, so it is rebuilt from the same capsule constant
+    // it is derived from.
+    const torso = new CharacterBatch(2).group.getObjectByName('torso') as THREE.InstancedMesh;
+    const position = torso.geometry.getAttribute('position') as THREE.BufferAttribute;
+    const th = (TORSO_TOP - HIP_Y) / 2;
+    let chest = 0;
+    for (let i = 0; i < position.count; i++) {
+      if (Math.abs(position.getY(i)) < th * 0.25) chest = Math.max(chest, position.getZ(i));
+    }
+    const TORSO_D = CAP_RADIUS * 1.1;
+    expect(chest).toBeGreaterThan(TORSO_D / 2 - 0.005);
+    // And not past it either, or the mark sinks into the shirt.
+    expect(chest).toBeLessThanOrEqual(TORSO_D / 2 + 0.001);
+  });
+
+  it('gives every inked part the smoothed normals the shell expands along', () => {
+    // The outline shell shares the body's geometry and pushes it out along an
+    // `outlineNormal` attribute. A part built from a bare lathe() has no such
+    // attribute, the shader reads zeros, and the ink for that one part quietly
+    // vanishes — nothing errors. So: every part that has a shell must carry
+    // the attribute.
+    const group = new CharacterBatch(2).group;
+    const shelled: string[] = [];
+    group.traverse((o) => {
+      if (o.name.endsWith('-ink')) shelled.push(o.name.slice(0, -4));
+    });
+    expect(shelled.length).toBeGreaterThan(5);
+    for (const name of shelled) {
+      const mesh = group.getObjectByName(name) as THREE.InstancedMesh;
+      expect(
+        mesh.geometry.getAttribute('outlineNormal'),
+        `${name} has an ink shell but no outlineNormal — its outline is invisible`,
+      ).toBeDefined();
+    }
   });
 });

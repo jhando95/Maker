@@ -46,9 +46,10 @@
  * shapes, and a shape nobody on the field is wearing has a count of zero and
  * draws nothing — which is the whole reason a palette of twelve is affordable
  * to offer. Hair and its bunch are packed the same way, so what a kid costs
- * depends on what they are wearing: **25 draws and 1,680 triangles** with an
- * ordinary haircut, 23 and 1,592 shaved, 27 and 1,840 with a ponytail, and four
- * more draws with all four marks painted. The whole cast, empty lawn to full,
+ * depends on what they are wearing: **25 draws and 2,144 triangles** with an
+ * ordinary haircut, 23 and 2,000 shaved, 27 and 2,304 with a ponytail, and four
+ * more draws with all four marks painted. About a quarter more than the boxy
+ * first bodies, which is the price of turned torsos and tapered limbs. The whole cast, empty lawn to full,
  * is free at zero because `finish` lowers `count` rather than parking unused
  * slots out of sight.
  *
@@ -64,15 +65,17 @@
  * the face grew a sclera, an iris, a pupil and a pair of brows.
  *
  * The cost is that a part can only be posed by a matrix and tinted by one
- * colour. So there are no bendable knees and no per-vertex anything: a limb is a
- * rigid box on a pivot. At this scale, with this outline, that is the look
- * anyway.
+ * colour. So there are no bendable knees and no per-vertex anything: a limb is
+ * a rigid tapered column on a pivot — turned on a lathe like the garden props,
+ * faceted so the toon ramp breaks across flats. At this scale, with this
+ * outline, that is the look anyway.
  */
 
 import * as THREE from 'three';
 import { createToonMaterial, createOutlineMaterial } from './toonMaterial.ts';
 import { giveInstanceColor } from './instanceColor.ts';
-import { chamferedBox, blob } from './geometry.ts';
+import { chamferedBox, blob, addOutlineNormals } from './geometry.ts';
+import { lathe, type ProfilePoint } from './lathe.ts';
 import { markGeometries } from './markShapes.ts';
 import { Rng } from '../core/rng.ts';
 import { CAP_HEIGHT, CAP_RADIUS } from '../physics/constants.ts';
@@ -131,6 +134,28 @@ const ARM_R = 0.0675;
  * hovers when seen from the side.
  */
 const MARK_LIFT = 0.008;
+
+/**
+ * A turned body part: a lathe profile, squashed into an ellipse where a body
+ * is deeper or shallower than it is wide, flat-shaded, with the smoothed
+ * outline normals every silhouette part needs.
+ *
+ * This is what took the kids from "boxy" to "modelled". A torso is a barrel, a
+ * limb is a tapered octagonal column, a shoe is a loaf — all of them profiles
+ * of a dozen numbers, faceted on purpose so the toon ramp still breaks across
+ * flats the way it does on the lumber they play beside.
+ */
+function turned(
+  profile: readonly ProfilePoint[], segments: number, depthScale = 1,
+): THREE.BufferGeometry {
+  const g = lathe(profile, segments);
+  if (depthScale !== 1) {
+    g.scale(1, 1, depthScale);
+    // Normals skew under non-uniform scale; recompute so the facets stay true.
+    g.computeVertexNormals();
+  }
+  return addOutlineNormals(g);
+}
 
 /**
  * A head about a quarter of the body.
@@ -574,19 +599,35 @@ export class CharacterBatch {
 
     // Bodies. Every one of these is modelled so the instance matrix places a
     // *joint*, not a centre — see limbGeometry.
+    //
+    // The torso is a turned barrel in a T-shirt's shape: a hem that tucks in,
+    // a chest at full width — the chest *must* be at full width, because the
+    // painted marks seat against TORSO_D/2 and a narrower chest leaves them
+    // hovering — shoulders that round in, and a shelf for the collar.
+    const th = (TORSO_TOP - HIP_Y) / 2;
+    const tw = TORSO_W / 2;
     this.torso = this.makePart(
-      'torso', chamferedBox(TORSO_W, TORSO_TOP - HIP_Y, TORSO_D, 0.05),
+      'torso', turned([
+        { r: 0, y: -th }, { r: tw * 0.86, y: -th }, { r: tw * 0.99, y: -th * 0.3 },
+        { r: tw, y: th * 0.12 }, { r: tw * 0.97, y: th * 0.55 },
+        { r: tw * 0.93, y: th * 0.78 }, { r: tw * 0.52, y: th * 0.97 }, { r: 0, y: th },
+      ], 9, TORSO_D / TORSO_W),
       0xffffff, true,
     );
     this.head = this.makePart('head', blob(HEAD_R, 1, 0.075, () => rng.next()), 0xffffff, true);
-    // A slab rather than a cap: hair that follows the skull exactly reads as a
-    // swimming cap, and the point of it is to break the silhouette.
+    // A mop rather than a slab: a turned bowl, widest a little above its brim,
+    // deeper than it is wide — hair that breaks the silhouette without reading
+    // as a crate worn on the head, which is what the box version did up close.
     // Anchored at its underside rather than its middle, so scaling a mop taller
     // grows it upward. Centred, the tall variants grew *down* over the face and
-    // every kid with big hair had no features at all.
-    const hairGeometry = chamferedBox(HAIR_W, HAIR_H, HAIR_D, 0.045);
-    hairGeometry.translate(0, HAIR_H / 2, 0);
-    this.hair = this.makePart('hair', hairGeometry, 0xffffff, true);
+    // every kid with big hair had no features at all. The lathe is already
+    // based at zero, so the anchor comes free; the first point tucks the
+    // underside up a touch so no open rim shows from below.
+    const hw = HAIR_W / 2;
+    this.hair = this.makePart('hair', turned([
+      { r: 0, y: 0.012 }, { r: hw * 0.97, y: 0 }, { r: hw, y: HAIR_H * 0.42 },
+      { r: hw * 0.8, y: HAIR_H * 0.82 }, { r: 0, y: HAIR_H },
+    ], 9, HAIR_D / HAIR_W), 0xffffff, true);
 
     for (let i = 0; i < 2; i++) {
       this.arms.push(this.makePart(`arm${i}`, this.limbGeometry(0.125, ARM_LEN, 0.135), 0xffffff, true));
@@ -599,16 +640,24 @@ export class CharacterBatch {
     }
     for (let i = 0; i < 2; i++) {
       // Trainers: deliberately oversized and pushed forward, which is most of
-      // what makes a walk cycle read at a distance.
-      const shoe = chamferedBox(0.17, 0.11, 0.27, 0.035);
-      shoe.translate(0, -0.055, 0.035);
+      // what makes a walk cycle read at a distance. A turned loaf now — flat
+      // base, round toe — stretched along Z to the same length the box had.
+      const shoe = turned([
+        { r: 0, y: 0 }, { r: 0.08, y: 0 }, { r: 0.085, y: 0.042 },
+        { r: 0.064, y: 0.085 }, { r: 0, y: 0.11 },
+      ], 8, 1.6);
+      shoe.translate(0, -0.11, 0.035);
       this.shoes.push(this.makePart(`shoe${i}`, shoe, 0xe8e2d4, true));
     }
 
     // A neck, which fills the gap a small head leaves over the collar. Skin, so
-    // it is tinted per kid like the head and the hands.
+    // it is tinted per kid like the head and the hands. An octagonal column —
+    // it is the one part of a body that actually is a cylinder.
     this.neck = this.makeMesh(
-      'neck', chamferedBox(NECK_R * 2, 0.1, NECK_R * 2, 0.02), 0xffffff,
+      'neck', turned([
+        { r: 0, y: -0.05 }, { r: NECK_R, y: -0.05 },
+        { r: NECK_R, y: 0.05 }, { r: 0, y: 0.05 },
+      ], 8), 0xffffff,
     );
 
     // The face and the hands carry no outline. All of it is small enough that a
@@ -666,14 +715,21 @@ export class CharacterBatch {
    * A limb with its pivot at the origin rather than its centre.
    *
    * A box centred on itself rotates about its middle, which makes a leg scissor
-   * around its own knee. Shifting the geometry down by half its length puts the
+   * around its own knee. Building the profile from -len up to 0 puts the
    * joint at the origin, so the instance matrix can place the hip and rotate
    * about it — which is what a hip does.
+   *
+   * A tapered octagonal column rather than a box: full width at the joint,
+   * narrowing toward the wrist or ankle. The upper band holds full width down
+   * to 45% because the sleeve marks seat against `ARM_R` at 42% — taper
+   * through that band and every painted sleeve floats off the arm.
    */
   private limbGeometry(w: number, len: number, d: number): THREE.BufferGeometry {
-    const g = chamferedBox(w, len, d, 0.028);
-    g.translate(0, -len / 2, 0);
-    return g;
+    const top = w / 2;
+    return turned([
+      { r: 0, y: -len }, { r: top * 0.78, y: -len },
+      { r: top * 0.97, y: -len * 0.45 }, { r: top, y: -len * 0.06 }, { r: 0, y: 0 },
+    ], 8, d / w);
   }
 
   private makeMesh(
