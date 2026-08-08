@@ -41,7 +41,7 @@ import type { EmoteKind, PingKind } from '../game/comms.ts';
 import type { Team } from '../game/actor.ts';
 
 /** Bumped whenever a message shape changes. Mismatched peers are turned away. */
-export const PROTOCOL_VERSION = 7;
+export const PROTOCOL_VERSION = 8;
 
 /**
  * One step of a WebRTC handshake, on its way between two players.
@@ -332,6 +332,21 @@ export type HostMessage =
   /** Somebody built something. Includes the host's own placements. */
   | { t: 'built'; id: number; r: PlacementRecord }
   | { t: 'unbuilt'; p: number }
+  /**
+   * Something came down, and it was big enough to hear.
+   *
+   * Purely a cue. The state travels as `unbuilt`, one part at a time, and that
+   * path is untouched — this carries no ids and removes nothing. It exists
+   * because a cascade arrives as N separate removals, so a guest applying them
+   * cannot tell a tower falling from somebody tidying up, and the clatter is
+   * the only warning the person who built it gets.
+   *
+   * Broadcast rather than sent per recipient, unlike `said` and the pings: the
+   * falloff is arithmetic every client can do from its own listener position,
+   * and there is nothing private about a noise the whole garden makes. `n` is
+   * how many parts, because the recipe scales with it.
+   */
+  | { t: 'crash'; x: number; y: number; z: number; n: number }
   /**
    * Somebody said something, and you are entitled to have heard it.
    *

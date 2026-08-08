@@ -1394,6 +1394,76 @@ describe('paint on somebody else\'s fence', () => {
   });
 });
 
+describe('hearing somebody else\'s tower come down', () => {
+  function listeners(): {
+    host: NetHost; a: NetClient; b: NetClient;
+    /** A's machine, so a test can check its world rather than its callbacks. */
+    aMachine: Machine;
+    got: Record<string, Array<{ x: number; y: number; z: number; n: number }>>;
+    tick(n: number): void;
+  } {
+    const got: Record<string, Array<{ x: number; y: number; z: number; n: number }>> = {
+      host: [], a: [], b: [],
+    };
+    const make = (key: string): Machine => {
+      const m = makeMachine();
+      m.crashed = (x, y, z, n) => got[key]!.push({ x, y, z, n });
+      return m;
+    };
+    const host = new NetHost(make('host'));
+    const pa = loopbackPair();
+    const pb = loopbackPair();
+    const aMachine = make('a');
+    const a = new NetClient(aMachine, pa.client, 'ali');
+    const b = new NetClient(make('b'), pb.client, 'bo');
+    host.accept(pa.host);
+    host.accept(pb.host);
+    const tick = (n: number): void => {
+      for (let i = 0; i < n; i++) {
+        host.beforeTick();
+        a.beforeTick();
+        b.beforeTick();
+        host.afterTick(DT);
+        a.afterTick(DT, makeCommand(sharedTick));
+        b.afterTick(DT, makeCommand(sharedTick++));
+      }
+    };
+    tick(4);
+    return { host, a, b, aMachine, got, tick };
+  }
+
+  it('reaches every guest, which is the whole gap', () => {
+    // A cascade arrives on a guest as N separate `unbuilt` messages, so without
+    // this the only person who hears a tower fall is whoever pulled the plank —
+    // exactly backwards, since the warning is for the person who built it.
+    const r = listeners();
+    r.host.crash(3, 1, -4, 7);
+    r.tick(4);
+    expect(r.got.a).toEqual([{ x: 3, y: 1, z: -4, n: 7 }]);
+    expect(r.got.b).toEqual([{ x: 3, y: 1, z: -4, n: 7 }]);
+  });
+
+  it('carries how much came down, because the recipe scales with it', () => {
+    const r = listeners();
+    r.host.crash(0, 0, 0, 1);
+    r.host.crash(0, 0, 0, 30);
+    r.tick(4);
+    expect(r.got.a.map((c) => c.n)).toEqual([1, 30]);
+  });
+
+  it('removes nothing — it is a cue, not a fact', () => {
+    // The state travels as `unbuilt`, one part at a time, and that path is
+    // untouched. A machine that ignored this entirely would still have the
+    // right world, which is what makes it safe to broadcast without ids.
+    const r = listeners();
+    const before = r.aMachine.build.placedCount;
+    r.host.crash(9, 9, 9, 12);
+    r.tick(4);
+    expect(r.aMachine.build.placedCount).toBe(before);
+    expect(r.got.a).toHaveLength(1);
+  });
+});
+
 describe('getting two browsers introduced for voice', () => {
   /**
    * A host, two guests, and every voice signal each machine was handed.

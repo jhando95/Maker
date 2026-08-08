@@ -394,6 +394,12 @@ const ears = {
   collapsed(x: number, y: number, z: number, parts: number): void {
     sounds.collapsed(x, y, z, camera, player, parts);
     heard('collapse', x, y, z);
+    // And everybody else in the garden, if this machine is the one that
+    // decided. A collapse arrives on a guest as N separate removals, so
+    // without this the only person who hears a tower fall is whoever pulled
+    // the plank out — which is exactly backwards, since the warning is for the
+    // person who built it.
+    if (net instanceof NetHost) net.crash(x, y, z, parts);
   },
   sprayed(x: number, y: number, z: number): void {
     sounds.sprayed(x, y, z, camera, player);
@@ -806,6 +812,10 @@ const sessionContext: SessionContext = {
   signalled: (from, signal) => void voice.receive(from, signal),
   wearing: (id, appearance) => dress(id, appearance),
   sprayed: (tag) => applyTag(tag),
+  // Straight back into the same funnel, which on a guest cannot re-broadcast
+  // because the host branch is false there. One recipe, one falloff, one
+  // caption, wherever the collapse was decided.
+  crashed: (x, y, z, parts) => ears.collapsed(x, y, z, parts),
 };
 
 /**

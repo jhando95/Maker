@@ -500,6 +500,37 @@ guests; the sprayer never told about their own; a late joiner told nothing; the
 caps never applied to the host's own copy; paint replayed for a part that had
 come down; and a guest painting optimistically as well as taking the echo.
 
+## And the clatter, which is a cue rather than a fact
+
+A guest could not hear somebody else's tower fall. The removals were already
+replicated — the reason was subtler than a missing message: a cascade arrives as
+N separate `unbuilt`s, one per part, so a guest applying them cannot tell a
+tower coming down from somebody tidying up a plank at a time. There was nothing
+to *infer* it from.
+
+So the noise travels on its own, and the shape of that is the decision worth
+recording. **It carries no ids and removes nothing.** The state path is
+untouched — a machine that dropped every one of these would still have exactly
+the right world — which is what makes it safe to broadcast rather than send per
+recipient the way chat and pings are. There is nothing private about a noise the
+whole garden makes, and the falloff is arithmetic every client can already do
+from its own listener position.
+
+It hangs off `ears.collapsed` rather than off the removal path, so a removal
+that is not worth hearing does not become one on the wire just because it
+happened to be networked. On a guest the same funnel runs and simply cannot
+re-broadcast, because the host branch is false there — one recipe, one falloff,
+one caption, wherever the collapse was decided.
+
+Four planted, four caught: the crash never leaving the host; a guest ignoring
+one it was sent; the size dropped on the way, so a thirty-part collapse sounds
+like one plank; and the place dropped, so every tower falls at the origin.
+
+One of the three tests could not have failed as first written — it asserted on
+`status.tick`, which does not exist, so it read `undefined` and threw rather
+than checking anything. It reads `build.placedCount` now, which is the actual
+claim: this message removes nothing.
+
 ## Every bug that was planted on purpose
 
 Each of these was introduced deliberately, to watch one assertion fail, and then

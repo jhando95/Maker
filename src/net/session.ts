@@ -215,6 +215,15 @@ export interface SessionContext {
    * host says so.
    */
   sprayed?(tag: TagRecord): void;
+  /**
+   * Something came down somewhere, loudly enough to be worth hearing.
+   *
+   * A cue rather than a fact: nothing is removed by this, and a machine that
+   * ignored it would still have the right world. It is here because the
+   * removals arrive one at a time and a guest cannot otherwise tell a tower
+   * falling from somebody taking a plank back.
+   */
+  crashed?(x: number, y: number, z: number, parts: number): void;
 }
 
 /** Something to show the person at this keyboard. */
@@ -908,6 +917,18 @@ export class NetHost {
     this.paint(this.ctx.actors.local.id, raw);
   }
 
+  /**
+   * Tell everybody a structure fell.
+   *
+   * Not called from the removal path on purpose. The host decides a collapse in
+   * one place and makes the noise in one place, and this hangs off the noise —
+   * so a removal that is *not* worth hearing does not become one on the wire
+   * just because it happened to be networked.
+   */
+  crash(x: number, y: number, z: number, parts: number): void {
+    this.broadcast({ t: 'crash', x, y, z, n: parts });
+  }
+
   /** A part came down, so the paint on it did too. Keeps the replay honest. */
   unpaint(gone: ReadonlySet<number>): void {
     if (gone.size === 0) return;
@@ -1207,6 +1228,9 @@ export class NetClient {
         this.ctx.signalled?.(message.from, message.s);
         break;
 
+      case 'crash':
+        this.ctx.crashed?.(message.x, message.y, message.z, message.n);
+        return;
       case 'sprayed':
         this.ctx.sprayed?.(clampTag(message.tag, message.tag?.by ?? 0));
         return;
