@@ -14,3 +14,5 @@ coverage/
 # Verification screenshots are regenerated on demand; keep only the checked-in preview.
 shots/*
 !shots/build-preview.png
+# Raw AI generations: material for review, never assets by default.
+assets/meshy/

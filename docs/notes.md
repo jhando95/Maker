@@ -1312,6 +1312,65 @@ triangles gone from the frame the moment the camera leaves them.
 
 ---
 
+# 28. Meshy, and where generated 3D fits a game with no texture pipeline
+
+There is now an AI 3D generator on the team, and the research question was not
+"can it make models" — it can — but where it fits a game whose look is flat
+colours under a toon ramp with ink outlines, on purpose.
+
+## The key decides the architecture
+
+This is a web game. Anything the client does, it does in front of the player,
+and an API key in a browser bundle is public the moment somebody opens the
+network tab. So generation is a **development-time tool** (`tools/meshy.mjs`),
+the key lives in an environment variable on a developer's machine, and what
+ships is a mesh file reviewed like any other asset. The public bundle never
+learns Meshy exists — same reasoning as the developer panel, same
+`check:public` philosophy: the only feature somebody cannot misuse is one that
+is not there.
+
+## Preview mode is the whole pipeline
+
+Meshy's flow is preview (geometry, untextured) then refine (textures). The
+refine stage is where most of the credits go, and it buys exactly the thing
+this game refuses: textured surfaces. An **untextured low-poly preview mesh
+painted with the game's own toon materials** keeps the no-texture rule, takes
+the outline pass the way flat faces do, and costs a third as much. So the tool
+defaults to preview-only with `model_type: "lowpoly"`, a 3,000-triangle budget,
+and `auto_size` with the origin at the base — a prop that stands on a lawn in
+real metres. Refine exists behind `--refine` for the day a texture wins an
+argument.
+
+## Measured, first generation
+
+A backyard dog house, prompt to GLB in about two and a half minutes: 374KB,
+sensible silhouette, arched door, plank detailing — and two flaws of the genre,
+a stray tuft of geometry floating beside one wall and a slightly crumpled roof
+ridge. The thumbnail is committed beside these notes as
+[`meshy-doghouse.png`](meshy-doghouse.png) so the decision can be made by
+looking at it. **Cost honesty:** the current lowpoly preview bills 20 credits,
+not the ~5 older documentation suggests; the account started at 50 and holds 30.
+
+## What deliberately did not happen
+
+No generated mesh went into the game. Two gates stand between a generation and
+the yard, and they are gates rather than steps:
+
+- **Art direction.** This game is crisp chamfered boxes, and that is
+  load-bearing — the module grid, the collision model and the look are the same
+  fact. An organic low-poly prop beside them is a style decision with no way
+  back once the yard fills with them, and it belongs to a person, not a
+  pipeline.
+- **Promotion.** `assets/meshy/` is gitignored raw material. A prop that passes
+  review gets trimmed (those tufts), scaled against the module grid, painted
+  from the palette, given an outline shell, and committed to `public/props/` —
+  then loaded at boot *before* the shader warm-up so the soak's program and
+  geometry counts stay flat. That loader is a real piece of work and it is not
+  written; it is sized in the roadmap instead.
+
+
+---
+
 ## Verification
 
 **1,413 unit tests** across 63 files, and **twenty-eight browser runs** — a
