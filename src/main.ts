@@ -78,6 +78,7 @@ import { Menu, type LobbyView, type MenuCallbacks } from './ui/menu.ts';
 import { CrashHandler } from './app/crashHandler.ts';
 import { GamepadManager } from './core/gamepadManager.ts';
 import { Schedule } from './core/schedule.ts';
+import { Tuning } from './app/tuning.ts';
 import { Minimap, type MapBox, type MapMarker } from './ui/minimap.ts';
 import { PerformanceGovernor } from './app/performanceGovernor.ts';
 import { FrameStats } from './app/frameStats.ts';
@@ -199,11 +200,64 @@ const world = new CollisionWorld(1.0, 4096);
 // Installed before anything else touches the world so the starter structures
 // and the player both spawn against a house that is already there.
 installFixtures(world, slabs);
+/**
+ * How long an afternoon takes, in seconds of play.
+ *
+ * Five minutes, which is the length of a round of Lava and a good long one of
+ * anything else — so a game that goes the distance ends at dusk and a quick one
+ * ends in the gold. It is not the length of any particular mode on purpose:
+ * tying it to a mode's own timer means it resets every time a phase does, and
+ * Fort Defense would run the sun backwards five times a round.
+ */
+export const AFTERNOON_LENGTH = 300;
+
+// ── The numbers worth arguing about ──────────────────────────────────────────
+//
+// Registered next to nothing, deliberately: a knob belongs beside the code that
+// reads it, and this list exists only because these three happen to be read
+// here. Adding one anywhere else is a `register` call and nothing more — the
+// panel is built from whatever is registered by the time it opens.
+const tuning = new Tuning();
+
+const afternoonLength = tuning.register({
+  key: 'world.afternoonLength',
+  label: 'Afternoon length',
+  value: AFTERNOON_LENGTH,
+  min: 30, max: 900, step: 10,
+  help: 'Seconds of play from midday to dusk.',
+  home: 'src/world/daylight.ts',
+});
+
+tuning.register({
+  key: 'camera.fov',
+  label: 'Field of view',
+  value: 72,
+  min: 55, max: 100, step: 1,
+  help: 'Degrees. The Settings slider overrides this while it is being used.',
+  home: 'src/player/cameraRig.ts',
+});
+
+tuning.register({
+  key: 'map.size',
+  label: 'Minimap size',
+  value: 168,
+  min: 100, max: 320, step: 4,
+  help: 'Pixels across.',
+  home: 'src/ui/minimap.ts',
+});
+
 // ── The map in the corner ────────────────────────────────────────────────────
 //
 // Baked from the same slabs the scenery was drawn from, so the map cannot drift
 // from the world: there is one description of where the house is.
 const minimap = new Minimap(app);
+// Pushed rather than pulled, because neither of these is read per frame: a
+// camera reads its own field of view once and a canvas is sized once.
+tuning.onChange((key, value) => {
+  if (key === 'camera.fov') camera.baseFov = value;
+  if (key === 'map.size') minimap.setSize(value);
+});
+
 const mapMarkers: MapMarker[] = [];
 minimap.setWorld(slabs
   .filter((slab) => slab.ghost !== true)
@@ -368,17 +422,6 @@ function builtFootprints(): MapBox[] {
 minimap.setBuiltSource(builtFootprints);
 
 /**
- * How long an afternoon takes, in seconds of play.
- *
- * Five minutes, which is the length of a round of Lava and a good long one of
- * anything else — so a game that goes the distance ends at dusk and a quick one
- * ends in the gold. It is not the length of any particular mode on purpose:
- * tying it to a mode's own timer means it resets every time a phase does, and
- * Fort Defense would run the sun backwards five times a round.
- */
-const AFTERNOON_LENGTH = 300;
-
-/**
  * Seconds of round played, which is the only clock the sky reads.
  *
  * Advanced by the loop rather than taken from `mode.hud().timer`, for the
@@ -400,7 +443,7 @@ function roundDayTime(): DayTime {
     case 'afternoon': return AFTERNOON;
     case 'golden': return GOLDEN;
     case 'dusk': return DUSK;
-    default: return dayTimeForRound(roundClock, AFTERNOON_LENGTH);
+    default: return dayTimeForRound(roundClock, afternoonLength());
   }
 }
 
@@ -2931,6 +2974,25 @@ declare global {
   interface Window {
     __maker?: Record<string, unknown>;
   }
+}
+
+// ── The developer build ──────────────────────────────────────────────────────
+//
+// Behind a constant the bundler folds away, with the panel behind a dynamic
+// import inside the folded branch — so in a public build this whole block is
+// `if (false)` and `src/dev/` never enters the output. That is the gate, and it
+// is a fact about the artefact rather than a promise made by the program: a
+// password or a query string in a page anybody can read is a sign asking people
+// not to try the handle.
+//
+// `npm run check:public` greps the built bundle for the panel's marker and
+// fails the build if it is there, so this is verified rather than believed.
+if (__DEV_TOOLS__) {
+  void import('./dev/panel.ts').then(({ DevPanel }) => {
+    const panel = new DevPanel(app, tuning);
+    tuning.onChange(() => panel.refresh());
+    (window as unknown as { __devPanel?: unknown }).__devPanel = panel;
+  });
 }
 
 window.__maker = {

@@ -609,6 +609,20 @@ A review of the whole project and the plan that came out of it — what is stron
 what is weak, what the genre knows that this does not, and the order to do it in
 — is in [`docs/roadmap.md`](docs/roadmap.md).
 
+## The developer build
+
+`npm run dev` and `npm run build:tools` include a tuning panel on **F8**: a
+slider for every registered knob, live, with `Copy changes` putting the changed
+values on the clipboard as lines to paste back into the source.
+
+`npm run build` does not include it, and that is the gate — the code is not in
+the output rather than hidden behind a flag, because anything shipped to a
+browser can be read by anybody who opens the console. `npm run check:public`
+proves it against the built bundle and CI runs it on every commit.
+
+Adding a knob is one `register` call beside the code that reads it; the panel is
+built from whatever is registered by the time it opens.
+
 ## Why things are the way they are
 
 Per-feature engineering notes — what each system does, why it is shaped that

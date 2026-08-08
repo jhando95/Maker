@@ -105,6 +105,14 @@ jobs:
       - name: Production build
         run: npx vite build
 
+      # The developer tools are gated by not being in the output, which is a
+      # claim about the artefact rather than about the source — so it is checked
+      # against the artefact. A bundler that stopped folding the constant one
+      # day would produce a build that looks completely normal until somebody
+      # pressed F8.
+      - name: The public build has no developer tools in it
+        run: npm run check:public
+
       # The harness boots the real game in headless Chromium and fails on any
       # console error or uncaught exception. It catches the whole class of bug
       # unit tests cannot see — a shader that will not compile, a module that

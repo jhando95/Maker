@@ -1156,6 +1156,85 @@ say why.
 
 ---
 
+# 25. A developer build, and why a password would not have been one
+
+Two things, and the second has a trap in it worth naming before the feature.
+
+## The tuning registry
+
+The engine under this game is three.js plus about four thousand lines of
+renderer, physics and rules written for this game and no other. What it has
+never had is the thing a tailored engine is actually *for*: a way to change how
+the game feels without changing the program. Deciding whether a trampoline
+throws a kid three metres or four means editing a constant, waiting for a
+reload, and losing the round you were testing it in — so in practice the
+question gets asked once, answered from a guess, and never revisited.
+
+`src/app/tuning.ts` is a registry of knobs, each with a range, and three
+decisions in it are load-bearing:
+
+**Registered, not listed.** The tempting design is a file naming every tunable
+value, which is the two-lists bug this project has lost to four times — the
+number would exist there and in the code that reads it, and they would drift. A
+knob is registered *by the module that owns it* and this holds no knowledge of
+what any of them mean.
+
+**`register` returns a function, not a number.** The point of a knob is that it
+changes; a caller that read a number once at module load would have opted out of
+the whole feature and never noticed. The shape of the return value is the
+reminder.
+
+**Export is source, not state.** `asSource()` prints the changed values as lines
+with the file each came from, ready to paste. Tuning that lives only in a
+browser's storage is a game that behaves differently on the machine it was tuned
+on — the "works on mine" bug with extra steps. Tuning ends in a commit or it did
+not happen.
+
+Sixteen plants, all caught.
+
+## The gate, which is a build and not a flag
+
+The request was for a developer mode that only one person has. The trap is that
+**this game is a page**: everything shipped to a browser can be read by anybody
+who opens the console. A password, a query string, a localStorage key or a
+runtime toggle is not a lock on a client-side feature — it is a sign asking
+people not to try the handle, and it takes about a minute to walk past.
+
+The only way a feature is genuinely unavailable to somebody is if **the code is
+not there**. So the panel sits behind `if (__DEV_TOOLS__)` with a dynamic import
+inside the folded branch:
+
+```
+npm run dev          tools on   — working on it
+npm run build        tools OFF  — what anybody else gets
+npm run build:tools  tools on   — the private build, never deployed
+```
+
+In a public build the constant folds to `false`, the branch and its import are
+unreachable, and `src/dev/` is not in the output at all. The private build puts
+the panel in its own chunk, `panel-*.js`, which is the dynamic import working as
+intended.
+
+**And that claim is about the artefact, so it is checked against the artefact.**
+`npm run check:public` greps the built bundle for the panel's marker and fails
+if it finds it; CI runs it right after the build. A bundler that stopped folding
+the constant one day would otherwise produce a build that looks completely
+normal until somebody pressed F8.
+
+Verified in both directions, which matters: a check that the public build has no
+panel also passes if the panel does not exist anywhere. The private build was
+grepped for the same marker and has it.
+
+**What this does not do**, said plainly: it stops other people *having* the
+tools. It does not stop somebody editing values in their own browser's memory,
+because nothing client-side can. Anything where that would matter — scores that
+mean something, a competitive ladder — needs a host that does not trust the
+client, which this game's netcode already assumes for everything that decides a
+round.
+
+
+---
+
 ## Verification
 
 **1,413 unit tests** across 63 files, and **twenty-eight browser runs** — a
