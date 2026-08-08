@@ -54,6 +54,24 @@ const MAX_FLAGS = 4;
  * draw either way.
  */
 const MAX_DROPS = 26;
+/**
+ * How many hoses can be running at once.
+ *
+ * Water War spawns raiders continuously and every one of them can be spraying,
+ * so this is a cap on the draw rather than on the game: past it, the streams
+ * furthest down the list go undrawn, which is a missing jet somewhere across
+ * the garden rather than a missing rule anywhere.
+ */
+const MAX_STREAMS = 8;
+
+/** One hose: where it starts and where the mode says the water stops. */
+export interface StreamShot {
+  fx: number; fy: number; fz: number;
+  tx: number; ty: number; tz: number;
+}
+
+/** Shared, so clearing the streams does not allocate. */
+const EMPTY_STREAMS: readonly StreamShot[] = [];
 
 interface Splash {
   x: number; y: number; z: number;
@@ -101,8 +119,19 @@ export class ModeRenderer {
   private readonly stands: Stand[] = [];
   private readonly flagPoles: FlagPole[] = [];
   private readonly drops: THREE.InstancedMesh;
-  private streamFrom: { x: number; y: number; z: number } | null = null;
-  private streamEnd: { x: number; y: number; z: number } | null = null;
+  /**
+   * Every hose running this frame, nozzle and landing point.
+   *
+   * Owned here and refilled in place rather than taken by reference, because
+   * this is set every frame from a caller-owned array and holding onto that
+   * would make the renderer's picture depend on when the caller next touched
+   * it — a class of bug that shows up as one frame of stale water.
+   */
+  private readonly streams: Array<{
+    fx: number; fy: number; fz: number;
+    tx: number; ty: number; tz: number;
+  }> = [];
+  private streamCount = 0;
 
   private readonly splashes: Splash[] = [];
   private readonly dropletMesh: THREE.InstancedMesh;
@@ -192,7 +221,7 @@ export class ModeRenderer {
     this.drops = new THREE.InstancedMesh(
       new THREE.SphereGeometry(1, 6, 5),
       createToonMaterial({ color: 0x8fd8f4 }),
-      MAX_DROPS,
+      MAX_DROPS * MAX_STREAMS,
     );
     this.drops.frustumCulled = false;
     this.drops.castShadow = false;
@@ -388,49 +417,81 @@ export class ModeRenderer {
    * Set every frame from the mode, because a stream that persists for one frame
    * after the trigger is released reads as the weapon sticking.
    */
-  setStream(
-    end: { x: number; y: number; z: number } | null,
-    fromX: number, fromY: number, fromZ: number,
-  ): void {
-    this.streamEnd = end;
-    this.streamFrom = end === null ? null : { x: fromX, y: fromY, z: fromZ };
+  /** Droplets submitted to the draw call this frame, across every hose. */
+  get streamDrops(): number {
+    return this.drops.count;
   }
 
-  private updateStream(time: number): void {
-    const from = this.streamFrom;
-    const to = this.streamEnd;
-    if (from === null || to === null) {
-      for (let i = 0; i < MAX_DROPS; i++) this.drops.setMatrixAt(i, ModeRenderer.HIDDEN);
-      this.drops.instanceMatrix.needsUpdate = true;
-      return;
-    }
+  /** How many hoses may be drawn at once, so a check can reason about the cap. */
+  static readonly MAX_STREAMS = MAX_STREAMS;
+  /** Droplets in one hose at its longest. */
+  static readonly MAX_DROPS = MAX_DROPS;
 
-    const dx = to.x - from.x;
-    const dy = to.y - from.y;
-    const dz = to.z - from.z;
-    const length = Math.hypot(dx, dy, dz);
-    const used = Math.max(2, Math.min(MAX_DROPS, Math.round(length * 2.6)));
-
-    for (let i = 0; i < MAX_DROPS; i++) {
-      if (i >= used) {
-        this.drops.setMatrixAt(i, ModeRenderer.HIDDEN);
-        continue;
+  /**
+   * The hoses to draw this frame.
+   *
+   * Clamped here and only here. `updateStream` used to carry a second bound on
+   * the buffer as well, and a planted bug proved it unreachable — with the
+   * count clamped on the way in and each hose capped at `MAX_DROPS`, the total
+   * cannot exceed the capacity, so the inner guard was two defences for one
+   * invariant with only one of them ever running. It came out; this is the one
+   * that holds, and the test that pushes more hoses than the cap is pointed
+   * here.
+   */
+  setStreams(running: ReadonlyArray<StreamShot>): void {
+    const n = Math.min(running.length, MAX_STREAMS);
+    for (let i = 0; i < n; i++) {
+      const shot = running[i]!;
+      while (this.streams.length <= i) {
+        this.streams.push({ fx: 0, fy: 0, fz: 0, tx: 0, ty: 0, tz: 0 });
       }
-      const t = (i + 0.5) / used;
-      // A little sag and a little wobble: dead straight reads as a laser.
-      const sag = Math.sin(t * Math.PI) * length * 0.035;
-      const wobble = Math.sin(time * 22 + i * 1.7) * 0.035 * t;
-      this.pos.set(
-        from.x + dx * t + wobble,
-        from.y + dy * t - sag,
-        from.z + dz * t + wobble,
-      );
-      // Fattens along its length, so the jet has a direction you can read.
-      this.scale.setScalar(0.045 + t * 0.085);
-      this.matrix.compose(this.pos, ModeRenderer.NO_ROTATION, this.scale);
-      this.drops.setMatrixAt(i, this.matrix);
+      const slot = this.streams[i]!;
+      slot.fx = shot.fx; slot.fy = shot.fy; slot.fz = shot.fz;
+      slot.tx = shot.tx; slot.ty = shot.ty; slot.tz = shot.tz;
+    }
+    this.streamCount = n;
+  }
+
+  /**
+   * Draw every hose that is running.
+   *
+   * **Packed rather than parked.** Live droplets go into the front of the
+   * buffer and `count` is lowered to match, so a garden where nobody has pulled
+   * a trigger costs no draw at all. Parking unused slots at a hidden matrix —
+   * which is what this did — submits every instance to the vertex shader to
+   * produce no pixels, and it is the mistake this project has now made and
+   * fixed in four separate batches.
+   */
+  private updateStream(time: number): void {
+    let slot = 0;
+    for (let s = 0; s < this.streamCount; s++) {
+      const shot = this.streams[s]!;
+      const dx = shot.tx - shot.fx;
+      const dy = shot.ty - shot.fy;
+      const dz = shot.tz - shot.fz;
+      const length = Math.hypot(dx, dy, dz);
+      const used = Math.max(2, Math.min(MAX_DROPS, Math.round(length * 2.6)));
+
+      for (let i = 0; i < used; i++) {
+        const t = (i + 0.5) / used;
+        // A little sag and a little wobble: dead straight reads as a laser.
+        // Phased by which hose it is as well as by time, so two people spraying
+        // side by side do not wobble in lockstep and read as one wide jet.
+        const sag = Math.sin(t * Math.PI) * length * 0.035;
+        const wobble = Math.sin(time * 22 + i * 1.7 + s * 2.3) * 0.035 * t;
+        this.pos.set(
+          shot.fx + dx * t + wobble,
+          shot.fy + dy * t - sag,
+          shot.fz + dz * t + wobble,
+        );
+        // Fattens along its length, so the jet has a direction you can read.
+        this.scale.setScalar(0.045 + t * 0.085);
+        this.matrix.compose(this.pos, ModeRenderer.NO_ROTATION, this.scale);
+        this.drops.setMatrixAt(slot++, this.matrix);
+      }
     }
     this.scale.setScalar(1);
+    this.drops.count = slot;
     this.drops.instanceMatrix.needsUpdate = true;
   }
 
@@ -677,7 +738,7 @@ export class ModeRenderer {
     for (const d of this.droplets) d.active = false;
     for (const stand of this.stands) stand.group.visible = false;
     for (const flag of this.flagPoles) flag.group.visible = false;
-    this.setStream(null, 0, 0, 0);
+    this.setStreams(EMPTY_STREAMS);
     this.updateStream(0);
   }
 }

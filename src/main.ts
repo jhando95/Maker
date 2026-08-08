@@ -36,7 +36,7 @@ import { ActorRoster, LOCAL_ACTOR_ID, type Actor, type Team } from './game/actor
 import { BUTTON, commandToIntent, makeCommand } from './core/command.ts';
 
 import { ProjectileSystem } from './game/projectiles.ts';
-import { ModeRenderer } from './game/modeRenderer.ts';
+import { ModeRenderer, type StreamShot } from './game/modeRenderer.ts';
 import { CharacterBatch, dress, undressAll, wearing } from './render/character.ts';
 import { LockerStore, MAX_PRESETS } from './app/lockerStore.ts';
 import { clampAppearance, defaultAppearance, type Appearance } from './game/appearance.ts';
@@ -2495,10 +2495,24 @@ function draw(alpha: number, frameDt: number): void {
   sounds.eveningAmbience(lampGlowAt(roundDayTime()));
   flushShadows(nowSeconds);
   drainEvents();
-  modeRenderer.setStream(
-    mode?.stream ?? null,
-    state.x, state.y + state.eyeHeight * 0.82, state.z,
-  );
+  // Everybody's water, not just yours.
+  //
+  // `streamFor` has been published per actor since Water War was written and
+  // the renderer took one of them, which meant a guest could see their own jet
+  // and not the host's — the fight looked one-sided from both ends. The nozzle
+  // is each actor's own eye rather than a shared constant, because a kid who
+  // has been shrunk in the Locker sprays from where their head actually is.
+  streamShots.length = 0;
+  for (const who of actors.all) {
+    const end = mode?.streamFor?.(who.id) ?? (who.id === actors.local.id ? mode?.stream : null);
+    if (!end) continue;
+    const c = who.controller;
+    streamShots.push({
+      fx: c.x, fy: c.y + c.eyeHeight * 0.82, fz: c.z,
+      tx: end.x, ty: end.y, tz: end.z,
+    });
+  }
+  modeRenderer.setStreams(streamShots);
   // Everybody, drawn by one rig.
   //
   // The local player goes in the same list as everyone else, and drops out of it
@@ -2616,6 +2630,8 @@ const profile = new FrameProfile();
 const sectionScratch: SectionTime[] = [];
 /** Shared, because clearing the caption strip should not allocate every frame. */
 const EMPTY_CAPTIONS: Caption[] = [];
+/** Refilled every frame rather than rebuilt, for the same reason as the above. */
+const streamShots: StreamShot[] = [];
 
 /**
  * And how long the GPU took, where the machine will say.
@@ -3435,6 +3451,27 @@ window.__maker = {
    * snapshot.
    */
   balloonsDrawn: () => projectiles.activeCount,
+  /**
+   * Droplets actually submitted to the draw call, across every hose.
+   *
+   * The instance count rather than the number of streams, because the claim
+   * worth checking is what reaches the GPU: a renderer that parked unused slots
+   * out of sight instead of lowering `count` would report a full buffer with
+   * nobody spraying, which is the mistake this batch just stopped making.
+   */
+  streamDropsDrawn: () => modeRenderer.streamDrops,
+  /**
+   * How many hoses the *mode* says are running, against how many the renderer
+   * drew. Read together, because the gap this closes was exactly a disagreement
+   * between the two: the mode published one per actor and the renderer took one.
+   */
+  streamsPublished: () => {
+    let n = 0;
+    for (const who of actors.all) {
+      if (mode?.streamFor?.(who.id) ?? (who.id === actors.local.id ? mode?.stream : null)) n++;
+    }
+    return n;
+  },
   /**
    * Drive the local player from a fixed intent for a while, and report.
    *

@@ -159,11 +159,27 @@ export default async function (page) {
       out: m.playerIsOut,
       tank: m.tankLevel,
       stream: m.stream === null || m.stream === undefined ? null : { ...m.stream },
+      // Read here rather than from a later frame, for the reason written above:
+      // the mode clears the streams at the top of every tick, so the only
+      // moment one exists is the instant the fast-forward stops with the
+      // trigger still held.
+      hoses: window.__maker.streamsPublished(),
     };
   });
   assert(!streaming.out, 'the player should still be in the fight for this check');
   assert(streaming.tank > 0, `and should have water; tank is ${streaming.tank}`);
   assert(streaming.stream !== null, 'holding fire with water in the tank should draw a stream');
+  // Everybody's water, not just yours. `streamFor` has been published per actor
+  // since Water War was written and the renderer took exactly one of them, so a
+  // guest saw their own jet and never the host's — the fight looked one-sided
+  // from both ends. What a browser can say is that the mode publishes them per
+  // person; that the renderer *draws* all of them is arithmetic over a draw
+  // count, and is checked in `modeRenderer.test.ts` where a raid does not have
+  // to be live and a trigger held for there to be anything to look at.
+  assert(
+    streaming.hoses >= 1,
+    `the renderer should be handed a hose per person spraying, and got ${streaming.hoses}`,
+  );
 
   // ── Firing empties the tank ────────────────────────────────────────────────
   const fullTank = streaming.tank;
@@ -273,6 +289,13 @@ export default async function (page) {
     `and throw spray off it, saw ${splashed.after.droplets} droplets`,
   );
 
+  // ── Everybody's water, not just yours ──────────────────────────────────────
+  //
+  // `streamFor` has been published per actor since Water War was written and
+  // the renderer took exactly one of them, so a guest saw their own jet and not
+  // the host's — the fight looked one-sided from both ends. Measured on the
+  // instance count rather than on a list of streams, because what matters is
+  // what reaches the draw call.
   // And put one where it can be seen, for the artifact. The drop above lands on
   // the player's own head, which is the only impact that is certain to happen
   // and the one place a first-person camera cannot look at.
@@ -288,6 +311,7 @@ export default async function (page) {
   console.log(
     '[water] verified: build phase, raid starts, tank empties and refills from a tap,',
     'stream draws, wetness shows on the HUD and at the screen edge,',
-    'and an impact bursts and throws spray',
+    'an impact bursts and throws spray, and the renderer is handed a hose per',
+    `person spraying rather than only the local one (${streaming.hoses} while firing)`,
   );
 }

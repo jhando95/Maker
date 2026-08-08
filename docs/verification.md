@@ -531,6 +531,49 @@ One of the three tests could not have failed as first written — it asserted on
 than checking anything. It reads `build.placedCount` now, which is the actual
 claim: this message removes nothing.
 
+## Everybody's water, and a check in the wrong place
+
+`streamFor` had been published per actor since Water War was written and the
+renderer took exactly one of them — the local player's. A guest saw their own
+jet and never the host's, so the fight looked one-sided from both ends. The
+comment in `waterWar.ts` said so out loud and nobody had done anything about it.
+
+The renderer now takes a list, and the fix carried a second one for free: the
+old code parked unused droplets at a hidden matrix, which submits every one of
+them to the vertex shader to produce no pixels. **Packed rather than parked**,
+so a garden where nobody has pulled a trigger costs no draw at all — the same
+mistake, in the fourth batch to make it.
+
+**The interesting part was where to check it.** The first attempt sampled
+`streamsPublished()` and the droplet count across three hundred animation
+frames during a raid and got zero on every one. Nothing was broken: the mode
+clears the streams at the top of every tick and only sets them again while a
+trigger is held, so a sampling loop that runs *between* simulation steps can
+never see one. The scenario's own stream check had that written at the top —
+"a single frame landing in that gap wipes the very thing being asserted" — and
+it was written after CI found it once already.
+
+So the browser now asserts only what a browser can: that the mode hands the
+renderer a hose per person, read in the same call that holds the trigger. What
+reaches the draw call is arithmetic over a count, and that moved to
+`modeRenderer.test.ts`, where nothing has to be live for there to be something
+to look at.
+
+Six planted, four caught immediately, and both survivors were worth the time:
+
+- **An unreachable guard.** `updateStream` bounded its own writes against the
+  buffer capacity, but `setStreams` already clamps the hose count and each hose
+  is capped at `MAX_DROPS`, so the total cannot exceed capacity and the inner
+  check never ran. Two defences for one invariant with only one of them
+  reachable — the same shape as the dead sweep in `Captions.expire`. It came
+  out, and the test that pushes more hoses than the cap now checks the clamp
+  that actually holds: the same list truncated by hand draws the same thing.
+- **A test that could not tell a copy from a reference.** It emptied the
+  caller's array and expected the picture to survive — but emptying an array
+  leaves its elements alive, so a renderer holding those elements passes too.
+  It collapses a six-metre jet to zero length now and demands the droplet count
+  is unmoved, which only a copy can manage.
+
 ## Every bug that was planted on purpose
 
 Each of these was introduced deliberately, to watch one assertion fail, and then
@@ -581,6 +624,12 @@ negative result trusted; a result read without asking whether it is ready — th
 one that would stall the whole pipeline; a second query opened while one is
 active; a tainted result recorded anyway; and a timer that claims to work on a
 machine with no extension.
+
+And on drawing everybody's water, six: only the first hose drawn; unused slots
+parked instead of the count lowered; hoses past the cap squeezed in rather than
+dropped; the droplet count no longer derived from the length of the jet; the
+caller's array held by reference instead of copied; and last frame's water never
+cleared, so a jet hangs in the air after the trigger is released.
 
 And on networked paint, eight: a host that trusts the `by` a client put on the
 wire; a host that repeats what it was sent without clamping it; a broadcast that
