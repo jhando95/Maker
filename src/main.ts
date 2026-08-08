@@ -243,6 +243,19 @@ function redrawTags(): void {
  * them, and the symptom is a mark hanging in mid-air, which reads as a
  * rendering bug rather than as a missed call.
  */
+/**
+ * Put a mark down, because whoever owns the world says so.
+ *
+ * The only place `tags` grows. A host reaches here through its own broadcast
+ * and a guest through the host's, so the caps are applied once, by the machine
+ * entitled to apply them, and both ends run the same `addTag` over the same
+ * messages in the same order.
+ */
+function applyTag(tag: TagRecord): void {
+  tags = addTag(tags, tag).tags;
+  redrawTags();
+}
+
 function forgetTagsOnDead(): void {
   if (tags.length === 0) return;
   const dead = new Set<number>();
@@ -250,6 +263,11 @@ function forgetTagsOnDead(): void {
   if (dead.size === 0) return;
   const lost = new Set(orphaned(tags, dead));
   tags = tags.filter((t) => !lost.has(t));
+  // The host keeps its own copy so it can tell a late joiner what is on the
+  // fences, and paint that went down with a part must go from that copy too —
+  // otherwise somebody who joins after a tower falls is sent marks for parts
+  // that no longer exist, and they hang in mid-air on their screen alone.
+  if (net instanceof NetHost) net.unpaint(dead);
   redrawTags();
 }
 
@@ -787,6 +805,7 @@ const sessionContext: SessionContext = {
   heard: (event) => receive(event),
   signalled: (from, signal) => void voice.receive(from, signal),
   wearing: (id, appearance) => dress(id, appearance),
+  sprayed: (tag) => applyTag(tag),
 };
 
 /**
@@ -1942,9 +1961,13 @@ function sprayWithFeedback(): boolean {
     part: hit.isGround ? -1 : hit.part,
   }, actors.local.id);
 
-  const added = addTag(tags, tag);
-  tags = added.tags;
-  redrawTags();
+  // Through the session rather than straight into the list. A host decides and
+  // tells everybody including itself; a guest asks and waits. Offline there is
+  // nobody to ask, so it lands here.
+  if (net instanceof NetHost || net instanceof NetClient) net.spray(tag);
+  else applyTag(tag);
+  // The hiss is local and immediate either way: it is your own can, and it is
+  // the one part of this a round trip should not be allowed to delay.
   ears.sprayed(tag.x, tag.y, tag.z);
   return true;
 }

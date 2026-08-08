@@ -18,6 +18,9 @@ import { installFixtures } from '../world/neighborhood.ts';
 import { neighborhoodSlabs } from '../world/neighborhood.ts';
 import { Rng } from '../core/rng.ts';
 import { loopbackPair } from './transport.ts';
+import {
+  MAX_SIZE, MIN_SIZE, PER_PLAYER, TAG_SHAPES, type TagRecord,
+} from '../game/spray.ts';
 import { decode, encode, PROTOCOL_VERSION, type RtcSignal } from './protocol.ts';
 import {
   NetHost, NetClient, SNAPSHOT_HZ, INTERP_DELAY, RECONCILE_THRESHOLD, MAX_PEERS,
@@ -1223,6 +1226,171 @@ describe('what everybody is wearing', () => {
       guest.afterTick(DT, makeCommand(sharedTick++));
     }
     expect(got.some((w) => w.id === r.aId)).toBe(false);
+  });
+});
+
+describe('paint on somebody else\'s fence', () => {
+  /** A host and two guests, and every mark each machine was told about. */
+  function painters(): {
+    host: NetHost; a: NetClient; b: NetClient;
+    aId: number; bId: number;
+    aSocket: Transport;
+    got: Record<string, TagRecord[]>;
+    tick(n: number): void;
+    join(): { c: NetClient; got: TagRecord[] };
+  } {
+    const got: Record<string, TagRecord[]> = { host: [], a: [], b: [] };
+    const make = (key: string): Machine => {
+      const m = makeMachine();
+      m.sprayed = (tag) => got[key]!.push(tag);
+      return m;
+    };
+    const host = new NetHost(make('host'));
+    const pa = loopbackPair();
+    const pb = loopbackPair();
+    const a = new NetClient(make('a'), pa.client, 'ali');
+    const b = new NetClient(make('b'), pb.client, 'bo');
+    host.accept(pa.host);
+    host.accept(pb.host);
+    const clients: NetClient[] = [a, b];
+    const tick = (n: number): void => {
+      for (let i = 0; i < n; i++) {
+        host.beforeTick();
+        for (const c of clients) c.beforeTick();
+        host.afterTick(DT);
+        for (const c of clients) c.afterTick(DT, makeCommand(sharedTick));
+        sharedTick++;
+      }
+    };
+    tick(4);
+    return {
+      host, a, b, aId: a.status.localId, bId: b.status.localId,
+      aSocket: pa.client, got, tick,
+      /** Somebody arriving late, which is the case the replay exists for. */
+      join: () => {
+        const late: TagRecord[] = [];
+        const m = makeMachine();
+        m.sprayed = (tag) => late.push(tag);
+        const pc = loopbackPair();
+        const c = new NetClient(m, pc.client, 'cy');
+        host.accept(pc.host);
+        clients.push(c);
+        tick(4);
+        return { c, got: late };
+      },
+    };
+  }
+
+  /** A mark, as a client would offer one: no `by` on it, because it cannot say. */
+  const mark = (x: number) => ({
+    shape: 1, color: 2, size: 0.5, spin: 0,
+    x, y: 1, z: 0, nx: 0, ny: 0, nz: 1, part: -1,
+  });
+
+  it('puts one guest\'s mark on everybody\'s fence', () => {
+    // The whole point, and the gap this closes: a feature about showing off to
+    // friends where nobody else could see it.
+    const r = painters();
+    r.a.spray(mark(3));
+    r.tick(4);
+    expect(r.got.b).toHaveLength(1);
+    expect(r.got.b[0]!.x).toBeCloseTo(3, 5);
+    expect(r.got.host).toHaveLength(1);
+  });
+
+  it('shows the sprayer their own mark through the host, not before', () => {
+    // No optimistic paint: the caps are the host's to apply, and a client that
+    // painted its own and then took the echo would have it twice.
+    const r = painters();
+    r.a.spray(mark(1));
+    expect(r.got.a).toHaveLength(0);
+    r.tick(4);
+    expect(r.got.a).toHaveLength(1);
+  });
+
+  it('stamps the sprayer from the connection', () => {
+    // A client cannot name itself. The cap is per player, so a sprayer who
+    // could would be spending somebody else's twelve marks and evicting their
+    // paint rather than their own.
+    const r = painters();
+    r.a.spray(mark(2));
+    r.tick(4);
+    expect(r.got.b[0]!.by).toBe(r.aId);
+  });
+
+  it('ignores a `by` a client puts on the wire itself', () => {
+    const r = painters();
+    r.aSocket.send({ t: 'spray', tag: { ...mark(4), by: r.bId } });
+    r.tick(4);
+    expect(r.got.b).toHaveLength(1);
+    expect(r.got.b[0]!.by).toBe(r.aId);
+  });
+
+  it('clamps what it repeats', () => {
+    // The host runs `clampTag` on anything, so what leaves is a valid record or
+    // nothing — validating on the receiving end would be a convention, and the
+    // first client that did not would be painting every other player's screen.
+    const r = painters();
+    r.aSocket.send({
+      t: 'spray',
+      tag: { shape: 9e9, color: -4, size: 1e6, spin: NaN, x: 'over there', part: 2.7 },
+    });
+    r.tick(4);
+    expect(r.got.b).toHaveLength(1);
+    const tag = r.got.b[0]!;
+    expect(Number.isFinite(tag.x)).toBe(true);
+    expect(Number.isFinite(tag.spin)).toBe(true);
+    expect(tag.size).toBeLessThanOrEqual(MAX_SIZE);
+    expect(tag.size).toBeGreaterThanOrEqual(MIN_SIZE);
+    expect(tag.shape).toBeGreaterThanOrEqual(0);
+    expect(tag.shape).toBeLessThan(TAG_SHAPES.length);
+    expect(tag.color).toBeGreaterThanOrEqual(0);
+  });
+
+  it('survives a client sending nonsense instead of a tag', () => {
+    const r = painters();
+    expect(() => {
+      r.aSocket.send({ t: 'spray', tag: null });
+      r.tick(4);
+    }).not.toThrow();
+  });
+
+  it('tells a late joiner what is already on the fences', () => {
+    // The half that is easy to forget, and the one that only breaks for people
+    // who were not there at the start.
+    const r = painters();
+    r.a.spray(mark(1));
+    r.b.spray(mark(2));
+    r.tick(4);
+    const late = r.join();
+    expect(late.got).toHaveLength(2);
+    expect(late.got.map((t) => t.x).sort()).toEqual([1, 2]);
+  });
+
+  it('does not send a late joiner paint that went down with its part', () => {
+    // Otherwise somebody joining after a tower falls is sent marks for parts
+    // that no longer exist, and they hang in mid-air on their screen alone.
+    const r = painters();
+    r.aSocket.send({ t: 'spray', tag: { ...mark(5), part: 7 } });
+    r.tick(4);
+    r.host.unpaint(new Set([7]));
+    const late = r.join();
+    expect(late.got).toHaveLength(0);
+  });
+
+  it('applies the same caps on every machine, because everyone runs the same list', () => {
+    // Both ends run `addTag` over the same messages in the same order, so a
+    // guest reaches the host's list rather than an approximation of it.
+    const r = painters();
+    for (let i = 0; i < PER_PLAYER + 3; i++) {
+      r.a.spray(mark(i));
+      r.tick(1);
+    }
+    r.tick(4);
+    const late = r.join();
+    expect(late.got).toHaveLength(PER_PLAYER);
+    // The oldest three went, because a sprayer evicts their own.
+    expect(Math.min(...late.got.map((t) => t.x))).toBe(3);
   });
 });
 

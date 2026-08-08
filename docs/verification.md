@@ -464,6 +464,42 @@ rewrite was done with a regular expression — which matched the calls *inside*
 `Maximum call stack size exceeded` and the tell was already on screen: the script
 had printed "call sites rewritten: 15 -> 0", and zero was one too few.
 
+## Paint on the wire, and the eight plants that hold it
+
+The spray can shipped local-only, which for a feature about showing off to
+friends is the half that matters. Putting it on the wire needed no new shapes:
+`clampTag(raw, by)` was already total and already took the sprayer as a separate
+argument, which is exactly the host's job — the design had been built for this
+without the wiring being done.
+
+Two rules, both the ones the chat channel and the locker already follow. **The
+host clamps what it repeats**, so what leaves is a valid record or nothing;
+validating on the receiving end is a convention, and the first client that did
+not would be painting every other player's screen. **A client cannot name its
+own sender** — no `by` on the wire from a client, stamped from the connection
+instead. That one has teeth here that it does not have for an outfit: the cap is
+*per player*, so a sprayer who could name themselves would be spending somebody
+else's twelve marks and evicting a rival's paint rather than their own.
+
+**No optimistic paint.** Prediction earns its complexity for movement, where a
+round trip is the difference between responsive and unplayable. A mark on a
+fence is not something anybody reacts to, and predicting it would mean
+reconciling a cap only the host can apply — so a guest asks and waits, and the
+hiss of the can plays locally and immediately, because that is your own can.
+
+**A late joiner is replayed the fences one message at a time**, exactly as
+outfits are, rather than being handed a list on `welcome`. One path a mark
+reaches a wall by. Both ends run `addTag` over the same messages in the same
+order, so a guest arrives at the host's list rather than an approximation of
+it — and the test that says so sprays fifteen marks with a cap of twelve and
+checks a newcomer is told about twelve, the oldest three gone.
+
+Eight planted, eight caught: the host trusting a `by` a client put on the wire;
+the host repeating what it was sent unclamped; the mark never reaching the other
+guests; the sprayer never told about their own; a late joiner told nothing; the
+caps never applied to the host's own copy; paint replayed for a part that had
+come down; and a guest painting optimistically as well as taking the echo.
+
 ## Every bug that was planted on purpose
 
 Each of these was introduced deliberately, to watch one assertion fail, and then
@@ -514,6 +550,13 @@ negative result trusted; a result read without asking whether it is ready — th
 one that would stall the whole pipeline; a second query opened while one is
 active; a tainted result recorded anyway; and a timer that claims to work on a
 machine with no extension.
+
+And on networked paint, eight: a host that trusts the `by` a client put on the
+wire; a host that repeats what it was sent without clamping it; a broadcast that
+never happens; a sprayer never told about their own mark; a late joiner told
+nothing about the fences; caps never applied to the host's own copy; paint
+replayed for a part that had already come down; and a guest that paints
+optimistically and then takes the echo as well, ending up with it twice.
 
 And on captions, sixteen: the range gate dropped; a collapse carrying no further
 than a placement; left and right swapped; behind never reported; a bearing taken

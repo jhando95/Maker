@@ -36,11 +36,12 @@
 import type { PackedCommand } from '../core/command.ts';
 import type { PlacementRecord } from '../build/buildSystem.ts';
 import type { Appearance } from '../game/appearance.ts';
+import type { TagRecord } from '../game/spray.ts';
 import type { EmoteKind, PingKind } from '../game/comms.ts';
 import type { Team } from '../game/actor.ts';
 
 /** Bumped whenever a message shape changes. Mismatched peers are turned away. */
-export const PROTOCOL_VERSION = 6;
+export const PROTOCOL_VERSION = 7;
 
 /**
  * One step of a WebRTC handshake, on its way between two players.
@@ -255,7 +256,20 @@ export type ClientMessage =
    * host stamps the sender from the connection it arrived on, so nobody can
    * dress somebody else.
    */
-  | { t: 'wear'; a: Appearance };
+  | { t: 'wear'; a: Appearance }
+  /**
+   * Put a mark on something.
+   *
+   * The tag arrives as `unknown` rather than as a `TagRecord`, and that is the
+   * point: `clampTag` is total and takes anything, so the host's job is to run
+   * it rather than to trust a type that only exists on this side of the wire.
+   *
+   * No `by` on it, for the same reason `wear` has no `from`: the host stamps
+   * the sprayer from the connection it arrived on. Otherwise the per-player cap
+   * is a suggestion — spray under somebody else's name and their paint is the
+   * paint that gets evicted.
+   */
+  | { t: 'spray'; tag: unknown };
 
 /** Everything a host can say. */
 export type HostMessage =
@@ -350,6 +364,19 @@ export type HostMessage =
    * it gives up the property that an actor id was enough.
    */
   | { t: 'wearing'; id: number; a: Appearance }
+  /**
+   * Somebody sprayed this, clamped and stamped with who.
+   *
+   * Sent to everybody including the sprayer, so there is one path that puts a
+   * mark on a wall rather than two. A client that painted its own optimistically
+   * and then took this as well would end up with the tag twice, and the version
+   * that survives a disagreement about caps is the host's.
+   *
+   * Replayed to a late joiner one message at a time, exactly as `wearing` is.
+   * The list is capped and the messages arrive in order, so applying them
+   * reproduces the host's list rather than approximating it.
+   */
+  | { t: 'sprayed'; tag: TagRecord }
   | { t: 'bye'; id: number };
 
 export type NetMessage = ClientMessage | HostMessage;

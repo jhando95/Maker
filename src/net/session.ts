@@ -57,6 +57,7 @@ import {
 } from './protocol.ts';
 import { SignalBudget } from '../voice/voiceRules.ts';
 import { clampAppearance, type Appearance } from '../game/appearance.ts';
+import { addTag, clampTag, type TagRecord } from '../game/spray.ts';
 import { MAX_BLUEPRINT_PARTS } from '../build/blueprint.ts';
 import { IDLE_INPUT, type ActorInput, type GameMode } from '../game/gameMode.ts';
 import type { ProjectileSystem } from '../game/projectiles.ts';
@@ -204,6 +205,16 @@ export interface SessionContext {
    * falls back to the seeded one, and that is what a departed peer should cost.
    */
   wearing?(id: number, appearance: Appearance | null): void;
+  /**
+   * Somebody sprayed this, already clamped and stamped with who.
+   *
+   * The one path a mark reaches a wall by, on every machine including the one
+   * that sprayed it. A client that painted optimistically and then took this as
+   * well would have the tag twice, and the caps are the host's to apply — a
+   * sprayer cannot know whether their twelfth evicted their own first until the
+   * host says so.
+   */
+  sprayed?(tag: TagRecord): void;
 }
 
 /** Something to show the person at this keyboard. */
@@ -413,6 +424,14 @@ export class NetHost {
       transport.send({ t: 'wearing', id: wornBy, a: appearance });
     }
 
+    // And what is already painted on the fences. One message each rather than a
+    // list on `welcome`, so a newcomer applies paint through exactly the path
+    // every later mark takes — a second path is a second thing to get wrong,
+    // and this one would only be wrong for people who joined late.
+    for (const tag of this.painted) {
+      transport.send({ t: 'sprayed', tag });
+    }
+
     this.message = `${first.name} joined`;
   }
 
@@ -503,6 +522,10 @@ export class NetHost {
         if (!this.signalBudget.allow(peer.id)) return;
         this.relaySignal(peer.id, message.to, message.s);
         break;
+      }
+      case 'spray': {
+        this.paint(peer.id, message.tag);
+        return;
       }
       case 'wear': {
         // Rate-limited on the chat budget rather than a new one. An outfit
@@ -699,6 +722,17 @@ export class NetHost {
    * one who sees every join.
    */
   private readonly worn = new Map<number, Appearance>();
+  /**
+   * Every mark in the yard, as the host believes it.
+   *
+   * Kept here rather than read back out of the game for the same reason `worn`
+   * is: a late joiner has to be told, and the thing that tells them has to be
+   * the thing that decided. Maintained with `addTag`, so it is exactly the list
+   * every client will have after applying the same messages in the same order —
+   * a copy that merely accumulated would drift the first time a cap evicted
+   * something.
+   */
+  private painted: TagRecord[] = [];
   private hostName = 'the host';
 
   /**
@@ -854,6 +888,32 @@ export class NetHost {
    * A head twice the size is a bigger target and is visible over the wall its
    * owner is hiding behind.
    */
+  /**
+   * Somebody sprayed. Clamp it, cap it, tell everybody.
+   *
+   * `by` is stamped from the connection rather than taken from the message, so
+   * a client cannot spend somebody else's twelve marks — the cap is per player
+   * and a sprayer who could name themselves could evict a rival's paint.
+   */
+  private paint(by: number, raw: unknown): void {
+    const tag = clampTag(raw, by);
+    const { tags } = addTag(this.painted, tag);
+    this.painted = tags;
+    this.broadcast({ t: 'sprayed', tag });
+    this.ctx.sprayed?.(tag);
+  }
+
+  /** This machine sprayed. Same path as a guest's, so the caps cannot differ. */
+  spray(raw: unknown): void {
+    this.paint(this.ctx.actors.local.id, raw);
+  }
+
+  /** A part came down, so the paint on it did too. Keeps the replay honest. */
+  unpaint(gone: ReadonlySet<number>): void {
+    if (gone.size === 0) return;
+    this.painted = this.painted.filter((t) => t.part < 0 || !gone.has(t.part));
+  }
+
   private dressPeer(id: number, appearance: Appearance): void {
     const safe = clampAppearance(appearance);
     this.worn.set(id, safe);
@@ -1147,6 +1207,9 @@ export class NetClient {
         this.ctx.signalled?.(message.from, message.s);
         break;
 
+      case 'sprayed':
+        this.ctx.sprayed?.(clampTag(message.tag, message.tag?.by ?? 0));
+        return;
       case 'wearing':
         // Clamped again on arrival, even though the host clamped it before
         // sending. The host is another browser: it is the authority on the
@@ -1338,6 +1401,18 @@ export class NetClient {
    * existed is the frame somebody screenshots.
    */
   /** Tell the host what I look like. */
+  /**
+   * Ask the host to put a mark down. Nothing happens here until it says so.
+   *
+   * No optimistic paint, deliberately. Prediction is worth its complexity for
+   * movement, where a round trip is the difference between responsive and
+   * unplayable; a mark on a fence is not something anybody is reacting to, and
+   * predicting it would mean reconciling a cap that only the host can apply.
+   */
+  spray(raw: unknown): void {
+    this.transport.send({ t: 'spray', tag: clampTag(raw, 0) });
+  }
+
   wear(appearance: Appearance): void {
     this.transport.send({ t: 'wear', a: clampAppearance(appearance) });
   }
