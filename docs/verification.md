@@ -902,6 +902,32 @@ zero — a test that could not fail, guarding a case that could not happen. That
 one was deleted outright rather than labelled, because with the count mixed in a
 part hashing to zero still changes the world hash: it still changes the count.
 
+## And a fourth red check that was mine, in the same readout as the second
+
+`scenarios/frontend.mjs` turned the frame-rate readout on, slept nine hundred
+milliseconds, and asserted it was showing. Green on a developer's machine at
+sixty frames a second, where nine hundred milliseconds is fifty-four frames.
+Red on a CI runner at five, where it is four — and the readout is rewritten on
+`FrameStats`' quarter-second cadence, so four frames is a coin toss.
+
+That is a bet on frame time wearing the costume of a wait, and it is the third
+time a scenario on this project has asserted on state it had not established.
+It is the *second* time this particular readout has been the one to do it: run
+95 was the same element, waiting on two animation frames instead of a timeout.
+Fixing it once by counting frames instead of milliseconds was fixing the units
+of the bet rather than the bet.
+
+Both directions wait on the state now, bounded at twenty seconds, and the
+showing one waits for the *text* rather than for the element — the panel appears
+on the frame the setting changes and the numbers arrive on the next stats
+update, so "visible" and "written" are two different moments and only one of
+them is what the following assertions read. Planted by making the readout never
+un-hide; caught.
+
+The general rule, restated because it keeps needing restating: **a scenario may
+wait for a condition and may not wait for a duration.** Any duration is a guess
+about a machine you are not running on.
+
 ## Every bug that was planted on purpose
 
 Each of these was introduced deliberately, to watch one assertion fail, and then

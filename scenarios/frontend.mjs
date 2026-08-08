@@ -247,15 +247,33 @@ export default async function (page) {
     window.__maker.hideOverlay();
     window.__maker.settings.set('showStats', false);
   });
-  await new Promise((r) => setTimeout(r, 400));
-  const hidden = await page.evaluate(() => {
-    const el = document.querySelector('.maker-stats');
-    return el === null || el.classList.contains('maker-hidden');
-  });
-  assert(hidden, 'the frame-rate readout should be off until somebody asks for it');
+  // Waited on by state rather than by a clock, in both directions. The readout
+  // is rewritten on `FrameStats`' quarter-second cadence and the numbers in it
+  // need a frame each, so "sleep 900ms" is a bet on frame time — one that wins
+  // on a developer's machine at 60fps and loses on a CI runner at five, which
+  // is exactly where it lost. It is the third time on this project that a
+  // scenario has asserted on state it had not established, and the second time
+  // this particular readout has been the one to do it.
+  await page
+    .waitForFunction(() => {
+      const el = document.querySelector('.maker-stats');
+      return el === null || el.classList.contains('maker-hidden');
+    }, null, { timeout: 20_000 })
+    .catch(() => {
+      throw new Error('frontend scenario: the frame-rate readout should be off until somebody asks for it');
+    });
 
   await page.evaluate(() => window.__maker.settings.set('showStats', true));
-  await new Promise((r) => setTimeout(r, 900));
+  await page
+    .waitForFunction(() => {
+      const el = document.querySelector('.maker-stats');
+      if (el === null || el.classList.contains('maker-hidden')) return false;
+      // Shown is not the same as written: the element appears on the frame the
+      // setting changes and its text arrives on the next stats update.
+      return /\d+ fps/.test(el.textContent ?? '') && /low \d+/.test(el.textContent ?? '');
+    }, null, { timeout: 20_000 })
+    .catch(() => { throw new Error('frontend scenario: and on once they do'); });
+
   const stats = await page.evaluate(() => {
     const el = document.querySelector('.maker-stats');
     return el === null ? null : { hidden: el.classList.contains('maker-hidden'), text: el.textContent };
