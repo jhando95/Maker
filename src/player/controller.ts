@@ -32,7 +32,8 @@ import {
   GROUND_FRICTION,
   GROUND_SNAP_DISTANCE,
   JUMP_BUFFER_TIME,
-  JUMP_VELOCITY,
+  JUMP_HEIGHT,
+  MOTION,
   MAX_FALL_SPEED,
   SKIN,
   SPRINT_SPEED,
@@ -364,12 +365,23 @@ export class CharacterController {
     }
 
     if (this.jumpBuffer > 0 && this.coyoteTimer > 0) {
-      this.vy = JUMP_VELOCITY;
+      // Derived live rather than using JUMP_VELOCITY, so the gravity knob does
+      // not quietly change how high a jump reaches: v = sqrt(2gh) with the
+      // knobs in, and the apex stays where JUMP_HEIGHT promises it. "Gravity"
+      // then changes how *fast* the arc happens, "jump" changes how far it
+      // goes, and the two knobs mean what their labels say.
+      this.vy = Math.sqrt(
+        2 * GRAVITY * MOTION.gravityScale * JUMP_HEIGHT * MOTION.jumpScale,
+      );
       this.onGround = false;
       this.jumpBuffer = 0;
       this.coyoteTimer = 0;
     } else {
-      this.vy -= GRAVITY * dt;
+      // Heavier on the way down than the way up — see MOTION.fallScale. The
+      // asymmetry is applied to the acceleration, not the speed, so the apex
+      // is exactly where the symmetric arc put it and only the descent hurries.
+      const falling = this.vy < 0 ? MOTION.fallScale : 1;
+      this.vy -= GRAVITY * MOTION.gravityScale * falling * dt;
       if (this.vy < -MAX_FALL_SPEED) this.vy = -MAX_FALL_SPEED;
     }
 
@@ -718,7 +730,12 @@ export class CharacterController {
     // Leave the ladder by jumping, or by there being nothing left to hold.
     if (intent.jump) {
       this.climbing = false;
-      this.vy = JUMP_VELOCITY * 0.8;
+      // The same live derivation the ground jump uses, scaled down: a hop off a
+      // ladder, not a full jump. Using the baked constant here would make this
+      // the one jump in the game the knobs cannot reach.
+      this.vy = Math.sqrt(
+        2 * GRAVITY * MOTION.gravityScale * JUMP_HEIGHT * MOTION.jumpScale,
+      ) * 0.8;
       this.stepGrounded(dt, { ...intent, jump: false });
       return;
     }

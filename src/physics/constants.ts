@@ -93,6 +93,43 @@ export const AIR_ACCEL = 14;
 export const AIR_FRICTION = 0.6;
 
 export const GRAVITY = 23.0;
+
+/**
+ * The movement feel, as live multipliers on the constants around them.
+ *
+ * Mutable, and that is the point: these are the developer panel's motion knobs,
+ * and the panel's whole reason to exist is changing how the game feels without
+ * a reload. Everything reads them at use rather than at import, so a knob turn
+ * lands on the very next tick.
+ *
+ * The defaults are the shipped feel and the only values CI ever sees — replay
+ * hashes and the loopback session both run on them. A knob turned mid-session
+ * on a networked host is a knob the guests are not predicting with, which costs
+ * a correction per snapshot until it is put back; that is acceptable in a tool
+ * that exists only in the developer build, and is why these are multipliers
+ * with a definite home rather than a config file anybody ships.
+ *
+ * `fallScale` is the one with an opinion. Symmetric gravity reads as floaty
+ * because the descent takes exactly as long as the ascent — the oldest trick in
+ * the platformer book is extra gravity on the way down, which keeps the apex
+ * where the jump promised it and makes the landing arrive with some weight.
+ */
+export const MOTION = {
+  /** On GRAVITY, everywhere. Jump speed compensates, so the apex holds. */
+  gravityScale: 1,
+  /**
+   * Extra, only while falling. 1 is symmetric, which is the shipped feel —
+   * and not because symmetric is better. Setting this to 1.25 moved three
+   * balance tests that simulate whole bot rounds: a wall's worth in Water War
+   * is measured in jump arcs, so a feel change is an economy change, and the
+   * economy's claims have to be re-derived with it rather than under it. The
+   * knob is how the heavier fall gets auditioned; the default moves when the
+   * balance moves with it.
+   */
+  fallScale: 1,
+  /** On JUMP_HEIGHT. */
+  jumpScale: 1,
+};
 /**
  * Apex height of a standing jump.
  *

@@ -1101,6 +1101,11 @@ The general shape, which has now appeared three times on this project: **a
 function with two internal paths needs a test that separates them, and a test
 that exercises both at once separates neither.**
 
+And on the motion knobs, five: a gravity knob that quietly shrinks the jump; a
+fall weight that drags the rise; a fall weight never applied; a jump knob that
+does nothing; and the shipped fall quietly asymmetric — which took three
+attempts to make catchable and is written up above.
+
 And on the chunked renderer, seven, every one of which first passed against a
 suite of 1,592: culling quietly off again; the sphere never recomputed; every
 part landing in one chunk; an emptied bucket that keeps drawing; a stale slot
@@ -1141,6 +1146,37 @@ the two agree with each other and with nothing on screen. The only honest
 question is the one the GPU answers — slot 0 of a one-part mesh — and asked that
 way the plant fails immediately. Third instance on this project of bookkeeping
 that can corroborate its own lie.
+
+## Gravity is economy, and two instruments too blunt to see a quarter
+
+Adding the asymmetric-fall mechanism — extra gravity on the way down only, the
+oldest trick in the platformer book — with a default of 1.25 moved **three
+balance tests that simulate whole bot rounds**: a frozen kid drifted, and two
+Water War claims about what a wall is worth stopped holding. That is the
+finding, not a failure: a wall's worth is measured in jump arcs, so a feel
+change is an economy change, and the economy's claims have to be re-derived
+*with* it rather than quietly invalidated under it. The mechanism shipped with
+the default at 1 — symmetric, the feel every balance claim was measured under —
+and the knob in the developer panel is how the heavier fall gets auditioned.
+The default moves when the balance moves with it.
+
+Then the plant guarding that decision — ship 1.25 quietly — survived **two**
+tests in a row, each too blunt in a different way:
+
+- `|down − up| ≤ 3` ticks: a fall at 1.25g shaves about two ticks off a
+  nineteen-tick descent. Inside the tolerance.
+- `down ≥ up − 1`, on the theory a symmetric fall is never faster than the
+  rise: measured, the symmetric descent is *already three ticks longer* than
+  the rise — the jump starts from a pre-step and lands with capsule slop — so
+  the one or two ticks the plant removes drown in slop that was there all
+  along.
+
+The working instrument measures the rule itself rather than its integral: the
+gravity applied in a single tick, rising versus falling, which has no slop to
+hide in. `fall ≈ rise` to four decimal places catches any asymmetry at all.
+The general lesson is one this project keeps re-learning with new units: **an
+assertion about an accumulated quantity inherits the noise of everything that
+accumulated into it.** Ask about the increment when the increment is the rule.
 
 ## Every bug that was planted on purpose
 

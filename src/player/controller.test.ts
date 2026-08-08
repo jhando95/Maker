@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { CharacterController, type MoveIntent } from './controller.ts';
 import { CollisionWorld } from '../physics/collisionWorld.ts';
 import {
-  DT, JUMP_HEIGHT, STEP_HEIGHT, WALK_SPEED, SPRINT_SPEED,
+  DT, JUMP_HEIGHT, MOTION, STEP_HEIGHT, WALK_SPEED, SPRINT_SPEED,
   MANTLE_MAX_HEIGHT, MANTLE_DURATION,
 } from '../physics/constants.ts';
 import { MODULE, STAIR_RUN } from '../build/partKit.ts';
@@ -724,5 +724,91 @@ describe('CharacterController — mantling', () => {
     expect(second.x).toBeCloseTo(first.x, 6);
     expect(second.y).toBeCloseTo(first.y, 6);
     expect(second.z).toBeCloseTo(first.z, 6);
+  });
+});
+
+describe('the motion knobs', () => {
+  /** Whatever a test sets, put back — the defaults are the shipped feel. */
+  function withMotion(over: Partial<typeof MOTION>, body: () => void): void {
+    const before = { ...MOTION };
+    Object.assign(MOTION, over);
+    try {
+      body();
+    } finally {
+      Object.assign(MOTION, before);
+    }
+  }
+
+  /** Jump on flat ground; return the apex and the ticks up and down. */
+  function measureJump(): { apex: number; up: number; down: number } {
+    const world = new CollisionWorld();
+    const c = new CharacterController(world, 0, 0.5, 0);
+    for (let i = 0; i < 60; i++) c.step(DT, intent());
+    const floor = c.y;
+    c.step(DT, intent({ jump: true }));
+    let apex = c.y;
+    let up = 0;
+    let ticks = 0;
+    for (; ticks < 600; ticks++) {
+      c.step(DT, intent());
+      if (c.y > apex) { apex = c.y; up = ticks; }
+      if (c.onGround && ticks > up + 1) break;
+    }
+    return { apex: apex - floor, up, down: ticks - up };
+  }
+
+  it('holds the apex where JUMP_HEIGHT promises it, whatever the gravity', () => {
+    // The whole reason jump speed is derived live: "gravity" should change how
+    // fast the arc happens, never how far it reaches. A baked JUMP_VELOCITY
+    // under doubled gravity is a jump that quietly loses half its height.
+    const normal = measureJump().apex;
+    withMotion({ gravityScale: 2 }, () => {
+      expect(measureJump().apex).toBeCloseTo(normal, 1);
+    });
+    expect(normal).toBeGreaterThan(JUMP_HEIGHT * 0.85);
+    expect(normal).toBeLessThan(JUMP_HEIGHT * 1.15);
+  });
+
+  it('makes the fall heavier than the rise only when asked', () => {
+    // Symmetric by default — the balance tests measure whole bot rounds under
+    // this and a change here is an economy change, not a constant change.
+    // Asserted on the acceleration, not the trip time. Two tick-counting
+    // versions of this could not fail: landing slop makes even a symmetric
+    // descent measure three ticks longer than the rise, so the one or two
+    // ticks a fallScale of 1.25 removes drown in it. The gravity applied in a
+    // single tick has no slop to hide in.
+    const world = new CollisionWorld();
+    const c = new CharacterController(world, 0, 0.5, 0);
+    for (let i = 0; i < 60; i++) c.step(DT, intent());
+    c.step(DT, intent({ jump: true }));
+    let rise = 0;
+    let fall = 0;
+    let vyBefore = c.vy;
+    for (let i = 0; i < 200 && (rise === 0 || fall === 0); i++) {
+      c.step(DT, intent());
+      const dv = vyBefore - c.vy;
+      if (vyBefore > 0.5 && c.vy > 0.5) rise = dv;
+      if (vyBefore < -0.5 && !c.onGround) fall = dv;
+      vyBefore = c.vy;
+    }
+    expect(rise).toBeGreaterThan(0);
+    expect(fall).toBeCloseTo(rise, 4);
+
+    const even = measureJump();
+    withMotion({ fallScale: 1.5 }, () => {
+      const heavy = measureJump();
+      expect(heavy.down).toBeLessThan(even.down * 0.95);
+      // And the apex does not move: the asymmetry is on the way down only.
+      expect(heavy.apex).toBeCloseTo(even.apex, 1);
+    });
+  });
+
+  it('scales the jump when asked to', () => {
+    const normal = measureJump().apex;
+    withMotion({ jumpScale: 1.4 }, () => {
+      const higher = measureJump().apex;
+      expect(higher).toBeGreaterThan(normal * 1.2);
+      expect(higher).toBeCloseTo(normal * 1.4, 0);
+    });
   });
 });

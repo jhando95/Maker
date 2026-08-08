@@ -10,7 +10,7 @@ import * as THREE from 'three';
 import { GameLoop } from './core/loop.ts';
 import { Input } from './core/input.ts';
 import { CollisionWorld } from './physics/collisionWorld.ts';
-import { TICK_RATE, DT, CAP_HEIGHT } from './physics/constants.ts';
+import { TICK_RATE, DT, CAP_HEIGHT, MOTION } from './physics/constants.ts';
 import { createScene } from './world/scene.ts';
 import {
   AFTERNOON, DUSK, GOLDEN, dayTimeForRound, lampGlowAt, type DayTime,
@@ -237,6 +237,33 @@ tuning.register({
   home: 'src/player/cameraRig.ts',
 });
 
+tuning.register({
+  key: 'motion.gravity',
+  label: 'Gravity',
+  value: 1,
+  min: 0.4, max: 2, step: 0.05,
+  help: 'Scales the pull. Jump speed compensates, so the apex holds still.',
+  home: 'src/physics/constants.ts',
+});
+
+tuning.register({
+  key: 'motion.fall',
+  label: 'Fall weight',
+  value: MOTION.fallScale,
+  min: 1, max: 2, step: 0.05,
+  help: 'Extra gravity on the way down only. 1 is symmetric; try 1.25.',
+  home: 'src/physics/constants.ts',
+});
+
+tuning.register({
+  key: 'motion.jump',
+  label: 'Jump height',
+  value: 1,
+  min: 0.6, max: 1.6, step: 0.05,
+  help: 'Scales how high a jump reaches, for everybody including the bots.',
+  home: 'src/physics/constants.ts',
+});
+
 const enclosureShade = tuning.register({
   key: 'light.enclosure',
   label: 'Enclosure shading',
@@ -266,6 +293,14 @@ tuning.onChange((key, value) => {
   if (key === 'camera.fov') camera.baseFov = value;
   if (key === 'map.size') minimap.setSize(value);
   if (key === 'light.enclosure') build.shadeByEnclosure(value);
+  // The motion knobs write straight into the multipliers the controller reads
+  // at use — every body in the world turns with them, bots included, on the
+  // next tick. In a networked session a host turning one causes a correction
+  // per snapshot for every guest until it is put back; the panel only exists
+  // in the developer build, and that trade is written on the MOTION type.
+  if (key === 'motion.gravity') MOTION.gravityScale = value;
+  if (key === 'motion.fall') MOTION.fallScale = value;
+  if (key === 'motion.jump') MOTION.jumpScale = value;
 });
 
 const mapMarkers: MapMarker[] = [];
