@@ -478,6 +478,14 @@ export interface MenuCallbacks {
    * code and a full list have different remedies.
    */
   onBlueprintImport(code: string): 'saved' | 'invalid' | 'full';
+  /** The whole yard as a pasteable code. */
+  onYardExport(): string;
+  /**
+   * A pasted yard, replacing this one wholesale. 'busy' is the session/round
+   * refusal: an open lawn is the only place a yard may be swapped out from
+   * under everything standing on it.
+   */
+  onYardImport(code: string): 'loaded' | 'invalid' | 'busy';
   onSaveBuild(name: string): boolean;
   onLoadBuild(id: string): boolean;
   onDeleteBuild(id: string): void;
@@ -2112,6 +2120,57 @@ export class Menu {
     importRow.appendChild(go);
     importRow.appendChild(note);
     this.card.appendChild(importRow);
+
+    // ── The whole yard ────────────────────────────────────────────────────────
+    //
+    // The biggest thing that can be shared, on two rows rather than one:
+    // copying falls back to showing the code in its own row when the
+    // clipboard refuses, and a fallback that replaced the row holding the
+    // paste box would eat the other half of the feature to deliver its half.
+    const yardCopyRow = document.createElement('div');
+    yardCopyRow.className = 'mk-preset';
+    const yardCopy = document.createElement('button');
+    yardCopy.textContent = 'Copy this yard';
+    yardCopy.dataset.yardCopy = '';
+    yardCopy.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const code = this.callbacks.onYardExport();
+      navigator.clipboard?.writeText(code).then(() => {
+        yardCopy.textContent = 'Copied!';
+        setTimeout(() => { yardCopy.textContent = 'Copy this yard'; }, 1200);
+      }).catch(() => this.showCodeInPlace(yardCopyRow, code))
+        ?? this.showCodeInPlace(yardCopyRow, code);
+    });
+    yardCopyRow.appendChild(yardCopy);
+    this.card.appendChild(yardCopyRow);
+
+    const yardLoadRow = document.createElement('div');
+    yardLoadRow.className = 'mk-preset';
+    const yardField = document.createElement('input');
+    yardField.className = 'mk-name-input';
+    yardField.placeholder = 'Paste a yard code…';
+    yardField.dataset.yardImport = '';
+    yardField.addEventListener('keydown', (ev) => ev.stopPropagation());
+    yardLoadRow.appendChild(yardField);
+    const yardGo = document.createElement('button');
+    yardGo.textContent = 'Load yard';
+    yardGo.dataset.yardImportGo = '';
+    const yardNote = document.createElement('span');
+    yardNote.className = 'mk-hint';
+    yardNote.dataset.yardImportNote = '';
+    yardGo.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const result = this.callbacks.onYardImport(yardField.value);
+      yardNote.textContent = result === 'loaded'
+        ? 'Yard loaded.'
+        : result === 'busy'
+          ? 'Only on an open yard — leave the session or finish the round first.'
+          : 'That is not a yard code.';
+      if (result === 'loaded') yardField.value = '';
+    });
+    yardLoadRow.appendChild(yardGo);
+    yardLoadRow.appendChild(yardNote);
+    this.card.appendChild(yardLoadRow);
   }
 
   /**

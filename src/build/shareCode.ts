@@ -147,6 +147,125 @@ export interface SharedBlueprint {
   parts: PlacementRecord[];
 }
 
+// ── The whole yard ───────────────────────────────────────────────────────────
+//
+// A second codec rather than a big blueprint, because the two differ in every
+// dimension that matters. A blueprint is a structure's parts *relative to its
+// own base*, named, capped small, and stamped somewhere; a yard is absolute,
+// nameless, and replaces the lot wholesale on import. The positions need the
+// room to prove it: the field runs to ±58m and building to 40m up, which
+// overflows the blueprint's i16 millimetres — so a yard part carries i32
+// positions and costs 22 bytes. The prefixes differ in their fourth character,
+// so neither decoder can be fed the other's code by accident: each refuses
+// the other at the first check, with the same "not one of mine" null.
+
+export const YARD_PREFIX = 'MKRY1.';
+
+/**
+ * Parts a yard code will carry. Far above any yard the game produces — the
+ * lumber economy and the lot make a thousand-part yard an achievement — and
+ * low enough that a forged count cannot ask the decoder for a gigabyte.
+ */
+export const YARD_PARTS_MAX = 2000;
+
+const YARD_PART_BYTES = 22;
+
+/** The field plus a margin; a checksummed code placing a fort on the moon is
+ *  still a forgery. Mirrors `PLAY_HALF` and `BUILD_CEILING` without importing
+ *  them — the wire format must not move because the map grew. */
+const YARD_MAX_XZ_MM = 64_000;
+const YARD_MIN_Y_MM = -2_000;
+const YARD_MAX_Y_MM = 44_000;
+
+/**
+ * The yard as a pasteable code: `MKRY1.` then base64url over
+ * `u16 count, count × 22-byte parts, u32 FNV-1a`.
+ *
+ * Zero parts is legal — a fresh lawn is a thing somebody can want to send.
+ * Throws on anything else out of range, because the only caller feeds it the
+ * live store, whose contents already passed the placement path.
+ */
+export function encodeYard(parts: readonly PlacementRecord[]): string {
+  if (parts.length > YARD_PARTS_MAX) {
+    throw new RangeError(`cannot encode a ${parts.length}-part yard`);
+  }
+  const bytes = new Uint8Array(2 + parts.length * YARD_PART_BYTES + 4);
+  const view = new DataView(bytes.buffer);
+  view.setUint16(0, parts.length);
+
+  let at = 2;
+  for (const p of parts) {
+    if (p.kind < 0 || p.kind >= PART_KINDS.length) throw new RangeError(`bad kind ${p.kind}`);
+    if (p.colorway < 0 || p.colorway >= COLORWAYS.length) {
+      throw new RangeError(`bad colorway ${p.colorway}`);
+    }
+    const x = mm(p.x); const y = mm(p.y); const z = mm(p.z);
+    if (Math.abs(x) > YARD_MAX_XZ_MM || Math.abs(z) > YARD_MAX_XZ_MM
+      || y < YARD_MIN_Y_MM || y > YARD_MAX_Y_MM) {
+      throw new RangeError(`part outside the field at (${p.x}, ${p.y}, ${p.z})`);
+    }
+    bytes[at] = p.kind;
+    bytes[at + 1] = p.colorway;
+    view.setInt32(at + 2, x); view.setInt32(at + 6, y); view.setInt32(at + 10, z);
+    view.setInt16(at + 14, q4(p.qx)); view.setInt16(at + 16, q4(p.qy));
+    view.setInt16(at + 18, q4(p.qz)); view.setInt16(at + 20, q4(p.qw));
+    at += YARD_PART_BYTES;
+  }
+  view.setUint32(at, fnv1a(bytes, at));
+  return YARD_PREFIX + toBase64url(bytes);
+}
+
+/**
+ * A pasted yard, decoded — or null, with no exceptions and no partial yards.
+ *
+ * The same trust-nothing rules as a blueprint, plus one of its own: every
+ * position must be inside the world the game actually has. A blueprint's
+ * offsets are checked against a structure's largest legal span; a yard's are
+ * absolute, so the bound is the field itself.
+ */
+export function decodeYard(code: string): PlacementRecord[] | null {
+  const trimmed = code.trim();
+  if (!trimmed.startsWith(YARD_PREFIX)) return null;
+  const bytes = fromBase64url(trimmed.slice(YARD_PREFIX.length));
+  if (bytes === null || bytes.length < 2 + 4) return null;
+
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const count = view.getUint16(0);
+  if (count > YARD_PARTS_MAX) return null;
+  const expected = 2 + count * YARD_PART_BYTES + 4;
+  if (bytes.length !== expected) return null;
+  if (view.getUint32(expected - 4) !== fnv1a(bytes, expected - 4)) return null;
+
+  const parts: PlacementRecord[] = [];
+  let at = 2;
+  for (let i = 0; i < count; i++) {
+    const kind = bytes[at]!;
+    const colorway = bytes[at + 1]!;
+    if (kind >= PART_KINDS.length) return null;
+    if (colorway >= COLORWAYS.length) return null;
+    const xMm = view.getInt32(at + 2);
+    const yMm = view.getInt32(at + 6);
+    const zMm = view.getInt32(at + 10);
+    if (Math.abs(xMm) > YARD_MAX_XZ_MM || Math.abs(zMm) > YARD_MAX_XZ_MM
+      || yMm < YARD_MIN_Y_MM || yMm > YARD_MAX_Y_MM) return null;
+    const qx = view.getInt16(at + 14) * 1e-4;
+    const qy = view.getInt16(at + 16) * 1e-4;
+    const qz = view.getInt16(at + 18) * 1e-4;
+    const qw = view.getInt16(at + 20) * 1e-4;
+    const len2 = qx * qx + qy * qy + qz * qz + qw * qw;
+    if (len2 < 0.98 || len2 > 1.02) return null;
+    parts.push({
+      kind, colorway,
+      // Multiplied by the step, not divided by its reciprocal — see the
+      // blueprint decoder for the two doubles that taught this file why.
+      x: xMm * 0.001, y: yMm * 0.001, z: zMm * 0.001,
+      qx, qy, qz, qw,
+    });
+    at += YARD_PART_BYTES;
+  }
+  return parts;
+}
+
 /**
  * The paste, decoded — or null, with no exceptions and no partial results.
  */

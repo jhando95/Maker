@@ -1460,3 +1460,33 @@ stand should; the bases dropped from `markers()`, caught at both levels in
 one plant — the unit compass test and the hud scenario's Tag assertion, run
 against the same planted build; and the shelter meter never reaching the
 refill channel.
+
+## The yard as a code
+
+Nine plants — six against the codec, three against the shell — and one
+harness lesson that was not a plant: the first version of the browser test
+clicked Copy and synchronously read the fallback input, which does not exist
+yet, because the clipboard write is a promise and the fallback lives in its
+rejection path a microtask later. And in some headless flavours the write
+*succeeds*, so there is no fallback at all. The test now captures the
+`writeText` call itself — the exact string a player's paste would carry,
+however the environment feels about clipboards.
+
+The codec's six: the checksum skipped (caught by the every-byte corruption
+sweep — the flips landing in the checksum's own four bytes are the ones only
+the sum notices); the count-versus-length check dropped, which turned the
+forged-count test into a decoder reading past the end; the world-bounds
+check dropped (a checksummed fort on the moon decoded happily); the part-kind
+check dropped; the quaternion check dropped — planted in the yard decoder
+specifically, since the blueprint decoder has its own copy and a plant that
+hit the wrong one would test nothing new; and the i32 positions regressed to
+the blueprint's i16, caught by the round-trip fixture that deliberately
+parks a plank at x = −45 — a coordinate the whole second codec exists to
+carry.
+
+The shell's three: the open-yard guard dropped, so a running Water War had
+the lot swapped out from under it and the scenario read "Yard loaded." where
+the refusal sentence belongs; the copy button handing out a blueprint-prefixed
+string; and the import decoding successfully and applying nothing — one part
+over the count it should have restored to, which is exactly how it would
+have shipped: a button that says "loaded" and loads nothing.

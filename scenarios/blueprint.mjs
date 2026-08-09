@@ -367,6 +367,70 @@ export default async function (page) {
       + `${share.imported.wood}/${share.original.wood} wood`,
   );
 
+  // ── The whole yard as a code ───────────────────────────────────────────────
+  //
+  // The unit tests own the codec; what only a browser can answer is the shell
+  // path — the copy button hands out the *yard* code (not a blueprint's), the
+  // load button actually replaces the lot, and a running round refuses the
+  // swap with a sentence instead of pulling the yard out from under the mode.
+  const yard = await page.evaluate(async () => {
+    const m = window.__maker;
+    const before = m.stats().parts;
+    m.menu.show('blueprints');
+    // What lands on the clipboard is the observable, and the clipboard is the
+    // one thing a test cannot read back reliably — permission differs by
+    // headless flavour, and on refusal the fallback arrives a microtask
+    // later. So capture the write itself: this is exactly the string a
+    // player's paste would carry, however the environment feels about it.
+    let captured = null;
+    const clip = navigator.clipboard;
+    const original = clip.writeText.bind(clip);
+    clip.writeText = (text) => { captured = text; return Promise.resolve(); };
+    document.querySelector('[data-yard-copy]').click();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    clip.writeText = original;
+    m.menu.show('none');
+    return { before, code: captured };
+  });
+  assert(yard.code !== null, 'the copy button should write the code to the clipboard');
+  assert(yard.code.startsWith('MKRY1.'),
+    `the yard button must hand out a yard code, got "${yard.code.slice(0, 8)}…"`);
+
+  const busy = await page.evaluate((code) => {
+    const m = window.__maker;
+    m.startRound('waterWar');
+    m.menu.show('blueprints');
+    document.querySelector('[data-yard-import]').value = code;
+    document.querySelector('[data-yard-import-go]').click();
+    const note = document.querySelector('[data-yard-import-note]')?.textContent ?? '';
+    const parts = m.stats().parts;
+    m.menu.show('none');
+    m.stopRound();
+    return { note, parts };
+  }, yard.code);
+  assert(busy.note.includes('open yard'),
+    `a running round should refuse the swap with the sentence, saw "${busy.note}"`);
+
+  const restored = await page.evaluate((code) => {
+    const m = window.__maker;
+    // Grow the yard by one stand at a spot probed clear on this map, so
+    // "loading the code puts it back" has something real to put back.
+    const grew = m.plantStand(-9, 12, 4);
+    const grown = m.stats().parts;
+    m.menu.show('blueprints');
+    document.querySelector('[data-yard-import]').value = code;
+    document.querySelector('[data-yard-import-go]').click();
+    const note = document.querySelector('[data-yard-import-note]')?.textContent ?? '';
+    m.menu.show('none');
+    return { grew, grown, note, after: m.stats().parts };
+  }, yard.code);
+  assert(restored.grew && restored.grown === yard.before + 1,
+    'the stand should land before the restore, or this proves nothing');
+  assert(restored.note === 'Yard loaded.',
+    `loading on an open yard should succeed, saw "${restored.note}"`);
+  assert(restored.after === yard.before,
+    `the code should put the yard back to ${yard.before} parts, left ${restored.after}`);
+
   await page.evaluate(() => window.__maker.hideOverlay());
   await frames(page, 4);
 
@@ -385,5 +449,6 @@ export default async function (page) {
     + ' a picker screen holds, renames and deletes them — refusing to offer either on a'
     + ' built-in, and leaving nobody holding what it just threw away. A share code copied'
     + ' off a row imports as the same shape at the same price, and a mangled one is'
-    + ' refused with a sentence rather than half a fort');
+    + ' refused with a sentence rather than half a fort. The whole yard copies as its own'
+    + ' code, a running round refuses the swap, and loading it back restores the lot');
 }

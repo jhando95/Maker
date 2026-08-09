@@ -55,7 +55,9 @@ import { BlueprintStore } from './app/blueprintStore.ts';
 import {
   blueprintCost, connectedFrom, mirrored, normalize, stampAt, type Blueprint,
 } from './build/blueprint.ts';
-import { encodeBlueprint, decodeBlueprint } from './build/shareCode.ts';
+import {
+  decodeBlueprint, decodeYard, encodeBlueprint, encodeYard,
+} from './build/shareCode.ts';
 import { beginLay, layStep, type LayState } from './build/pathLayer.ts';
 import {
   HOUSE_RULES, applyHouseRules, houseRuleById, resetHouseRules, type HouseRules,
@@ -1893,6 +1895,21 @@ const menuCallbacks: MenuCallbacks = {
     // Through the same save path a captured structure uses, so the imported
     // blueprint obeys the same limits — a full list refuses it the same way.
     return blueprints.save(shared.name, shared.parts) === null ? 'full' : 'saved';
+  },
+  // The whole lot as a string, starter structures and all — what the yard IS
+  // is the store's contents, and a code that quietly skipped some of them
+  // would paste a different yard than the one that was copied.
+  onYardExport: () => encodeYard(build.serialize()),
+  onYardImport: (code) => {
+    // Only on an open yard. In a session the world belongs to everybody in
+    // it; under a running round the mode is holding positions in a yard that
+    // is about to stop existing. Both are the same answer.
+    if (net !== null || mode !== null) return 'busy';
+    const parts = decodeYard(code);
+    if (parts === null) return 'invalid';
+    build.deserialize(parts);
+    worldChanged();
+    return 'loaded';
   },
 };
 
