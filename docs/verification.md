@@ -1305,3 +1305,42 @@ lifted; counts never put back; no frame drawn at all; the shadow map not asked
 for before the frame that compiles its programs; the shadow map left standing
 afterwards; a driver that throws left uncleaned-up; and a traversal that stops
 at a hidden branch instead of descending into it.
+
+And on the garden and the lathe, thirteen: a profile whose widest point never
+sets the radius; a shape not based at zero; smooth shading arriving where the
+facets are the style — this test is the *only* guard for three's behaviour,
+after a hand-rolled flattener was deleted for being unfalsifiable; a triangle
+budget blown; a negative radius accepted; a one-point profile accepted; a rock
+that floats over its own shadow; two rocks from one seed disagreeing; every
+seed growing the same rock; a seam torn open by unshared displacement — whose
+first version counted tears into a variable nothing incremented; the garden
+never planted; and a prop buried in the map's own scenery, twice over — the
+clearance sweep caught the birdbath inside the deck crate it was born in, and
+then caught its second position inside the tyre stack before any screenshot
+did.
+
+And on the turned kids, two species this roll already names, back again wearing
+new clothes: a chest-width check that read the whole torso's bounding box, so a
+planted 10%-narrower chest passed while the hip band held the box wide — it
+measures at the painted mark's own height now, where the lathe's seam
+guarantees a vertex sits exactly on the axis it asks about; and the ink-shell
+attribute check, planted by building parts from a bare lathe, caught the
+outline quietly vanishing with no error anywhere.
+
+And on the share codes, the round trip itself found two before any plant: decode
+computed int/1000 where the game's quantizer computes int*0.001 — different
+doubles for a third of all coordinates, so a blueprint came back from its own
+code very slightly not itself — and the built-ins carried the game's only
+rotations off the 1e-4 grid. Planted after: every single character of a code
+altered in turn, all refused; truncation, growth, wrong prefix, noise, a paste
+split by a line break; a forged rotation of length five that checksums
+perfectly; and the import button severed from its field, which the browser
+scenario caught by pressing the real button.
+
+And on the knockback, the first assertion failed honestly: it demanded a bare
+2.4 and a grounded body carries a few ten-thousandths of residual upward
+velocity from its own ground snap, so the test now asserts the rule —
+max(vy, 0) plus lift — rather than the number. The slide's threshold came from
+measurement (0.69m read as a stumble, 1.28m as a cannon; 1.09m shipped), and
+the shove was severed at both call sites in turn — the bot's and the local
+player's — with a test failing for each.
