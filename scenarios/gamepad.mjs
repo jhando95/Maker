@@ -121,6 +121,7 @@ export default async function (page) {
       .catch(() => { throw new Error('gamepad scenario: the player never landed at the start'); });
 
     const from = await playerPos(page);
+    const fromTicks = await page.evaluate(() => window.__maker.stats().ticks);
     await setPad(page, { axes });
     // A real duration, this one: it is how long the stick is held for.
     await page.waitForTimeout(ms);
@@ -129,11 +130,22 @@ export default async function (page) {
     // of the walking and not just whatever happened to be rendered.
     await restingPlace(page);
     const to = await playerPos(page);
-    return { from, to, distance: Math.hypot(to.x - from.x, to.z - from.z) };
+    const ticks = await page.evaluate(() => window.__maker.stats().ticks) - fromTicks;
+    return {
+      from, to, ticks,
+      distance: Math.hypot(to.x - from.x, to.z - from.z),
+      // Metres per second of *simulation*, which is the only clock a speed
+      // claim can stand on: a starved CI runner hands two identical wall-time
+      // pushes very different amounts of sim, and comparing raw distances
+      // once inverted half-stick vs full-stick on exactly such a runner.
+      speed: 0,
+    };
   };
 
   const full = await push([0, -1, 0, 0], 1600);
-  assert(full.distance > 1.0, `stick forward should walk; moved ${full.distance.toFixed(2)}m`);
+  full.speed = full.distance / (full.ticks / 60);
+  assert(full.ticks > 20, `the push should land real sim ticks, got ${full.ticks}`);
+  assert(full.distance > 0.5, `stick forward should walk; moved ${full.distance.toFixed(2)}m`);
   // At yaw 0 the camera faces -Z, so forward is -Z.
   assert(
     full.to.z < full.from.z - 0.5,
@@ -146,10 +158,12 @@ export default async function (page) {
   );
 
   const half = await push([0, -0.45, 0, 0], 1600);
+  half.speed = half.distance / (half.ticks / 60);
+  assert(half.ticks > 20, `the half push should land real sim ticks, got ${half.ticks}`);
   assert(half.distance > 0.1, `a half stick should still move; moved ${half.distance.toFixed(2)}m`);
   assert(
-    half.distance < full.distance,
-    `a half stick should be slower: ${half.distance.toFixed(2)}m vs ${full.distance.toFixed(2)}m`,
+    half.speed < full.speed * 0.9,
+    `a half stick should be slower: ${half.speed.toFixed(2)}m/s vs ${full.speed.toFixed(2)}m/s`,
   );
 
   // Sideways, to prove the stick's two axes are not crossed.

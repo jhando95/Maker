@@ -1671,6 +1671,12 @@ const buildStore = new BuildStore();
  */
 /** Which house-rules preset the next solo round starts under. */
 let houseRuleIndex = 0;
+/**
+ * Simulation ticks since boot, for the harness. A scenario on a starved CI
+ * runner cannot equate wall time with sim time — the catch-up clamp sees to
+ * that — so speed claims divide distance by ticks, not by the clock.
+ */
+let simTicks = 0;
 
 const menuCallbacks: MenuCallbacks = {
   listModes: () => MODES,
@@ -2523,6 +2529,7 @@ function simulateBody(dt: number): void {
     localInput.aimZ = look.z;
   }
 
+  simTicks++;
   if (input.wasPressed('fly')) {
     if (mode !== null) hud.notice('Flying is for Shed Day.');
     else {
@@ -3227,6 +3234,7 @@ window.__maker = {
     drawCalls: renderer.info.render.calls,
     triangles: renderer.info.render.triangles,
     player: { x: +player.x.toFixed(2), y: +player.y.toFixed(2), z: +player.z.toFixed(2), onGround: player.onGround },
+    ticks: simTicks,
     hashCells: world.hash.stats().cells,
   }),
   teleport: (x: number, y: number, z: number) => player.teleport(x, y, z),
