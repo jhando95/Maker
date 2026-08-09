@@ -167,6 +167,15 @@ export const ITEMS: readonly Item[] = [
   // The two runs down either side of the house, spawn end to flag end.
   { kind: 'slide', x: -16.5, z: -6, halfW: 1.3, halfD: 3.5, y: 0.06, ry: 0 },
   { kind: 'slide', x: 16.5, z: -6, halfW: 1.3, halfD: 3.5, y: 0.06, ry: Math.PI },
+  // Two more, placed for fun rather than for routes: by the back gate gap,
+  // and against the west fence. Peripheral on purpose — the lot keeps its
+  // slabs inside the fence (the nav field ends at ±26, and the test above
+  // that fact enforces it caught the first draft of these at z 27), and the
+  // full balance suite is the judge of whether a bounce this far from every
+  // objective moves any number. A chase that detours through a bounce is a
+  // better chase.
+  { kind: 'trampoline', x: -1.0, z: 22.3, halfW: 1.1, halfD: 1.1, y: 0.32, ry: 0 },
+  { kind: 'trampoline', x: -22.3, z: 11, halfW: 1.1, halfD: 1.1, y: 0.32, ry: 0 },
 ];
 
 /** Is this body standing on that item? */
