@@ -147,6 +147,25 @@ export function rotated(parts: readonly PlacementRecord[], turns: number): Place
   }));
 }
 
+/**
+ * The blueprint's mirror image across its own X axis.
+ *
+ * The Forge's symmetric stamp: build the left tower, mirror, stamp the right.
+ * A reflection M conjugates the rotation — R' = M R M — which for quaternions
+ * across the x=0 plane is (qx, -qy, -qz, qw); positions just negate x. Boxes
+ * are their own mirror images, so no geometry needs to know. Quarter-turn
+ * grid in, quarter-turn grid out, and mirroring twice is exactly the
+ * identity — both are tested rather than trusted.
+ */
+export function mirrored(parts: readonly PlacementRecord[]): PlacementRecord[] {
+  return parts.map((p) => ({
+    ...p,
+    x: q(-p.x),
+    qy: q(-p.qy, 1e-4) + 0,
+    qz: q(-p.qz, 1e-4) + 0,
+  }));
+}
+
 /** Where every part of a blueprint would go, if it were stamped here. */
 export function stampAt(
   parts: readonly PlacementRecord[],

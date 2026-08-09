@@ -9,6 +9,7 @@ import {
   normalize,
   rotated,
   stampAt,
+  mirrored,
   type Box,
 } from './blueprint.ts';
 import { costOf } from './lumber.ts';
@@ -330,5 +331,31 @@ describe('the ones that ship with the game', () => {
 
   it('cost something, so they cannot be free in a metered round', () => {
     for (const b of built) expect(blueprintCost(b.parts)).toBeGreaterThan(0);
+  });
+});
+
+const q0 = (v: number): number => (Object.is(v, -0) ? 0 : v);
+
+describe('the mirror', () => {
+  it('reflects positions and rotations, and undoes itself exactly', () => {
+    const stairs = builtInBlueprints()[0]!.parts;
+    const flipped = mirrored(stairs);
+    for (let i = 0; i < stairs.length; i++) {
+      expect(flipped[i]!.x).toBeCloseTo(-stairs[i]!.x, 10);
+      expect(flipped[i]!.y).toBe(stairs[i]!.y);
+      expect(flipped[i]!.z).toBe(stairs[i]!.z);
+    }
+    expect(mirrored(flipped)).toEqual(stairs.map((p) => ({ ...p, x: q0(p.x) })));
+  });
+
+  it('conjugates a quarter-turned part, not just moves it', () => {
+    // The ladder's posts stand on end (a Z quarter turn). Their mirror must
+    // carry the *opposite* turn — drop the quaternion reflection and a
+    // mirrored ladder's posts lean the wrong way while every position passes.
+    const ladder = builtInBlueprints()[1]!.parts;
+    const post = ladder.find((p) => p.qz !== 0)!;
+    const flippedPost = mirrored([post])[0]!;
+    expect(flippedPost.qz).toBeCloseTo(-post.qz, 10);
+    expect(flippedPost.qw).toBe(post.qw);
   });
 });

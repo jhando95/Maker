@@ -52,7 +52,7 @@ import {
 import type { HeardEvent } from './net/session.ts';
 import { BlueprintStore } from './app/blueprintStore.ts';
 import {
-  blueprintCost, connectedFrom, normalize, stampAt, type Blueprint,
+  blueprintCost, connectedFrom, mirrored, normalize, stampAt, type Blueprint,
 } from './build/blueprint.ts';
 import { encodeBlueprint, decodeBlueprint } from './build/shareCode.ts';
 import { beginLay, layStep, type LayState } from './build/pathLayer.ts';
@@ -1779,6 +1779,7 @@ const menuCallbacks: MenuCallbacks = {
   })),
   onBlueprintHold: (id) => {
     heldBlueprint = id === null ? null : blueprints.get(id) ?? null;
+    blueprintMirror = false;
     // A fresh one starts unturned, exactly as cycling to it does — otherwise a
     // blueprint picked from the menu arrives at whatever angle the last one was
     // left at, which reads as the preview being broken.
@@ -2122,6 +2123,8 @@ function layRecord(record: PlacementRecord): void {
 const blueprints = new BlueprintStore();
 let heldBlueprint: Blueprint | null = null;
 let blueprintTurns = 0;
+/** The Forge's symmetric stamp: Z flips the held blueprint across its axis. */
+let blueprintMirror = false;
 
 /** Step through none, then each blueprint, and round again. */
 function cycleBlueprint(delta: number): void {
@@ -2149,8 +2152,12 @@ function stampRecords(): PlacementRecord[] | null {
   const snap = build.lastSnap;
   const c = snap?.candidate;
   if (c === null || c === undefined) return null;
+  // Mirror first, then turn: the Forge's symmetric stamp. The order matters
+  // only in that it is fixed — a mirrored-then-turned blueprint is what the
+  // preview shows, so it is what the stamp lays.
+  const parts = blueprintMirror ? mirrored(heldBlueprint.parts) : heldBlueprint.parts;
   return stampAt(
-    heldBlueprint.parts,
+    parts,
     c.position.x, c.position.y, c.position.z,
     blueprintTurns,
   );
@@ -2660,6 +2667,9 @@ function simulateBody(dt: number): void {
     if (heldBlueprint !== null) {
       if (input.wasPressed('rotateCW')) blueprintTurns++;
       if (input.wasPressed('rotateCCW')) blueprintTurns--;
+      // Z, which tilts a single part, mirrors a blueprint — a blueprint has
+      // no tilt (quarter turns only), so the key is free exactly here.
+      if (input.wasPressed('rotatePitch')) blueprintMirror = !blueprintMirror;
     }
     build.showStampPreview(stampRecords());
 
