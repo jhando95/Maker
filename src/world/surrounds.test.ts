@@ -14,7 +14,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { Rng } from '../core/rng.ts';
-import { surroundsSlabs } from './surrounds.ts';
+import { surroundsSlabs, SITE } from './surrounds.ts';
 import { culDeSacSlabs } from './culDeSac.ts';
 import { neighborhoodSlabs, LEFT_SPAWN, RIGHT_SPAWN } from './neighborhood.ts';
 import { YARD_HALF, LAWN_EXTENT } from './scene.ts';
@@ -135,6 +135,46 @@ describe('the horizon', () => {
         Math.abs(s.z - spawn.z) < s.d / 2 + 0.3 &&
         s.y - s.h / 2 < 1.5);
       expect(onTop, `something is standing on a spawn at (${spawn.x}, ${spawn.z})`).toHaveLength(0);
+    }
+  });
+});
+
+describe('the building site', () => {
+  const inSite = (s: { x: number; z: number }): boolean =>
+    Math.abs(s.x - SITE.x) <= SITE.halfW && Math.abs(s.z - SITE.z) <= SITE.halfD;
+
+  it('is there, and is enough of a place to play on', () => {
+    const site = around.filter(inSite);
+    // Pallets, skip, five studs and two plates, a three-step heap, clutter:
+    // fewer than twelve means something was dropped.
+    expect(site.length).toBeGreaterThanOrEqual(12);
+    // Something to climb: the heap tops out above a metre, the frame above two.
+    const tops = site.map((s) => s.y + s.h / 2);
+    expect(Math.max(...tops)).toBeGreaterThan(2);
+    // And all of it solid — the site is furniture, not backdrop.
+    expect(site.every((s) => s.ghost !== true)).toBe(true);
+  });
+
+  it('shares its footprint with nothing else', () => {
+    // Everything low and solid inside the site box must be the site's own.
+    // The site is deterministic, so its slabs can be identified by rebuilding
+    // it alone via a second seed: whatever appears in the box for every seed
+    // is the site; anything that appears for one seed is an intruder. Ghost
+    // canopies overhead are exempt — a branch four metres up shades the skip
+    // and blocks nothing.
+    const own = new Set(
+      around.filter((s) => inSite(s) && s.ghost !== true && s.y < 3)
+        .map((s) => `${s.x.toFixed(2)},${s.y.toFixed(2)},${s.z.toFixed(2)}`),
+    );
+    for (const seed of ['surrounds', 'b', 'match-991', 'x7']) {
+      const slabs = surroundsSlabs(new Rng(seed));
+      for (const s of slabs) {
+        if (!inSite(s) || s.ghost === true || s.y >= 3) continue;
+        expect(
+          own.has(`${s.x.toFixed(2)},${s.y.toFixed(2)},${s.z.toFixed(2)}`),
+          `seed ${seed} put a foreign slab in the site at (${s.x.toFixed(1)}, ${s.z.toFixed(1)})`,
+        ).toBe(true);
+      }
     }
   });
 });

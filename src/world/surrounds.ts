@@ -148,6 +148,68 @@ function woods(out: Slab[], rng: Rng): void {
 }
 
 /**
+ * The building site's footprint, exported so the test that keeps it clear and
+ * the site itself cannot drift apart.
+ *
+ * At radius ~37.6 from the origin it sits inside the treeline's inner ring
+ * (44), so no scattered trunk can land in it by construction — the annulus is
+ * the keepout, and adding a second one here would be a guard nothing can
+ * falsify. The houses either side at (39, 4) and (36, 24) leave this stretch
+ * south of the side lawn clear.
+ */
+export const SITE = { x: 36.5, z: -9, halfW: 4.2, halfD: 3.6 } as const;
+
+/**
+ * The building site: the one corner of the neighbourhood that is *about* the
+ * thing this game is about.
+ *
+ * Two pallet stacks at step heights, a skip you can get on top of from them, a
+ * half-framed stud wall, a sand heap you can walk up, and some dropped lumber.
+ * In Tag this is cover and a vantage; everywhere it is the world telling you
+ * that building is what people do here. Everything is solid — it collides,
+ * shows on the minimap, and can be stood on.
+ */
+function buildingSite(out: Slab[]): void {
+  const { x, z } = SITE;
+  const lumber = 0xc9a06a;
+  const pale = 0xdbc99e;
+  const steel = 0x4a6b5e;
+
+  // Pallet stacks: two heights, deliberately a staircase onto the skip.
+  out.push({ w: 1.8, h: 0.45, d: 1.2, x: x - 2.3, y: 0.225, z: z - 1.8, color: lumber, outline: 0x8a6a42, chamfer: 0.03 });
+  out.push({ w: 1.8, h: 0.9, d: 1.2, x: x - 2.3, y: 0.45, z: z - 0.4, color: pale, outline: 0x8a6a42, chamfer: 0.03 });
+  // A plank leaning against the low stack, as one always is.
+  out.push({ w: 2.0, h: 0.06, d: 0.3, x: x - 3.4, y: 0.32, z: z - 2.1, rz: 0.42, color: pale, outline: 0x8a6a42, chamfer: 0.01 });
+
+  // The skip. A body and two lip rails, dark painted steel.
+  out.push({ w: 2.6, h: 1.2, d: 1.5, x: x + 1.9, y: 0.6, z: z - 1.3, color: steel, outline: 0x263832, chamfer: 0.04 });
+  for (const dz of [-0.7, 0.7]) {
+    out.push({ w: 2.7, h: 0.1, d: 0.14, x: x + 1.9, y: 1.25, z: z - 1.3 + dz, color: 0x5f8272, outline: 0x263832, chamfer: 0.02 });
+  }
+
+  // A stud wall somebody framed and has not clad: a bottom plate, five studs,
+  // a top plate. The most legible "under construction" shape there is.
+  out.push({ w: 3.4, h: 0.1, d: 0.14, x: x + 0.6, y: 0.05, z: z + 2.6, color: pale, outline: 0x8a6a42, chamfer: 0.01 });
+  for (let i = 0; i < 5; i++) {
+    out.push({
+      w: 0.12, h: 2.0, d: 0.12, x: x - 0.9 + i * 0.76, y: 1.1, z: z + 2.6,
+      color: pale, outline: 0x8a6a42, chamfer: 0.01,
+    });
+  }
+  out.push({ w: 3.4, h: 0.1, d: 0.14, x: x + 0.6, y: 2.15, z: z + 2.6, color: pale, outline: 0x8a6a42, chamfer: 0.01 });
+
+  // The sand heap, as a stepped mound: each rise is under STEP_HEIGHT, so it
+  // is climbed by walking, which is what a heap of sand is for.
+  out.push({ w: 2.6, h: 0.5, d: 2.2, x: x - 0.6, y: 0.25, z: z - 0.2, ry: 0.2, color: 0xe8d4a0, outline: 0xc9b083, chamfer: 0.2 });
+  out.push({ w: 1.7, h: 0.45, d: 1.4, x: x - 0.6, y: 0.72, z: z - 0.2, ry: 0.5, color: 0xefdcae, outline: 0xc9b083, chamfer: 0.16 });
+  out.push({ w: 0.9, h: 0.35, d: 0.8, x: x - 0.6, y: 1.1, z: z - 0.2, ry: 0.8, color: 0xe8d4a0, outline: 0xc9b083, chamfer: 0.12 });
+
+  // Dropped blocks, because no site is tidy.
+  out.push({ w: 0.5, h: 0.5, d: 0.5, x: x + 1.1, y: 0.25, z: z + 1.6, ry: 0.5, color: lumber, outline: 0x8a6a42, chamfer: 0.04 });
+  out.push({ w: 0.4, h: 0.4, d: 0.4, x: x + 0.4, y: 0.2, z: z - 2.4, ry: 1.1, color: pale, outline: 0x8a6a42, chamfer: 0.04 });
+}
+
+/**
  * Everything beyond the fence that is not the cul-de-sac.
  *
  * Takes an Rng because the woods are scattered, and a seeded one because two
@@ -158,6 +220,7 @@ export function surroundsSlabs(rng: Rng): Slab[] {
 
   for (const n of AROUND) neighbourHouse(out, n);
   for (const [x, z, ry, roof] of BEYOND) farRoof(out, x, z, ry, roof);
+  buildingSite(out);
 
   // The hedge along the back, which is the boundary the lot's own back fence
   // looks across. Two runs with a gap, because an unbroken thirty-metre hedge

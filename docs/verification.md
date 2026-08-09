@@ -1344,3 +1344,17 @@ max(vy, 0) plus lift — rather than the number. The slide's threshold came from
 measurement (0.69m read as a stumble, 1.28m as a cannon; 1.09m shipped), and
 the shove was severed at both call sites in turn — the bot's and the local
 player's — with a test failing for each.
+
+And on the path layer, six: a lane that follows the body's wobble — missed by
+the first test, whose wobble never crossed the module boundary, so even a
+wandering lane snapped to the same value; the height lock ignored; the corner
+that skips its first cell when the old axis's cursor collides with the new
+one's — a hole, not a double, and it took an engineered turn at the exact
+colliding spot to see it; the lead deleted, missed by a test that asked "is the
+far edge ahead of you", which the standing cell answers trivially; and at the
+seam, the commit severed from the gesture, which the browser scenario caught by
+holding the real key through the real input path and counting the boards.
+
+And on the building site, two: the site never built, and the site moved under
+the neighbour's house at (39, 4) — caught by the foreign-slab sweep that had
+just been written to hold its footprint clear.
