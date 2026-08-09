@@ -51,6 +51,7 @@ export const ACTIONS = [
   'resetRotation',
   'repeatPlace',
   'layPath',
+  'fly',
 
   'nextPart',
   'prevPart',
@@ -127,6 +128,7 @@ export const DEFAULT_BINDINGS: Record<string, Action> = {
   KeyT: 'resetRotation',
   KeyG: 'repeatPlace',
   KeyH: 'layPath',
+  KeyJ: 'fly',
 
   Digit1: 'hotbar1',
   Digit2: 'hotbar2',
@@ -244,6 +246,7 @@ export const BINDING_GROUPS: ReadonlyArray<{
       { action: 'cycleSnap', label: 'Next snap' },
       { action: 'repeatPlace', label: 'Repeat step' },
       { action: 'layPath', label: 'Lay a path (hold)' },
+      { action: 'fly', label: 'Fly (Free Build only)' },
       { action: 'rotateCCW', label: 'Turn left' },
       { action: 'rotateCW', label: 'Turn right' },
       { action: 'rotatePitch', label: 'Tilt' },

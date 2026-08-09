@@ -118,6 +118,23 @@ function firepit(out: Slab[]): void {
 }
 
 /**
+ * A see-saw: a tyre fulcrum and a plank resting one end down, walkable as
+ * low cover and a step. The tilt is authored (rz), not simulated — a plank
+ * that pivots under live weight is a moving collision platform, which this
+ * world's static collision does not do yet; when it learns to, the motion
+ * belongs here and every map with a see-saw gets it at once. That is the
+ * point of the catalogue.
+ */
+function seesaw(out: Slab[]): void {
+  out.push({ w: 0.5, h: 0.55, d: 0.9, x: 0, y: 0.27, z: 0, color: 0x2a2a30, outline: 0x1a1a1e, chamfer: 0.12 });
+  out.push({ w: 3.8, h: 0.16, d: 0.5, x: 0, y: 0.62, z: 0, rz: 0.2, color: 0xd8564f, outline: 0x8a3226, chamfer: 0.02 });
+  // Handles at both ends, the detail that says see-saw rather than plank.
+  for (const dx of [-1.55, 1.55]) {
+    out.push({ w: 0.06, h: 0.3, d: 0.06, x: dx, y: 0.62 + dx * 0.2 + 0.22, z: 0, color: 0x4a4f54, chamfer: 0.01, ghost: true });
+  }
+}
+
+/**
  * The catalogue itself. Everything here is placeable on any map, present or
  * future — being listed is not a promise that any particular map uses it.
  */
@@ -126,4 +143,5 @@ export const PREFABS = {
   sandpit,
   coop,
   firepit,
+  seesaw,
 } as const;

@@ -299,6 +299,7 @@ export function pocketSlabs(): Slab[] {
   place(out, 'firepit', POCKETS[3].x, POCKETS[3].z);
   place(out, 'ropeSwing', POCKETS[1].x + 4.6, POCKETS[1].z + 1.2, 1);
   place(out, 'sandpit', SITE.x - 3.1, SITE.z + 2.2);
+  place(out, 'seesaw', 16, 27.2, 1);
   return out;
 }
 

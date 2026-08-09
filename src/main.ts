@@ -2085,6 +2085,14 @@ function doRepeat(): void {
 let layState: LayState | null = null;
 
 /**
+ * The Forge's fly camera: Free Build only, toggled on J. Flying moves the
+ * *body* — the aim ray starts at the eye and reach is measured from it, so
+ * moving the camera alone would leave the builder's hands at ground level.
+ * Rounds force it off: flight in a scored mode is a cheat, not a tool.
+ */
+let flying = false;
+
+/**
  * Commit one laid part. Silent on refusal, deliberately: the lay runs eight
  * times a second while the player is looking somewhere else, and a refusal
  * beep repeated down a whole sprint is an alarm, not feedback. The missing
@@ -2482,10 +2490,47 @@ function simulateBody(dt: number): void {
     localInput.aimZ = look.z;
   }
 
+  if (input.wasPressed('fly')) {
+    if (mode !== null) hud.notice('Flying is for Free Build.');
+    else {
+      flying = !flying;
+      hud.notice(flying ? 'Flying — press J to land.' : 'Back on your feet.');
+    }
+  }
+  if (mode !== null) flying = false;
+
   // Being soaked slows the player. Applied here rather than baked into the
   // command because it is a rule the mode applies to your intent, not part of
   // the intent: a soaked player is pushing the stick just as hard.
-  player.step(dt, commandToIntent(localCommand, mode?.playerSpeedScale ?? 1));
+  if (flying) {
+    // Camera-directed flight: forward follows the look including pitch, so
+    // you fly where you point; jump rises, crouch sinks. The body is moved
+    // with place() — velocity stays zero, so landing starts a clean fall and
+    // gravity never accumulates behind the scenes.
+    const intent = commandToIntent(localCommand, 1);
+    const look = camera.getLookDirection();
+    const gl = Math.hypot(look.x, look.z) || 1;
+    const speed = intent.sprint ? 16 : 8;
+    // MoveIntent's forward axis is negative-forward (W is -1) — same
+    // convention desiredVelocity consumes, discovered the same way every
+    // consumer discovers it: by flying backwards into the ground once.
+    const fx = look.x * -intent.forward + (-look.z / gl) * intent.right;
+    const fy = look.y * -intent.forward + (intent.jump ? 1 : 0) - (intent.crouch ? 1 : 0);
+    const fz = look.z * -intent.forward + (look.x / gl) * intent.right;
+    const len = Math.hypot(fx, fy, fz);
+    if (len > 1e-4) {
+      player.place(
+        player.x + (fx / len) * speed * dt,
+        Math.min(38, Math.max(0.2, player.y + (fy / len) * speed * dt)),
+        player.z + (fz / len) * speed * dt,
+      );
+    }
+    player.vx = player.vy = player.vz = 0;
+    // Airborne by definition — coyote time and the walk cycle both read this.
+    player.onGround = false;
+  } else {
+    player.step(dt, commandToIntent(localCommand, mode?.playerSpeedScale ?? 1));
+  }
   // After the step, so the item sees where the body actually ended up. Run on
   // every machine rather than only the host: the effect is a pure function of
   // position, so a guest predicting its own bounce reaches the same answer on
