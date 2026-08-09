@@ -1368,3 +1368,38 @@ pocketSlabs() exists for that one reason. The dropped-pocket plant was caught
 first time, and the horizon's draw-budget test caught the pockets honestly at
 61 distinct box sizes against its cap of 40; the sizes were rationalised and
 the cap raised to 56 with the trade written down.
+
+## House rules on the wire
+
+Eight plants, three floors of the stack, because the feature is one string
+crossing one message and every failure mode is silent: nothing errors when a
+guest predicts under the wrong gravity — the game just feels broken and the
+snapshots quietly disagree.
+
+At the session layer, three. The host hardcoding `rules: 'classic'` instead of
+asking the shell — caught by the handshake test expecting moon. The guest
+discarding the field unread — caught by the same test seeing no application at
+all, and by the classic-default test, which pins what fills the gap when a
+bare context has no opinion. And `houseRuleById` returning Classic for
+everything — caught by the lookup test, which exists because a lookup that
+always answers Classic leaves every session on shipped physics while the host
+plays on the moon, and no other test would ever notice.
+
+At the shell layer, five, each seen to fail in a real browser before it was
+allowed to pass. Hosting without applying the pick — the welcome still named
+moon, and only the gravity assertion caught it, which is why the wire claim
+and the physics claim are separate assertions. The context lying
+`houseRules: () => 'classic'` while the physics bent correctly — the mirror
+image, caught by the wire assertion with the gravity assertion passing.
+The guest's `setHouseRules` wired to nothing — party's yard stayed at ×1
+while the welcome said moon. The round-teardown reset creeping back into
+`adoptRound` — the preset must outlive the round, because the host ending a
+game of tag has not un-mooned the yard, and the between-rounds lull is still
+predicted in. And `leaveSession` keeping the bend — a guest walks out of a
+Moon Yard onto their own lawn, and their own lawn is the yard as shipped.
+
+The teardown plant also settled an archaeology question: the old solo-only
+reset had landed in `adoptRound` as three stacked calls from a mangled edit,
+harmless only because reset is idempotent. The session-scoped rule replaced
+all three with one deliberate absence and a browser assertion that notices if
+anybody puts one back.

@@ -196,6 +196,23 @@ export interface SessionContext {
    */
   setRound?(round: PackedRound | null): void;
   /**
+   * Which house-rules preset this yard runs under, by id. Asked on a host
+   * whenever a guest is welcomed; never called on a guest.
+   *
+   * A getter for the same reason `mode` is one: the pick lives in the shell,
+   * and a copy taken when the session was built would be the pick as it stood
+   * then, told to whoever joins later.
+   */
+  houseRules?(): string;
+  /**
+   * The host said the yard runs under this preset. Only ever called on a
+   * guest, and exactly once, from the welcome — before the first tick this
+   * client predicts as a member of the session, which is the entire point of
+   * carrying it there: a guest predicting under different gravity is corrected
+   * on every snapshot, playable and wrong-feeling and never erroring.
+   */
+  setHouseRules?(id: string): void;
+  /**
    * Something somebody said, pinged or did, already decided as audible.
    *
    * Handed to the shell rather than applied here for the same reason `setRound`
@@ -475,6 +492,9 @@ export class NetHost {
       id: peer.id,
       team: peer.actor.team,
       tick: this.tick,
+      // The physics this yard runs under. Asked for fresh rather than copied at
+      // construction, so a guest who joins is told the pick as it stands.
+      rules: this.ctx.houseRules?.() ?? 'classic',
       // The world as it stands. Somebody joining halfway through has to see what
       // everybody built before they arrived, or they are playing a different map.
       parts: this.ctx.build.serializeWithIds(),
@@ -1293,6 +1313,12 @@ export class NetClient {
         // before the answer has had time to arrive.
         if (this.connected) break;
         this.localId = message.id;
+        // The host's physics, before anything else — every tick this client
+        // predicts from here on has to bend the same way the host's do, and the
+        // very next thing this handler does is drop the player at a spawn.
+        // Defended like `balloons` below rather than trusted to the type,
+        // because a decoded message is whatever arrived.
+        this.ctx.setHouseRules?.(message.rules ?? 'classic');
         // Stop being id 0: the host already is. Everything pointing at this
         // character holds the controller rather than the actor, so only the name
         // changes.

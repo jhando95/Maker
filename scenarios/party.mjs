@@ -140,13 +140,24 @@ export default async function (page) {
   );
 
   await send(page, {
-    t: 'welcome', id: 3, team: 'right', tick: 0, parts: [],
+    t: 'welcome', id: 3, team: 'right', tick: 0, rules: 'moon', parts: [],
   });
   await frames(page, 4);
 
   const status = await page.evaluate(() => window.__maker.netStatus());
   assert(status !== null && status.role === 'guest', 'the page should be a guest');
   assert(status.localId === 3, `the guest should take the id it was given, saw ${status.localId}`);
+
+  // ── The host's physics arrive with the handshake ───────────────────────────
+  //
+  // The host said Moon Yard, so this machine's own prediction has to run at
+  // half gravity from here on — told later or not at all, the guest's jumps
+  // land somewhere the host's copy of them does not, and every snapshot drags
+  // them back. The rest of this scenario runs under the bent yard on purpose:
+  // a guest is under the host's rules for the whole visit, not for a check.
+  const joinedG = await page.evaluate(() => window.__maker.stats().gravityScale);
+  assert(joinedG === 0.5,
+    `the welcome's preset should bend this guest's yard, gravity ×${joinedG}`);
 
   // ── No round yet: the shell must not invent one ────────────────────────────
   await send(page, snapshot(0, null, [[3, 1, 0, 0.5, 6, 0, 0, 0, 0, 3, 0]]));
@@ -310,6 +321,25 @@ export default async function (page) {
     after.mode === 'none',
     `a guest should let go of a round the host has ended; still in "${after.mode}"`,
   );
+
+  // ── But the physics are the session's, not the round's ─────────────────────
+  //
+  // The host ended the round, not the visit. A guest whose gravity snapped
+  // back to shipped here would spend the between-rounds lull predicting under
+  // different physics than the host runs them under — the exact bug the
+  // welcome field exists to prevent, reintroduced at half-time.
+  const betweenG = await page.evaluate(() => window.__maker.stats().gravityScale);
+  assert(betweenG === 0.5,
+    `the preset should outlive the round, gravity snapped to ×${betweenG}`);
+
+  // Leaving is what straightens the yard: their own lawn is the yard as
+  // shipped, whatever the host was playing at.
+  await page.evaluate(() => window.__maker.leaveSession());
+  const homeG = await page.evaluate(() => window.__maker.stats().gravityScale);
+  assert(homeG === 1,
+    `leaving the session should restore shipped gravity, still ×${homeG}`);
+
   console.log('[party] verified: joined a round nobody here started, banner, clock, pins,'
-    + ' own meters, balloons in the air, result');
+    + ' own meters, balloons in the air, result, and the host\'s house rules'
+    + ' held from handshake to leaving');
 }

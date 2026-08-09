@@ -56,7 +56,9 @@ import {
 } from './build/blueprint.ts';
 import { encodeBlueprint, decodeBlueprint } from './build/shareCode.ts';
 import { beginLay, layStep, type LayState } from './build/pathLayer.ts';
-import { HOUSE_RULES, applyHouseRules, resetHouseRules } from './game/houseRules.ts';
+import {
+  HOUSE_RULES, applyHouseRules, houseRuleById, resetHouseRules, type HouseRules,
+} from './game/houseRules.ts';
 import { KITS } from './build/kits.ts';
 import { VoiceChat } from './voice/voiceChat.ts';
 import { transmitting } from './voice/voiceRules.ts';
@@ -1004,6 +1006,12 @@ const sessionContext: SessionContext = {
   spawnFor: (team) => (team === 'left' ? LEFT_SPAWN : RIGHT_SPAWN),
   mode: () => (isGuest() ? null : mode),
   setRound: (round) => adoptRound(round),
+  // The pick as it stands, read per welcome — a guest who joins after the host
+  // rehosts under a different preset is told the new one.
+  houseRules: () => pickedHouseRules().id,
+  // The host's preset, applied on a guest at the handshake. By id through the
+  // local table, so the multipliers a guest runs under are ones a preset names.
+  setHouseRules: (id) => applyHouseRules(houseRuleById(id)),
   heard: (event) => receive(event),
   signalled: (from, signal) => void voice.receive(from, signal),
   wearing: (id, appearance) => dress(id, appearance),
@@ -1331,9 +1339,9 @@ function adoptRound(round: PackedRound | null): void {
     if (remoteMode !== null) {
       remoteMode = null;
       mode = null;
-  resetHouseRules();
-    resetHouseRules();
-      resetHouseRules();
+      // Deliberately no house-rules reset here: the preset is the session's,
+      // not the round's. The host ending a round has not straightened the
+      // yard — leaving the session is what does that.
       build.setLumber(undefined);
     }
     return;
@@ -1383,9 +1391,11 @@ let netMessage: string | null = null;
  */
 function startHosting(url: string, room: string): NetHost {
   leaveSession();
-  // Guests predict under the shipped physics, so a session must never inherit
-  // a bent yard from a solo experiment that came before it.
-  resetHouseRules();
+  // The host's pick becomes the session's physics: everybody who joins is told
+  // the preset at the handshake and predicts under it. Applied here rather
+  // than left over from a solo round, so hosting means the pick — not
+  // whatever a solo experiment left the yard bent to.
+  applyHouseRules(pickedHouseRules());
   const host = new NetHost(sessionContext);
   net = host;
   relayLink = new RelayHostLink(url, room, (transport) => host.accept(transport), (m) => {
@@ -1397,7 +1407,8 @@ function startHosting(url: string, room: string): NetHost {
 }
 
 function joinSession(url: string, room: string, name = 'kid', claim?: boolean): NetClient {
-  resetHouseRules();
+  // leaveSession has already straightened the yard; the welcome bends it to
+  // whatever the host's preset is, before the first predicted tick.
   leaveSession();
   const client = new NetClient(
     sessionContext, new SocketTransport(relayUrl(url, room, claim)), name,
@@ -1510,6 +1521,9 @@ function hostOver(transport: Transport): NetHost {
 
 function startHostingHeadless(): NetHost {
   leaveSession();
+  // Hosting means the pick, on this path as much as on the relay one — the
+  // welcome names the preset, so the yard had better actually run under it.
+  applyHouseRules(pickedHouseRules());
   const host = new NetHost(sessionContext);
   net = host;
   netMessage = 'hosting';
@@ -1534,6 +1548,9 @@ function leaveSession(): void {
   relayLink?.close();
   relayLink = null;
   netMessage = null;
+  // The session's physics leave with the session. A guest walks out of a Moon
+  // Yard onto their own lawn, and their own lawn is the yard as shipped.
+  resetHouseRules();
   // Back to being the only person here. Without this, leaving a session leaves
   // everyone who was in it standing on the lawn forever.
   actors.identifyLocal(LOCAL_ACTOR_ID);
@@ -1670,8 +1687,13 @@ const buildStore = new BuildStore();
  * would pass with the screen disconnected, which is the failure that matters
  * for a screen that did not exist until now.
  */
-/** Which house-rules preset the next solo round starts under. */
+/** Which house-rules preset the next solo round — or hosted session — runs under. */
 let houseRuleIndex = 0;
+
+/** The picked preset, never out of the table's range. */
+function pickedHouseRules(): HouseRules {
+  return HOUSE_RULES[houseRuleIndex] ?? HOUSE_RULES[0]!;
+}
 /** Which kit palette the hand draws from. Lives up here with its fellow
  *  menu-read state — the house-rules TDZ crash is why. */
 let kitIndex = 0;
@@ -1685,13 +1707,17 @@ let simTicks = 0;
 const menuCallbacks: MenuCallbacks = {
   listModes: () => MODES,
   onPlayMode: (id: string) => {
-    // House rules are solo-only until the preset rides the wire beside the
-    // seed — a guest predicting under different gravity corrects on every
-    // snapshot. The menu hides the picker in a session; this is the backstop.
-    if (net === null) applyHouseRules(HOUSE_RULES[houseRuleIndex] ?? HOUSE_RULES[0]!);
+    // In a session the yard already runs under the host's preset, applied at
+    // the handshake — a round starting must not bend it back to the local
+    // pick. Alone, the pick applies here.
+    if (net === null) applyHouseRules(pickedHouseRules());
     startRound(id as ModeId);
     enterPlay();
   },
+  // Hidden while connected, host and guest alike: the preset is read once, at
+  // the handshake, so a mid-session pick would silently do nothing for the
+  // people already here — and a control that silently does nothing teaches
+  // players not to trust the ones that work. Rehost to change the rules.
   listHouseRules: () => (net !== null ? [] : HOUSE_RULES.map((r, i) => ({
     id: r.id, name: r.name, blurb: r.blurb, picked: i === houseRuleIndex,
   }))),
@@ -1724,9 +1750,9 @@ const menuCallbacks: MenuCallbacks = {
     stopRound();
     resetPlayerToSpawn();
     // Shed Day plays under the house rules too — Moon Yard building is half
-    // the fun of having the preset, and nothing here is scored. Solo only,
-    // like everywhere else the rules apply.
-    if (net === null) applyHouseRules(HOUSE_RULES[houseRuleIndex] ?? HOUSE_RULES[0]!);
+    // the fun of having the preset, and nothing here is scored. In a session
+    // the host's preset is already on the yard and stays.
+    if (net === null) applyHouseRules(pickedHouseRules());
     enterPlay();
   },
   onResume: () => enterPlay(),
@@ -3250,6 +3276,13 @@ window.__maker = {
     player: { x: +player.x.toFixed(2), y: +player.y.toFixed(2), z: +player.z.toFixed(2), onGround: player.onGround },
     ticks: simTicks,
     hashCells: world.hash.stats().cells,
+    /**
+     * The live gravity multiplier, so a scenario can see house rules land.
+     * The one number that separates "the preset travelled" from "the preset
+     * travelled and was applied" — the welcome can be right while the yard
+     * still runs shipped physics.
+     */
+    gravityScale: MOTION.gravityScale,
   }),
   teleport: (x: number, y: number, z: number) => player.teleport(x, y, z),
   lookAt: (yaw: number, pitch: number) => {
@@ -3363,6 +3396,13 @@ window.__maker = {
    * the real protocol down a real transport into the real session. Everything on
    * this side of the pipe is exactly what a relay would drive.
    */
+  /**
+   * Pick a house-rules preset the way the Settings button does.
+   *
+   * Through the same callback the menu calls, so a scenario hosting under Moon
+   * Yard exercises pick → host → welcome exactly as a player would produce it.
+   */
+  pickHouseRules: (id: string): void => menuCallbacks.onPickHouseRules(id),
   hostWithFakeGuest: (): void => {
     const pipe = loopbackPair();
     fakeGuest = pipe.client;

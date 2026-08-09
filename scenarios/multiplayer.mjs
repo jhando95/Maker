@@ -104,6 +104,11 @@ export default async function (page) {
     Array.isArray(welcome.parts[0]) && welcome.parts[0].length === 2,
     'parts travel with the host ids attached, or a removal names the wrong plank',
   );
+  // Nothing picked, so the yard runs as shipped — and the welcome must say so,
+  // because a guest applies whatever this field names before their first
+  // predicted tick.
+  assert(welcome.rules === 'classic',
+    `an unpicked yard is classic on the wire, got "${welcome.rules}"`);
 
   const status = await page.evaluate(() => window.__maker.netStatus());
   assert(status !== null && status.role === 'host', 'the page should be hosting');
@@ -344,10 +349,37 @@ export default async function (page) {
     'and take the guest with it — otherwise they stand on the lawn forever',
   );
 
+  // ── House rules travel from the pick to the welcome ────────────────────────
+  //
+  // Host again, this time under Moon Yard. The wire assertion and the gravity
+  // assertion are deliberately separate claims: the welcome can name the right
+  // preset while the host's own yard still runs shipped physics, because the
+  // field is read off the pick and the physics are bent by an `apply` call
+  // somebody has to remember to make.
+  await page.evaluate(() => {
+    window.__maker.pickHouseRules('moon');
+    window.__maker.hostWithFakeGuest();
+  });
+  const hostG = await page.evaluate(() => window.__maker.stats().gravityScale);
+  assert(hostG === 0.5,
+    `hosting under Moon Yard should bend the host's own yard, gravity ×${hostG}`);
+
+  await send(page, { t: 'hello', version, name: 'the other kid' });
+  const { hit: moonWelcome } = await await_(page, 'welcome');
+  assert(moonWelcome.rules === 'moon',
+    `the welcome should carry the picked preset, got "${moonWelcome.rules}"`);
+
+  // And leaving straightens the yard: the preset was the session's, and the
+  // session is over.
+  await page.evaluate(() => window.__maker.leaveSession());
+  const soloG = await page.evaluate(() => window.__maker.stats().gravityScale);
+  assert(soloG === 1,
+    `leaving the session should restore shipped gravity, still ×${soloG}`);
+
   console.log(
     '[multiplayer] verified: a guest joins over the real protocol, is handed the world with',
     'ids attached, becomes a character on the lawn, walks on their own commands,',
     'appears in snapshots, builds through the host, is refused an illegal placement,',
-    'and is gone when they leave',
+    'is gone when they leave, and a picked preset bends the yard and rides the welcome',
   );
 }

@@ -142,6 +142,43 @@ describe('joining', () => {
     expect(clientCtx.actors.local.team).toBe('right');
   });
 
+  it('tells a joiner which house rules the yard runs under', () => {
+    // The preset travels on the welcome because a guest needs it before the
+    // first tick they predict — told later, their own jumps land in a
+    // different place than the host's copy of them, and every snapshot drags
+    // them back. Playable, wrong-feeling, and never an error.
+    hostCtx.houseRules = () => 'moon';
+    const told: string[] = [];
+    clientCtx.setHouseRules = (id) => told.push(id);
+
+    const pipe = loopbackPair();
+    const client = new NetClient(clientCtx, pipe.client, 'guest');
+    host.accept(pipe.host);
+    run(host, hostCtx, client, clientCtx, 3);
+
+    expect(client.status.connected).toBe(true);
+    // Exactly once: a repeated welcome is dropped by the connected guard, and
+    // a second application — while idempotent today — would make prediction
+    // hiccup for no reason the wire can explain.
+    expect(told).toEqual(['moon']);
+  });
+
+  it('says classic when the shell offers no opinion', () => {
+    // The hook is optional so the tests and tools that build bare contexts
+    // keep working — but the *message* is not optional, and what fills the
+    // gap has to be the shipped feel rather than undefined on the wire.
+    const told: string[] = [];
+    clientCtx.setHouseRules = (id) => told.push(id);
+
+    const pipe = loopbackPair();
+    const client = new NetClient(clientCtx, pipe.client, 'guest');
+    host.accept(pipe.host);
+    run(host, hostCtx, client, clientCtx, 3);
+
+    expect(client.status.connected).toBe(true);
+    expect(told).toEqual(['classic']);
+  });
+
   it('puts a joiner in the host roster and vice versa', () => {
     const pipe = loopbackPair();
     const client = new NetClient(clientCtx, pipe.client, 'guest');

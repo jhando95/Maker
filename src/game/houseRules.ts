@@ -8,12 +8,13 @@
  * developer panel. House rules are the player-facing half of that seam —
  * named presets a kid would pick, not sliders an engineer would.
  *
- * A preset applies when a round starts and Classic is restored when it ends,
- * so nothing leaks into the next round or into Shed Day. Solo rounds only for
- * now: a networked round needs the preset on the wire beside the seed (a
- * guest predicting under different gravity corrects on every snapshot), and
- * that is a protocol change this module deliberately does not smuggle in —
- * the menu simply does not offer house rules when a session is live.
+ * Alone, the picked preset applies when a round or Shed Day starts. In a
+ * session, the preset is the *host's*, session-wide: it rides the welcome by
+ * id, a guest applies it before their first predicted tick, and it outlives
+ * any round the host starts or ends — leaving the session is what restores
+ * the yard as shipped. The id travels rather than the multipliers, because
+ * both ends of a version-matched session hold this same table, and numbers on
+ * the wire would let a bent host send physics no preset names.
  */
 
 import { MOTION, KNOCKBACK } from '../physics/constants.ts';
@@ -45,6 +46,18 @@ export const HOUSE_RULES: readonly HouseRules[] = [
     gravityScale: 1.5, jumpScale: 0.9, knockbackScale: 0.6,
   },
 ] as const;
+
+/**
+ * The preset with this id, or Classic for one this build has never heard of.
+ *
+ * The fallback is for defence, not for use: version-matched peers hold the
+ * same table, so an unknown id cannot arrive from a well-behaved host. But the
+ * id still crosses a wire, and a guest that threw on a strange string would be
+ * a guest anybody could disconnect with one hand-typed message.
+ */
+export function houseRuleById(id: string): HouseRules {
+  return HOUSE_RULES.find((r) => r.id === id) ?? HOUSE_RULES[0]!;
+}
 
 const SHIPPED = {
   gravity: MOTION.gravityScale,

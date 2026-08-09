@@ -41,7 +41,7 @@ import type { EmoteKind, PingKind } from '../game/comms.ts';
 import type { Team } from '../game/actor.ts';
 
 /** Bumped whenever a message shape changes. Mismatched peers are turned away. */
-export const PROTOCOL_VERSION = 9;
+export const PROTOCOL_VERSION = 10;
 
 /**
  * One step of a WebRTC handshake, on its way between two players.
@@ -288,6 +288,22 @@ export type HostMessage =
    */
   | {
     t: 'welcome'; id: number; team: Team; tick: number;
+    /**
+     * Which house-rules preset the yard runs under, by id.
+     *
+     * On the welcome rather than on the snapshot, because it is not allowed to
+     * change mid-session — the picker is hidden while connected — and a guest
+     * needs it *before* the first predicted tick, not twenty times a second
+     * afterwards. A guest predicting under different gravity is corrected on
+     * every snapshot: the game is playable and feels broken, which is the
+     * worst combination, because nothing errors.
+     *
+     * The id travels rather than the multipliers. Both ends of a
+     * version-matched session hold the same preset table, and numbers on the
+     * wire would let a bent host send physics no preset names — the same
+     * reason an appearance is clamped rather than trusted.
+     */
+    rules: string;
     /**
      * The world with the host's own ids attached.
      *
