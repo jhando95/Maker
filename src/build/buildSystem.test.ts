@@ -408,3 +408,31 @@ describe('Snapper stability', () => {
     expect(result.count).toBeGreaterThanOrEqual(2);
   });
 });
+
+describe('the kit palette', () => {
+  it('refuses picks outside the kit and steps the cycler past them', () => {
+    const build = new BuildSystem(new CollisionWorld(), new PartRenderer());
+    build.setKit([0, 2, 4]);
+    build.selectKind(1);
+    expect(build.selectedKind).not.toBe(1);
+    build.selectKind(2);
+    expect(build.selectedKind).toBe(2);
+    // Cycling from 2 must land on 4, skipping 3 entirely.
+    build.cycleKind(1);
+    expect(build.selectedKind).toBe(4);
+    // And wrap: 4 forward goes to 0, not to 5.
+    build.cycleKind(1);
+    expect(build.selectedKind).toBe(0);
+  });
+
+  it('moves a hand caught holding an excluded part, and null restores everything', () => {
+    const build = new BuildSystem(new CollisionWorld(), new PartRenderer());
+    build.selectKind(6);
+    build.setKit([0, 1, 2]);
+    // The ghost in the reticle must be placeable again immediately.
+    expect(build.selectedKind).toBe(0);
+    build.setKit(null);
+    build.selectKind(6);
+    expect(build.selectedKind).toBe(6);
+  });
+});

@@ -297,9 +297,40 @@ export class BuildSystem {
     return n;
   }
 
+  /**
+   * The kit: which kinds the hand may pick, or null for all of them.
+   *
+   * A filter over selection only — parts already placed are the world's, not
+   * the kit's, and a blueprint stamps whatever it recorded. See kits.ts.
+   */
+  private kit: ReadonlySet<number> | null = null;
+
+  setKit(kinds: readonly number[] | null): void {
+    this.kit = kinds === null ? null : new Set(kinds);
+    // A hand holding a part the kit excludes moves to the first allowed one,
+    // because a ghost you cannot place again is a lie in the reticle.
+    if (this.kit !== null && !this.kit.has(this.selectedKind)) {
+      for (let i = 0; i < PART_KINDS.length; i++) {
+        if (this.kit.has(i)) {
+          this.applyKind(i);
+          return;
+        }
+      }
+    }
+  }
+
+  kindAllowed(index: number): boolean {
+    return this.kit === null || this.kit.has(index);
+  }
+
   selectKind(index: number): void {
     if (index < 0 || index >= PART_KINDS.length) return;
     if (index === this.selectedKind) return;
+    if (!this.kindAllowed(index)) return;
+    this.applyKind(index);
+  }
+
+  private applyKind(index: number): void {
     this.selectedKind = index;
     this.clearRepeat();
     this.ghostMesh.geometry = this.ghostGeometries[index]!;
@@ -311,8 +342,15 @@ export class BuildSystem {
   }
 
   cycleKind(delta: number): void {
-    const next = (this.selectedKind + delta + PART_KINDS.length) % PART_KINDS.length;
-    this.selectKind(next);
+    // Step past everything the kit excludes; at most one full lap.
+    let next = this.selectedKind;
+    for (let i = 0; i < PART_KINDS.length; i++) {
+      next = (next + delta + PART_KINDS.length) % PART_KINDS.length;
+      if (this.kindAllowed(next)) {
+        this.selectKind(next);
+        return;
+      }
+    }
   }
 
   cycleColorway(delta: number): void {

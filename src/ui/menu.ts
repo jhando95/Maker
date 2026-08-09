@@ -418,6 +418,9 @@ export interface MenuCallbacks {
   /** House rules: named rule presets for solo rounds. Empty in a session. */
   listHouseRules(): Array<{ id: string; name: string; blurb: string; picked: boolean }>;
   onPickHouseRules(id: string): void;
+  /** Kit palettes: which parts the hand draws from. See build/kits.ts. */
+  listKits(): Array<{ id: string; name: string; blurb: string; picked: boolean }>;
+  onPickKit(id: string): void;
   /** The modes the title screen should offer, in the order to show them. */
   listModes(): ReadonlyArray<{ id: string; name: string; blurb: string }>;
   onPlaySandbox(): void;
@@ -1346,6 +1349,25 @@ export class Menu {
           e.stopPropagation();
           const i2 = rules.findIndex((r) => r.picked);
           this.callbacks.onPickHouseRules(rules[(i2 + 1) % rules.length]!.id);
+          this.render();
+        });
+        this.card.appendChild(b);
+      }
+    }
+    // The kit palette, same shape as the house rules and for the same reason:
+    // a constraint is a prompt, and one cycling line is all it costs.
+    {
+      const kits = this.callbacks.listKits();
+      const picked = kits.find((k) => k.picked);
+      if (picked !== undefined) {
+        const b = document.createElement('button');
+        b.className = 'mk-btn mk-secondary';
+        b.dataset.kit = picked.id;
+        b.textContent = `Kit: ${picked.name} — ${picked.blurb}`;
+        b.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const i2 = kits.findIndex((k) => k.picked);
+          this.callbacks.onPickKit(kits[(i2 + 1) % kits.length]!.id);
           this.render();
         });
         this.card.appendChild(b);

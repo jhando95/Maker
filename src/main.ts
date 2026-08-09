@@ -57,6 +57,7 @@ import {
 import { encodeBlueprint, decodeBlueprint } from './build/shareCode.ts';
 import { beginLay, layStep, type LayState } from './build/pathLayer.ts';
 import { HOUSE_RULES, applyHouseRules, resetHouseRules } from './game/houseRules.ts';
+import { KITS } from './build/kits.ts';
 import { VoiceChat } from './voice/voiceChat.ts';
 import { transmitting } from './voice/voiceRules.ts';
 import { IdentityStore } from './app/identity.ts';
@@ -1671,6 +1672,9 @@ const buildStore = new BuildStore();
  */
 /** Which house-rules preset the next solo round starts under. */
 let houseRuleIndex = 0;
+/** Which kit palette the hand draws from. Lives up here with its fellow
+ *  menu-read state — the house-rules TDZ crash is why. */
+let kitIndex = 0;
 /**
  * Simulation ticks since boot, for the harness. A scenario on a starved CI
  * runner cannot equate wall time with sim time — the catch-up clamp sees to
@@ -1694,6 +1698,16 @@ const menuCallbacks: MenuCallbacks = {
   onPickHouseRules: (id: string) => {
     const i = HOUSE_RULES.findIndex((r) => r.id === id);
     if (i >= 0) houseRuleIndex = i;
+  },
+  listKits: () => KITS.map((k, i) => ({
+    id: k.id, name: k.name, blurb: k.blurb, picked: i === kitIndex,
+  })),
+  onPickKit: (id: string) => {
+    const i = KITS.findIndex((k) => k.id === id);
+    if (i >= 0) {
+      kitIndex = i;
+      build.setKit(KITS[i]!.kinds);
+    }
   },
   // Two buttons rather than one and a flag. The relay makes the first tab in a
   // room the host, but the *game* has to be told which it is, because hosting
