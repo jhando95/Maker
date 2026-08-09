@@ -195,10 +195,45 @@ export default async function (page) {
   await page.evaluate(() => window.__maker.settings.set('showMinimap', true));
 
   await page.screenshot({ path: process.env.HUD_SHOT ?? 'shots/hud.png' });
+
+  // ── A planted stand is a base the mode plays from ──────────────────────────
+  //
+  // The unit tests prove the scan and the mode agree; what only a browser can
+  // prove is the wiring on either side of them — that placing a stand through
+  // the real build path makes a pennant reach the scene (worldChanged is the
+  // only caller the pennants have), and that a round started from the shell
+  // hands the mode a build system with the stands actually in it.
+  const stands = await page.evaluate(async () => {
+    const m = window.__maker;
+    m.stopRound();
+    const blue = m.plantStand(5, 16.5, 5);
+    const red = m.plantStand(-9, 12, 4);
+    await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+    const pennants = m.scene.getObjectByName('pennants');
+    m.startRound('captureTheFlag');
+    const bases = m.getMode().markers()
+      .filter((mk) => mk.kind === 'stash')
+      .map((mk) => ({ x: mk.x, z: mk.z }));
+    m.stopRound();
+    return { blue, red, pennants: pennants === undefined ? -1 : pennants.count, bases };
+  });
+  assert(stands.blue && stands.red, 'both stands should land through the real stamp');
+  assert(stands.pennants === 2,
+    `both stands should fly a pennant in the scene, saw ${stands.pennants}`);
+  assert(
+    stands.bases.some((b) => Math.abs(b.x - 5) < 0.01 && Math.abs(b.z - 16.5) < 0.01),
+    `the left base should be the planted blue stand, saw ${JSON.stringify(stands.bases)}`,
+  );
+  assert(
+    stands.bases.some((b) => Math.abs(b.x - -9) < 0.01 && Math.abs(b.z - 12) < 0.01),
+    `the right base should be the planted red stand, saw ${JSON.stringify(stands.bases)}`,
+  );
+
   console.log(
     '[hud] verified: captioned banner cells, three objectives pinned with distances',
     'that survive going off screen, pins track the camera, hit and hurt cues fire,',
-    'and a map in the corner that draws the neighbourhood, redraws when somebody',
-    'builds, zooms, and can be switched off',
+    'a map in the corner that draws the neighbourhood, redraws when somebody',
+    'builds, zooms, and can be switched off — and a planted flag stand flies a',
+    'pennant and becomes the base the next round plays from',
   );
 }

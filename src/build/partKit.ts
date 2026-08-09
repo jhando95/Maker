@@ -68,12 +68,20 @@ function part(
 }
 
 /**
- * Eight kinds, one per hotbar slot.
+ * Eight building kinds, one per hotbar slot — and then the flag stand.
  *
  * Every length is a whole number of modules, so parts butt end to end and stack
  * without accumulating error. Plank width is exactly one module, which means
  * four planks laid side by side span a metre with no seam left over — the
  * difference between a wall that looks built and one that looks approximated.
+ *
+ * The flag stand is a part on purpose, not a separate marker system. Being a
+ * part buys it everything at once: placement and removal, the support rules
+ * (a flag on a tower falls with the tower), blueprints, share codes, and the
+ * network — a guest's stand travels as an ordinary `build` message. What makes
+ * it a *marker* is that Capture the Flag reads the placed stands at round
+ * start and plays from them. It has no number key — the spray can owns Digit9
+ * — so it is picked from the wheel, which is where parts are picked anyway.
  */
 export const PART_KINDS: readonly PartKind[] = [
   part(0, 'plank', 'Plank', 1.0, BOARD_THICKNESS, MODULE),
@@ -84,11 +92,26 @@ export const PART_KINDS: readonly PartKind[] = [
   part(5, 'panel', 'Panel', 1.0, BOARD_THICKNESS, 1.0, { chamfer: 0.006, material: 'ply' }),
   part(6, 'ramp', 'Ramp', 1.0, 0.5, MODULE, { isWedge: true, chamfer: 0.01 }),
   part(7, 'block', 'Block', MODULE, MODULE, MODULE, { chamfer: 0.015 }),
+  part(8, 'flag_pole', 'Flag Stand', 2.0, 0.08, 0.08, { chamfer: 0.012, material: 'metal' }),
 ];
 
 export const PART_BY_KEY: ReadonlyMap<string, PartKind> = new Map(
   PART_KINDS.map((k) => [k.key, k]),
 );
+
+/** The flag stand's kind id, derived so a reordered kit cannot silently break it. */
+export const FLAG_POLE_KIND: PartKindId = PART_BY_KEY.get('flag_pole')!.id;
+
+/**
+ * Which paint claims a stand for which side.
+ *
+ * These are not new constants — they are the colorways Capture the Flag has
+ * always drawn its bases in: `COLORWAYS[5]` is the painted blue of the left
+ * team's stand marker and `COLORWAYS[4]` the painted red of the right's. A
+ * stand in any other colorway is decoration and claims nothing.
+ */
+export const LEFT_STAND_COLORWAY = 5;
+export const RIGHT_STAND_COLORWAY = 4;
 
 export function getPartKind(id: PartKindId): PartKind {
   const kind = PART_KINDS[id];

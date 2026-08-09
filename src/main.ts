@@ -22,6 +22,7 @@ import {
   addTag, clampTag, inRange, orphaned, type TagRecord,
 } from './game/spray.ts';
 import { PartRenderer } from './render/partRenderer.ts';
+import { Pennants } from './render/pennants.ts';
 import { chamferedBox } from './render/geometry.ts';
 import { BuildSystem, type PlacementRecord } from './build/buildSystem.ts';
 import { CharacterController, type MoveIntent } from './player/controller.ts';
@@ -71,7 +72,9 @@ import { CaptureTheFlagMode } from './game/captureTheFlag.ts';
 import { WaterWarMode } from './game/waterWar.ts';
 import { TagMode, IT_SPAWN } from './game/tag.ts';
 import { LavaMode, LAVA_SPAWN, COURSE as LAVA_COURSE } from './game/lava.ts';
-import { BOARD_THICKNESS, getPartKind, type PartKindId } from './build/partKit.ts';
+import {
+  BOARD_THICKNESS, FLAG_POLE_KIND, getPartKind, type PartKindId,
+} from './build/partKit.ts';
 import { LEFT_SPAWN, RIGHT_SPAWN, WATER_SOURCES } from './world/neighborhood.ts';
 import { IDLE_INPUT, sameForEveryone } from './game/gameMode.ts';
 import type {
@@ -370,6 +373,11 @@ scene.add(parts.group);
 const build = new BuildSystem(world, parts);
 scene.add(build.ghostGroup);
 
+// The cloth on every placed flag stand. Redrawn from the placed parts in
+// worldChanged(), so a guest's stand flies its pennant the tick it arrives.
+const pennants = new Pennants();
+scene.add(pennants.mesh);
+
 // Every mark anybody has sprayed in this yard. One instanced mesh per shape,
 // none of them drawn until somebody has used that shape.
 const decals = new TagDecals();
@@ -461,6 +469,7 @@ function worldChanged(): void {
   // and collapse already goes through, which is the whole reason the map can
   // afford to draw a fort at all.
   minimap.invalidateBuilt();
+  pennants.refresh(build.serializeWithIds());
 }
 
 /**
@@ -3610,6 +3619,21 @@ window.__maker = {
     }
     const last = records[records.length - 1]!;
     return { placed: ids.length, top: { x: last.x, y: BOARD_THICKNESS, z: last.z } };
+  },
+  /**
+   * Plant a flag stand upright on the lawn, through the same validated stamp
+   * a player's placement takes. Blue paint claims the left base and red the
+   * right — the mapping Capture the Flag reads at its next start.
+   */
+  plantStand: (x: number, z: number, colorway: number): boolean => {
+    const q = Math.SQRT1_2;
+    const ids = build.stamp([{
+      kind: FLAG_POLE_KIND, colorway,
+      x, y: getPartKind(FLAG_POLE_KIND).length / 2, z,
+      qx: 0, qy: 0, qz: q, qw: q,
+    }]);
+    if (ids.length > 0) worldChanged();
+    return ids.length > 0;
   },
   placeAt: (yaw: number, pitch: number): boolean => {
     camera.yaw = yaw;

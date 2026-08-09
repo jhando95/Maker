@@ -38,6 +38,7 @@ import { Lumber, STARTING_LUMBER, PHASE_DELIVERY, LUMBER_CAP } from '../build/lu
 import { LEFT_FLAG, RIGHT_FLAG, LEFT_SPAWN, RIGHT_SPAWN } from '../world/neighborhood.ts';
 import { FIRST_BOT_ID, LOCAL_ACTOR_ID, opposing, type Actor, type Team } from './actor.ts';
 import { Fighters, isFighter, type Fighter } from './fighters.ts';
+import { flagStands } from './flagStands.ts';
 
 /** Both sides, for rules that are the same whichever one you are on. */
 const TEAMS: readonly Team[] = ['left', 'right'];
@@ -92,6 +93,14 @@ export type FlagStatus = 'home' | 'carried' | 'dropped';
 export interface FlagState {
   readonly team: Team;
   readonly homeX: number;
+  /**
+   * The ground home sits on. Zero for the map's own bases; a planted stand
+   * carries its deck height, so a flag on a tower draws on the tower rather
+   * than buried in it. The touch and capture rules stay two-dimensional —
+   * they always were, and a flag you can only reach by climbing is exactly
+   * what somebody who built the tower was buying.
+   */
+  readonly homeY: number;
   readonly homeZ: number;
   x: number;
   y: number;
@@ -103,12 +112,13 @@ export interface FlagState {
   returnTimer: number;
 }
 
-function makeFlag(team: Team, home: { x: number; z: number }): FlagState {
+function makeFlag(team: Team, home: { x: number; z: number; y?: number }): FlagState {
   return {
     team,
     homeX: home.x,
+    homeY: home.y ?? 0,
     homeZ: home.z,
-    x: home.x, y: 0, z: home.z,
+    x: home.x, y: home.y ?? 0, z: home.z,
     status: 'home',
     carrier: null,
     returnTimer: 0,
@@ -193,6 +203,12 @@ export class CaptureTheFlagMode implements GameMode {
     this.respawns.clear();
     this.guards.clear();
     this.lumber.set(STARTING_LUMBER);
+    // Play from the stands somebody planted, or from the map's own bases.
+    // Read once, here: a round's bases do not move under it, and a stand
+    // planted mid-round is next round's base rather than a mid-round rug-pull.
+    const stands = flagStands(ctx.build);
+    this.flags.left = makeFlag('left', stands.left ?? LEFT_FLAG);
+    this.flags.right = makeFlag('right', stands.right ?? RIGHT_FLAG);
     this.resetFlag('left');
     this.resetFlag('right');
     this.setMessage('Fortify your yard. Their flag is past the house.', 7);
@@ -283,7 +299,7 @@ export class CaptureTheFlagMode implements GameMode {
   private resetFlag(team: Team): void {
     const flag = this.flags[team];
     flag.x = flag.homeX;
-    flag.y = 0;
+    flag.y = flag.homeY;
     flag.z = flag.homeZ;
     flag.status = 'home';
     flag.carrier = null;
@@ -838,7 +854,7 @@ export class CaptureTheFlagMode implements GameMode {
       // The stand stays where home is, always, so you can find your own base.
       this.markerList.push({
         kind: 'stash',
-        x: flag.homeX, y: 0, z: flag.homeZ,
+        x: flag.homeX, y: flag.homeY, z: flag.homeZ,
         color: team === PLAYER_TEAM ? 0x4f8fd8 : 0xd8564f,
         active: flag.status === 'home',
       });

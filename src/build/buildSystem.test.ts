@@ -20,9 +20,14 @@ function aim(build: BuildSystem, from: [number, number, number], dir: [number, n
 }
 
 describe('part kit', () => {
-  it('has one kind per hotbar slot with unique keys', () => {
-    expect(PART_KINDS.length).toBe(8);
-    expect(new Set(PART_KINDS.map((k) => k.key)).size).toBe(8);
+  it('has eight hotbar kinds, the flag stand, and unique keys throughout', () => {
+    // The first eight sit on Digit1..Digit8. The flag stand deliberately has
+    // no number key — Digit9 belongs to the spray can — so it lives at the
+    // end, picked from the wheel. Anything appended after it must keep the
+    // hotbar eight untouched, or every player's muscle memory moves.
+    expect(PART_KINDS.length).toBe(9);
+    expect(new Set(PART_KINDS.map((k) => k.key)).size).toBe(9);
+    expect(PART_KINDS[8]!.key).toBe('flag_pole');
     PART_KINDS.forEach((k, i) => expect(k.id).toBe(i));
   });
 

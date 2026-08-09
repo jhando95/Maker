@@ -95,6 +95,15 @@ export default async function (page) {
   assert(open.wedges > 1, `the wheel needs wedges, saw ${open.wedges}`);
   assert(open.selection === null, 'nothing should be selected before the mouse moves');
 
+  // The flag stand has no number key — the spray can owns Digit9 — so the
+  // wheel is the only way a player ever picks one up. Absent here, the whole
+  // marker feature exists and cannot be reached.
+  const names = await page.evaluate(() =>
+    [...document.querySelectorAll('.mk-wedge .name')].map((el) => el.textContent));
+  assert(names.length === 9, `nine kinds belong on the wheel, saw ${names.length}`);
+  assert(names.includes('Flag Stand'),
+    `the wheel should offer the flag stand, saw ${names.join(', ')}`);
+
   // ── Aiming ─────────────────────────────────────────────────────────────────
   // Straight down is the wedge opposite the top one. Injected rather than moved
   // for real: the game ignores the mouse unless the pointer is locked, and a

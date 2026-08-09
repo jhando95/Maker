@@ -1403,3 +1403,38 @@ reset had landed in `adoptRound` as three stacked calls from a mangled edit,
 harmless only because reset is idempotent. The session-scoped rule replaced
 all three with one deliberate absence and a browser assertion that notices if
 anybody puts one back.
+
+## Flag stands: markers as parts
+
+Fourteen plants across four layers, and one of them earned its keep by
+catching the test rather than the code. The mid-round-stability test — a
+stand planted under a running round must not move the base — originally
+planted its stand during the setup phase and ticked four times. The planted
+bug (a rescan smuggled into the flag update loop) passed it clean, because
+that loop only runs during the capture phase and the test never got there.
+The test now crosses into capture before planting, and the same plant fails
+it. A test that stays where the code under test never runs is a test of
+nothing, which is the oldest species on this roll wearing a phase system.
+
+The scan's plants were the usual four: paint ignored (everything claims
+left), first-placed winning instead of last, the kind filter dropped (a
+plank painted blue became a base), and the centre standing in for the foot —
+which on a 2m pole puts the flag a metre in the air on flat lawn and buried
+in the deck on a tower. The mode's: start ignoring the yard entirely, and
+the height dropped on the floor, caught by the tower test pinning marker
+altitude too.
+
+The pennants': the up-flip removed (a pole planted upside-down flew its flag
+in the dirt), the kind filter dropped (every plank flew a flag), the count
+left sticky (yesterday's flags survived an empty yard), and the colour made
+constant. And the browser's three, each a wiring claim no unit test reaches:
+the wheel sliced to eight (the stand existed and could never be picked), the
+`worldChanged` funnel dropping the pennant refresh (both stands landed, zero
+cloth in the scene), and the debug hook discarding its colorway argument —
+which planted two stands, flew two pennants, and left both bases on the
+map's own spots, the exact silent three-quarters-working state this feature
+would otherwise ship in.
+
+The "both stands land" assertion needed no plant: its first honest run
+failed on a real refusal — (6, 10) is inside the garden's tyre stack — and
+the spots were probed against the real map before being written down.

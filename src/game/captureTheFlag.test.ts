@@ -15,6 +15,9 @@ import { Rng } from '../core/rng.ts';
 import { ActorRoster, LOCAL_ACTOR_ID } from './actor.ts';
 import { DT } from '../physics/constants.ts';
 import { LEFT_FLAG, RIGHT_FLAG, LEFT_SPAWN } from '../world/neighborhood.ts';
+import {
+  FLAG_POLE_KIND, LEFT_STAND_COLORWAY, RIGHT_STAND_COLORWAY,
+} from '../build/partKit.ts';
 
 const noInput = sameForEveryone();
 
@@ -514,6 +517,71 @@ describe('CaptureTheFlagMode', () => {
       expect(mode.hud().ammo).toBeNull();
       run(mode, ctx, FIRST_SETUP_TIME + 0.2);
       expect(mode.hud().ammo).not.toBeNull();
+    });
+  });
+
+  describe('planted flag stands', () => {
+    /** A stand upright on the lawn: local +X rotated to world +Y. */
+    const QZ = Math.SQRT1_2;
+    const stand_ = (x: number, z: number, colorway: number, y = 1.0) => ({
+      kind: FLAG_POLE_KIND, colorway, x, y, z, qx: 0, qy: 0, qz: QZ, qw: QZ,
+    });
+
+    it('plays from the stands somebody planted', () => {
+      // This is the whole feature: markers placed in Shed Day meeting a mode.
+      // The parts go down through the ordinary build path and the mode finds
+      // them at start — no other wiring exists to find them with.
+      ctx.build.applyPlace(stand_(5, 8, LEFT_STAND_COLORWAY));
+      ctx.build.applyPlace(stand_(-6, -9, RIGHT_STAND_COLORWAY));
+      mode.start(ctx);
+
+      expect(mode.flags.left.homeX).toBeCloseTo(5, 5);
+      expect(mode.flags.left.homeZ).toBeCloseTo(8, 5);
+      expect(mode.flags.right.homeX).toBeCloseTo(-6, 5);
+      expect(mode.flags.right.homeZ).toBeCloseTo(-9, 5);
+      // And the flags start at their homes, wherever those turned out to be.
+      expect(mode.flags.left.x).toBeCloseTo(5, 5);
+    });
+
+    it('falls back to the map for whichever side planted nothing', () => {
+      ctx.build.applyPlace(stand_(5, 8, LEFT_STAND_COLORWAY));
+      mode.start(ctx);
+      expect(mode.flags.left.homeX).toBeCloseTo(5, 5);
+      expect(mode.flags.right.homeX).toBeCloseTo(RIGHT_FLAG.x, 6);
+      expect(mode.flags.right.homeZ).toBeCloseTo(RIGHT_FLAG.z, 6);
+    });
+
+    it('lifts a flag on a tower stand to the tower, marker and all', () => {
+      // Centre 3m up a 2m pole: the deck under it is at 2m, and both the
+      // flag's home and the base marker have to say so, or the compass draws
+      // the flag inside the structure holding it up.
+      ctx.build.applyPlace(stand_(5, 8, LEFT_STAND_COLORWAY, 3.0));
+      mode.start(ctx);
+      expect(mode.flags.left.homeY).toBeCloseTo(2.0, 5);
+      expect(mode.flags.left.y).toBeCloseTo(2.0, 5);
+      const base = mode.markers().find((m) => m.kind === 'stash');
+      expect(base!.y).toBeCloseTo(2.0, 5);
+    });
+
+    it('reads the yard once, at start — not under a running round', () => {
+      // A stand planted mid-round is next round's base. Moving a base under
+      // a round would also mean a carried flag scoring at a spot that did
+      // not exist when it was picked up.
+      //
+      // Planted *during the capture phase*, deliberately: the flag update
+      // loop only runs then, so a rescan smuggled into it is invisible to a
+      // test that stays in setup — which is where the first version of this
+      // test stayed, and the plant it was written against passed it.
+      mode.start(ctx);
+      const before = mode.flags.left.homeX;
+      run(mode, ctx, FIRST_SETUP_TIME + 0.2);
+      expect(mode.phase).toBe('capture');
+      ctx.build.applyPlace(stand_(5, 8, LEFT_STAND_COLORWAY));
+      run(mode, ctx, DT * 6);
+      expect(mode.flags.left.homeX).toBeCloseTo(before, 6);
+
+      mode.start(ctx);
+      expect(mode.flags.left.homeX).toBeCloseTo(5, 5);
     });
   });
 
