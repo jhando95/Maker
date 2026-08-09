@@ -615,6 +615,28 @@ describe('WaterWarMode', () => {
       expect(events.some((e) => e.type === 'botSoaked')).toBe(true);
     });
 
+    it('knocks the kid it finishes off their feet, away from the water', () => {
+      const bot = mode.bots[0]!;
+      stand(ctx, 0, 0);
+      ctx.camera.yaw = 0;
+      ctx.camera.pitch = 0;
+
+      let soaked = false;
+      for (let i = 0; i < 60 * 6 && !soaked; i++) {
+        bot.controller.teleport(0, 0.5, -3);
+        mode.fixedUpdate(DT, ctx, firing);
+        soaked = !bot.alive;
+      }
+      expect(soaked).toBe(true);
+      // The water came from +Z of the kid, so the shove runs further -Z and
+      // up. The teleport in the loop zeroes velocity every tick, so any
+      // velocity on the body now was put there by the soaking itself.
+      expect(bot.controller.vz).toBeLessThan(-1);
+      expect(bot.controller.vy).toBeGreaterThan(0.5);
+      // And away means away: barely any of it sideways.
+      expect(Math.abs(bot.controller.vx)).toBeLessThan(Math.abs(bot.controller.vz) * 0.2);
+    });
+
     it('publishes how wet each kid is, which is how you choose who to shoot', () => {
       // The renderer tints shirts by this. Without it the meter is invisible and
       // picking the kid you have nearly finished is a guess — which would make
@@ -689,6 +711,25 @@ describe('WaterWarMode', () => {
       expect(mode.bots.filter((b) => b.alive).length).toBe(before - 1);
       run(mode, ctx, KID_RESPAWN + 1);
       expect(mode.bots.filter((b) => b.alive).length).toBe(before);
+    });
+
+    it('shoves you off your feet away from the balloon that finished you', () => {
+      // Thrown from your +Z side, so the shove must run -Z and up. The mode
+      // does not step the player's controller — the shell does — so whatever
+      // velocity is on the body after the soak was put there by the soak.
+      let soakedAt = -1;
+      for (let i = 0; i < 60 * 8 && soakedAt < 0; i++) {
+        if (i % 20 === 0) {
+          ctx.projectiles.spawn(
+            ctx.player.x, ctx.player.y + 1.2, ctx.player.z + 2.5, 0, 0, -1, 14, 99,
+          );
+        }
+        mode.fixedUpdate(DT, ctx, noInput);
+        if (events.some((e) => e.type === 'playerSoaked')) soakedAt = i;
+      }
+      expect(soakedAt).toBeGreaterThan(-1);
+      expect(ctx.player.vz).toBeLessThan(-1);
+      expect(ctx.player.vy).toBeGreaterThan(0.5);
     });
 
     it('being soaked takes you out and brings you back with half a tank', () => {

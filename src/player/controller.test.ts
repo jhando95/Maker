@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { CharacterController, type MoveIntent } from './controller.ts';
 import { CollisionWorld } from '../physics/collisionWorld.ts';
 import {
-  DT, JUMP_HEIGHT, MOTION, STEP_HEIGHT, WALK_SPEED, SPRINT_SPEED,
+  DT, JUMP_HEIGHT, KNOCKBACK, MOTION, STEP_HEIGHT, WALK_SPEED, SPRINT_SPEED,
   MANTLE_MAX_HEIGHT, MANTLE_DURATION,
 } from '../physics/constants.ts';
 import { MODULE, STAIR_RUN } from '../build/partKit.ts';
@@ -810,5 +810,59 @@ describe('the motion knobs', () => {
       expect(higher).toBeGreaterThan(normal * 1.2);
       expect(higher).toBeCloseTo(normal * 1.4, 0);
     });
+  });
+});
+
+describe('CharacterController — launch', () => {
+  it('shoves a standing body up and along, and the slide lands elsewhere', () => {
+    const w = new CollisionWorld();
+    const c = new CharacterController(w, 0, 2, 0);
+    run(c, 2);
+    expect(c.onGround).toBe(true);
+
+    // The rule is max(vy, 0) + lift — asserted as the rule, because a body
+    // standing on the ground carries a few ten-thousandths of residual vy
+    // from the snap that keeps it there, and demanding a bare 2.4 fails on
+    // exactly that honesty.
+    const rest = Math.max(c.vy, 0);
+    c.launch(0, -1, KNOCKBACK.speed, KNOCKBACK.lift);
+    // Airborne immediately — the lift is what keeps the shove from dying
+    // under ground steering, so it must actually leave the ground.
+    expect(c.onGround).toBe(false);
+    expect(c.vy).toBeCloseTo(rest + KNOCKBACK.lift, 5);
+    expect(c.vz).toBeCloseTo(-KNOCKBACK.speed, 5);
+
+    // Idle intent all the way down: the victim is not steering. The body must
+    // come down visibly elsewhere, which is the whole point of the shove —
+    // KNOCKBACK's own comment quotes 1.09m for the shipped values, and this
+    // holds the feel above a metre without pinning the last centimetre.
+    run(c, 1.5);
+    expect(c.onGround).toBe(true);
+    expect(c.z).toBeLessThan(-1.0);
+    expect(c.z).toBeGreaterThan(-2.0);
+  });
+
+  it('still pops a falling body, and normalizes whatever direction it is given', () => {
+    const w = new CollisionWorld();
+    const c = new CharacterController(w, 0, 6, 0);
+    run(c, 0.4);
+    expect(c.vy).toBeLessThan(-1);
+
+    // A long unnormalized direction must not become a bigger shove.
+    c.launch(30, 40, 5, 2);
+    expect(Math.hypot(c.vx, c.vz)).toBeCloseTo(5, 5);
+    // max(vy, 0) + lift: the fall does not swallow the pop.
+    expect(c.vy).toBeCloseTo(2, 5);
+  });
+
+  it('does not produce NaN from a zero direction', () => {
+    const w = new CollisionWorld();
+    const c = new CharacterController(w, 0, 2, 0);
+    run(c, 2);
+    const rest = Math.max(c.vy, 0);
+    c.launch(0, 0, 5, 2);
+    expect(Number.isFinite(c.vx)).toBe(true);
+    expect(Number.isFinite(c.vz)).toBe(true);
+    expect(c.vy).toBeCloseTo(rest + 2, 5);
   });
 });

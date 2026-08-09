@@ -1469,6 +1469,10 @@ it is the only one here that a reviewer should weigh rather than accept.
   collapses, building, paint, water.
 - Repeat-place and undo are host-only. No lag compensation on throws, and no
   reconnection.
+- **A soaked guest is not shoved.** The knockback a soaking delivers is applied
+  on the machine that simulates the body — bots and the host's own kid. A
+  guest learns they are out from a snapshot flag with no direction in it, so
+  their shove needs a launch event on the wire that nobody has added yet.
 - Four unit tests assert wall-clock performance budgets and can fail on a loaded
   runner. Pre-existing.
 

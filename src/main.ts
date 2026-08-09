@@ -10,7 +10,7 @@ import * as THREE from 'three';
 import { GameLoop } from './core/loop.ts';
 import { Input } from './core/input.ts';
 import { CollisionWorld } from './physics/collisionWorld.ts';
-import { TICK_RATE, DT, CAP_HEIGHT, MOTION } from './physics/constants.ts';
+import { TICK_RATE, DT, CAP_HEIGHT, MOTION, KNOCKBACK } from './physics/constants.ts';
 import { createScene } from './world/scene.ts';
 import {
   AFTERNOON, DUSK, GOLDEN, dayTimeForRound, lampGlowAt, type DayTime,
@@ -265,6 +265,24 @@ tuning.register({
   home: 'src/physics/constants.ts',
 });
 
+tuning.register({
+  key: 'combat.knockback',
+  label: 'Soak knockback',
+  value: KNOCKBACK.speed,
+  min: 0, max: 12, step: 0.5,
+  help: 'How hard a soaking shoves its victim, m/s. 0 folds them in place.',
+  home: 'src/physics/constants.ts',
+});
+
+tuning.register({
+  key: 'combat.knockLift',
+  label: 'Soak lift',
+  value: KNOCKBACK.lift,
+  min: 0, max: 6, step: 0.2,
+  help: 'The upward pop that carries the shove. Grounded shoves die under their own feet.',
+  home: 'src/physics/constants.ts',
+});
+
 const enclosureShade = tuning.register({
   key: 'light.enclosure',
   label: 'Enclosure shading',
@@ -302,6 +320,8 @@ tuning.onChange((key, value) => {
   if (key === 'motion.gravity') MOTION.gravityScale = value;
   if (key === 'motion.fall') MOTION.fallScale = value;
   if (key === 'motion.jump') MOTION.jumpScale = value;
+  if (key === 'combat.knockback') KNOCKBACK.speed = value;
+  if (key === 'combat.knockLift') KNOCKBACK.lift = value;
 });
 
 const mapMarkers: MapMarker[] = [];

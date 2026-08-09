@@ -192,6 +192,28 @@ export class CharacterController {
   }
 
   /**
+   * A shove from outside: a soaking landed, and the body it landed on moves.
+   *
+   * Horizontal direction with an upward pop, and the pop is load-bearing
+   * rather than decorative: on the ground, steering blends velocity back
+   * toward intent within a few ticks, so a purely horizontal shove dies under
+   * the victim's own feet. The lift puts them airborne, where the shove
+   * carries for the whole hop and the landing arrives visibly elsewhere.
+   *
+   * `max(vy, 0)` so a falling victim still pops rather than having the lift
+   * swallowed by their downward speed.
+   */
+  launch(dirX: number, dirZ: number, speed: number, lift: number): void {
+    const len = Math.hypot(dirX, dirZ);
+    if (len > 1e-6) {
+      this.vx += (dirX / len) * speed;
+      this.vz += (dirZ / len) * speed;
+    }
+    this.vy = Math.max(this.vy, 0) + lift;
+    this.onGround = false;
+  }
+
+  /**
    * Move the body without stopping it.
    *
    * The other half of `teleport`, and the distinction is the whole of it.

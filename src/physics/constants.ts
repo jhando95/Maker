@@ -131,6 +131,28 @@ export const MOTION = {
   jumpScale: 1,
 };
 /**
+ * The shove a soaking delivers, in the same mutable-knob shape as MOTION.
+ *
+ * Water in this game is a weight, not a tap on the shoulder: the kid a
+ * soaking lands on is knocked off their feet *away from the water*, which is
+ * what sells the hit — the knockdown rotation was already there, but a body
+ * that folds up exactly where it stood reads as a power cut, not a hit.
+ *
+ * Speed is horizontal m/s, lift is the upward pop that keeps the shove alive
+ * (see `CharacterController.launch` for why grounded shoves die). Small on
+ * purpose, and *measured* rather than eyeballed: at these values an unsteered
+ * body lands 1.09m from where it was hit — enough to knock somebody off a
+ * plank they were defending, never across the yard. (4.5/2.4 measured 0.69m,
+ * which read as a stumble; 7/3 measured 1.28m and started to feel like a
+ * cannon.) The developer panel gets both as knobs; the defaults are the
+ * shipped feel and the only values CI sees.
+ */
+export const KNOCKBACK = {
+  speed: 6.5,
+  lift: 2.8,
+};
+
+/**
  * Apex height of a standing jump.
  *
  * v = sqrt(2*g*h). At 1.15m this clears a standard platform height with margin,

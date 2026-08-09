@@ -43,7 +43,7 @@ import { SPLASH_RADIUS, type BalloonTarget } from './projectiles.ts';
 import type {
   ActorInput, GameMode, Loadout, Marker, ModeContext, ModeHud, ModeInput, ModeSelfHud, ModeSummary,
 } from './gameMode.ts';
-import { CAP_HEIGHT, CAP_RADIUS } from '../physics/constants.ts';
+import { CAP_HEIGHT, CAP_RADIUS, KNOCKBACK } from '../physics/constants.ts';
 import { NavField } from './navField.ts';
 import { Lumber, STARTING_LUMBER, PHASE_DELIVERY, LUMBER_CAP } from '../build/lumber.ts';
 import { WATER_SOURCES, FORT_YARD } from '../world/neighborhood.ts';
@@ -638,7 +638,7 @@ export class WaterWarMode implements GameMode {
 
       this.streamHitSomething = true;
       const landed = soak(w, streamPower(weapon, along) * dt);
-      if (landed > 0 && isSoaked(w)) this.soakKid(ctx, bot);
+      if (landed > 0 && isSoaked(w)) this.soakKid(ctx, bot, { x: ox, y: oy, z: oz });
     }
 
     // Splashes on a fixed cadence rather than a random chance per tick. Two
@@ -674,11 +674,21 @@ export class WaterWarMode implements GameMode {
     ctx.emit({ type: 'throw', x: ox, y: oy, z: oz });
   }
 
-  private soakKid(ctx: ModeContext, bot: Bot): void {
+  private soakKid(
+    ctx: ModeContext, bot: Bot,
+    /** Where the water came from; the shove goes the other way. */
+    from?: { x: number; y: number; z: number },
+  ): void {
     // One call, however wet they got: soak() is the meter, this is the moment
     // it fills. Bot.soak() counts hits, so drive it until it gives way.
     let done = false;
     for (let i = 0; i < 8 && !done; i++) done = bot.soak();
+    // Knocked off their feet away from the hit. The bot is simulated on this
+    // machine, so the shove replicates to everybody else through the same
+    // snapshots their position already rides.
+    if (from !== undefined) {
+      bot.controller.launch(bot.x - from.x, bot.z - from.z, KNOCKBACK.speed, KNOCKBACK.lift);
+    }
     ctx.emit({ type: 'botSoaked', x: bot.x, y: bot.y + 1, z: bot.z });
   }
 
@@ -693,6 +703,19 @@ export class WaterWarMode implements GameMode {
     // firing it for a guest being soaked in another garden would flash the
     // host's screen for something that did not happen to them.
     if (self.id === LOCAL_ACTOR_ID) {
+      // The shove, same as the bots get — applied here because this is the
+      // machine that simulates this body. A guest's fighter is *not* shoved:
+      // their body lives on their machine, a host-side velocity kick would be
+      // overwritten by their next update, and guests do not run modes — they
+      // learn they are out from a snapshot flag with no direction in it.
+      // Giving them the shove needs a launch event on the wire; until then a
+      // soaked guest folds where they stand, exactly as everybody did before
+      // this existed. Written down in docs/notes.md with the other host/guest
+      // asymmetries.
+      const body = ctx.player;
+      if (from !== undefined) {
+        body.launch(body.x - from.x, body.z - from.z, KNOCKBACK.speed, KNOCKBACK.lift);
+      }
       ctx.emit({ type: 'playerSoaked', x: from?.x, y: from?.y, z: from?.z });
       this.setMessage('Drenched! Back in a moment.', 2.5);
     }
@@ -764,7 +787,7 @@ export class WaterWarMode implements GameMode {
     const w = bot === undefined ? undefined : this.botWet.get(bot.id);
     if (bot === undefined || w === undefined) return;
     soak(w, amount);
-    if (isSoaked(w)) this.soakKid(ctx, bot);
+    if (isSoaked(w)) this.soakKid(ctx, bot, from);
   }
 
   // ── Published state ────────────────────────────────────────────────────────
