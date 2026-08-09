@@ -6,9 +6,10 @@ import { CharacterController } from '../player/controller.ts';
 import { CameraRig } from '../player/cameraRig.ts';
 import { ProjectileSystem } from './projectiles.ts';
 import {
-  TagMode, COUNTDOWN_TIME, ROUND_TIME, TAG_RADIUS, TAG_COOLDOWN,
+  TagMode, BASE_TIME, COUNTDOWN_TIME, ROUND_TIME, TAG_RADIUS, TAG_COOLDOWN,
   THAW_RADIUS, THAW_TIME, KID_COUNT, IT_SPAWN,
 } from './tag.ts';
+import { FLAG_POLE_KIND } from '../build/partKit.ts';
 import { sameForEveryone } from './gameMode.ts';
 import type { GameEvent, GameMode, ModeContext } from './gameMode.ts';
 import { Rng } from '../core/rng.ts';
@@ -463,6 +464,103 @@ describe('TagMode', () => {
         }
       }
       expect(closest, 'somebody should have come for them').toBeLessThan(THAW_RADIUS);
+    });
+  });
+
+  describe('home base', () => {
+    /** A stand upright at (x, z), its foot at `foot` height. */
+    const QZ = Math.SQRT1_2;
+    const plant = (x: number, z: number, colorway = 0, foot = 0) => {
+      ctx.build.applyPlace({
+        kind: FLAG_POLE_KIND, colorway, x, y: foot + 1.0, z,
+        qx: 0, qy: 0, qz: QZ, qw: QZ,
+      });
+    };
+
+    /** Park It in touching range of somebody standing at (x, z). */
+    const itBeside = (x: number, z: number) => put(ctx.actors.local, x + 0.8, z);
+
+    it('shelters a runner It is standing right next to', () => {
+      // Colorway 0 — raw pine — deliberately: in the team modes the paint is
+      // the claim, and in this one every stand is base whatever it wears.
+      plant(20, 20, 0);
+      mode.start(ctx);
+      const friend = addFriend(ctx, 900, 20, 20);
+      toChase(mode, ctx);
+      itBeside(20, 20);
+      run(mode, ctx, DT * 4);
+      expect(mode.isFrozen(friend.id)).toBe(false);
+    });
+
+    it('runs out under a squatter, and the tag lands', () => {
+      // The meter is the whole difference between a breather and a bunker —
+      // and this is also the control for the test above: same spots, same
+      // pair, and the only thing that changed is time.
+      plant(20, 20);
+      mode.start(ctx);
+      const friend = addFriend(ctx, 900, 20, 20);
+      toChase(mode, ctx);
+      itBeside(20, 20);
+      run(mode, ctx, BASE_TIME + 0.5);
+      expect(mode.isFrozen(friend.id)).toBe(true);
+    });
+
+    it('recovers while the runner is off base', () => {
+      plant(20, 20);
+      mode.start(ctx);
+      const friend = addFriend(ctx, 900, 20, 20);
+      toChase(mode, ctx);
+      // Spend the whole meter with It nowhere near, then leave, recover, and
+      // come back to a base that protects again.
+      put(ctx.actors.local, -60, 60);
+      run(mode, ctx, BASE_TIME + 0.5);
+      put(friend, 30, 30);
+      run(mode, ctx, BASE_TIME + 0.5);
+      put(friend, 20, 20);
+      itBeside(20, 20);
+      run(mode, ctx, DT * 4);
+      expect(mode.isFrozen(friend.id)).toBe(false);
+    });
+
+    it('does not shelter the kid standing under a rooftop base', () => {
+      // Foot three metres up — a porch-roof height, clear of the tag's own
+      // 1.7m band. The base belongs to whoever climbed the tower; the kid at
+      // ground level is near the pole and not on base, by the same height
+      // rule a tag itself uses. (A base on a knee-high platform *does* cover
+      // the ground beside it, exactly as a tag reaches that far up.)
+      plant(20, 20, 0, 3.0);
+      mode.start(ctx);
+      const friend = addFriend(ctx, 900, 20, 20);
+      toChase(mode, ctx);
+      itBeside(20, 20);
+      run(mode, ctx, DT * 4);
+      expect(mode.isFrozen(friend.id)).toBe(true);
+    });
+
+    it('puts every base on the compass', () => {
+      plant(20, 20);
+      plant(-15, 24);
+      mode.start(ctx);
+      const bases = mode.markers().filter((m) => m.kind === 'bucket');
+      expect(bases.length).toBe(2);
+      expect(bases.some((m) => Math.abs(m.x - 20) < 0.01 && Math.abs(m.z - 20) < 0.01)).toBe(true);
+      expect(bases.some((m) => Math.abs(m.x - -15) < 0.01 && Math.abs(m.z - 24) < 0.01)).toBe(true);
+    });
+
+    it('shows the shelter on the refill meter, on base and not off it', () => {
+      plant(20, 20);
+      mode.start(ctx);
+      const friend = addFriend(ctx, 900, 20, 20);
+      toChase(mode, ctx);
+      put(ctx.actors.local, -60, 60);
+      run(mode, ctx, 1.0);
+      const on = mode.selfHud(friend.id).refill;
+      expect(on).not.toBeNull();
+      expect(on!).toBeLessThan(1);
+      expect(on!).toBeGreaterThan(0.5);
+      put(friend, 30, 30);
+      run(mode, ctx, DT * 2);
+      expect(mode.selfHud(friend.id).refill).toBeNull();
     });
   });
 

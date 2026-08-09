@@ -214,8 +214,14 @@ export default async function (page) {
     const bases = m.getMode().markers()
       .filter((mk) => mk.kind === 'stash')
       .map((mk) => ({ x: mk.x, z: mk.z }));
+    // And the same two stands, in Tag, are home base — every stand counts
+    // there, whatever it is painted, and each is published as a ringed marker.
+    m.startRound('tag');
+    const tagBases = m.getMode().markers()
+      .filter((mk) => mk.kind === 'bucket')
+      .map((mk) => ({ x: mk.x, z: mk.z }));
     m.stopRound();
-    return { blue, red, pennants: pennants === undefined ? -1 : pennants.count, bases };
+    return { blue, red, pennants: pennants === undefined ? -1 : pennants.count, bases, tagBases };
   });
   assert(stands.blue && stands.red, 'both stands should land through the real stamp');
   assert(stands.pennants === 2,
@@ -227,6 +233,10 @@ export default async function (page) {
   assert(
     stands.bases.some((b) => Math.abs(b.x - -9) < 0.01 && Math.abs(b.z - 12) < 0.01),
     `the right base should be the planted red stand, saw ${JSON.stringify(stands.bases)}`,
+  );
+  assert(
+    stands.tagBases.length === 2,
+    `both stands should be home base in Tag, saw ${JSON.stringify(stands.tagBases)}`,
   );
 
   console.log(

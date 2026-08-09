@@ -51,6 +51,7 @@ import { NavField } from './navField.ts';
 import { CAP_HEIGHT } from '../physics/constants.ts';
 import { LEFT_SPAWN } from '../world/neighborhood.ts';
 import { BULB } from '../world/culDeSac.ts';
+import { allStands, type StandHome } from './flagStands.ts';
 
 export type Phase = 'countdown' | 'chase' | 'over';
 
@@ -91,6 +92,23 @@ export const THAW_TIME = 1.4;
  */
 export const TAG_COOLDOWN = 1.2;
 
+/**
+ * Home base, if somebody planted one.
+ *
+ * Every flag stand in the yard is base in this mode, whatever it is painted —
+ * Tag has no sides for the paint to claim. Stand near one and It cannot
+ * freeze you: the playground rule, with the playground's own fix for camping
+ * built in as a meter. Shelter runs out while you stand on base and comes
+ * back while you are off it, so a base is a breather rather than a bunker —
+ * and since the stands go down in Shed Day (there is no building in Tag),
+ * where the safe spots are is part of designing the yard.
+ */
+export const BASE_RADIUS = 2.2;
+/** Seconds of shelter one visit can spend before the base stops helping. */
+export const BASE_TIME = 4;
+/** The ring's colour: the ghost-valid green, the game's own "safe here". */
+const BASE_COLOR = 0x8fe3a0;
+
 /** How many neighbourhood kids join in. */
 export const KID_COUNT = 5;
 /** Seconds between nav-field rebuilds. */
@@ -121,6 +139,8 @@ interface Runner {
   thaw: number;
   /** Seconds spent not frozen, which is the score. */
   survived: number;
+  /** Seconds of home-base protection left. Spends on base, recovers off it. */
+  shelter: number;
 }
 
 /**
@@ -163,6 +183,8 @@ export class TagMode implements GameMode {
   private navGoal: { x: number; z: number } | null = null;
 
   private readonly pins: Marker[] = [];
+  /** Where home base is: every stand planted in the yard, read at start. */
+  private bases: StandHome[] = [];
 
   /**
    * The roster as of the last tick.
@@ -190,6 +212,11 @@ export class TagMode implements GameMode {
     this.navGoal = null;
 
     this.spawnKids(ctx);
+    // Whatever stands the yard holds are base for the whole round. Read once,
+    // like Capture the Flag reads its own — Tag forbids building, so nothing
+    // can change mid-round anyway, and one rule for when markers are read is
+    // better than two.
+    this.bases = allStands(ctx.build);
     // The local player is It. Not drawn from the hat, and that is a decision:
     // being chased by five kids you have never met is a mode you can watch, and
     // doing the chasing is the half that teaches you where the routes are.
@@ -239,6 +266,7 @@ export class TagMode implements GameMode {
       if (!runner.frozen) runner.survived += dt;
     }
 
+    this.sheltering(dt, ctx);
     this.tagging(ctx);
     this.thawing(dt, ctx);
     this.driveKids(dt, ctx);
@@ -264,7 +292,9 @@ export class TagMode implements GameMode {
     for (const who of ctx.actors.all) {
       if (this.its.has(who.id)) continue;
       if (this.runners.has(who.id)) continue;
-      this.runners.set(who.id, { id: who.id, frozen: false, thaw: 0, survived: 0 });
+      this.runners.set(who.id, {
+        id: who.id, frozen: false, thaw: 0, survived: 0, shelter: BASE_TIME,
+      });
     }
   }
 
@@ -291,6 +321,10 @@ export class TagMode implements GameMode {
       for (const quarry of ctx.actors.all) {
         const runner = this.runners.get(quarry.id);
         if (runner === undefined || runner.frozen) continue;
+        // On base with shelter left: the tag does not land. It can stand
+        // there breathing on you — that is the playground rule, and the meter
+        // above is what keeps it a breather rather than a bunker.
+        if (runner.shelter > 0 && this.onBase(quarry)) continue;
         if (!this.touching(chaser, quarry)) continue;
 
         runner.frozen = true;
@@ -310,6 +344,42 @@ export class TagMode implements GameMode {
         break;
       }
     }
+  }
+
+  /**
+   * The shelter meters, ticked for everybody who can still run.
+   *
+   * Spends on base and recovers off it, at the same rate — so four seconds of
+   * safety costs four seconds of exposure to earn back, and circling a base
+   * to re-enter it every tick buys nothing: the meter does not care how many
+   * visits the time is split across.
+   */
+  private sheltering(dt: number, ctx: ModeContext): void {
+    for (const runner of this.runners.values()) {
+      if (runner.frozen) continue;
+      const body = ctx.actors.get(runner.id);
+      if (body === undefined) continue;
+      if (this.onBase(body)) runner.shelter = Math.max(0, runner.shelter - dt);
+      else runner.shelter = Math.min(BASE_TIME, runner.shelter + dt);
+    }
+  }
+
+  /**
+   * Standing on any base, in the flat and in height.
+   *
+   * The height band is the tag's own: a base on a tower deck belongs to
+   * whoever climbed the tower, and someone at its foot is near the pole
+   * without being anywhere the playground rule would call *on base*.
+   */
+  private onBase(who: Actor): boolean {
+    return this.bases.some((base) => this.atBase(who, base));
+  }
+
+  private atBase(who: Actor, base: StandHome): boolean {
+    if (Math.abs(who.controller.y - base.y) > TAG_HEIGHT) return false;
+    const dx = who.controller.x - base.x;
+    const dz = who.controller.z - base.z;
+    return dx * dx + dz * dz <= BASE_RADIUS * BASE_RADIUS;
   }
 
   private thawing(dt: number, ctx: ModeContext): void {
@@ -558,6 +628,21 @@ export class TagMode implements GameMode {
    */
   markers(): readonly Marker[] {
     this.pins.length = 0;
+    // Home base first: the one fixed thing on a compass full of moving people.
+    // Lit while somebody is actually sheltering there, so It can read at a
+    // glance which base is doing work.
+    for (const base of this.bases) {
+      this.pins.push({
+        kind: 'bucket',
+        x: base.x, y: base.y, z: base.z,
+        color: BASE_COLOR,
+        active: this.currentActors.some((who) => {
+          const runner = this.runners.get(who.id);
+          return runner !== undefined && !runner.frozen
+            && runner.shelter > 0 && this.atBase(who, base);
+        }),
+      });
+    }
     for (const who of this.currentActors) {
       if (!this.its.has(who.id)) continue;
       this.pins.push({
@@ -596,8 +681,10 @@ export class TagMode implements GameMode {
    * What one person's own corner of the HUD says.
    *
    * A frozen runner gets their thaw on the refill meter, which is exactly what
-   * that meter is: a bar that fills while you stand somewhere and empties when
-   * you leave. It is somebody else standing there this time.
+   * that meter is: a bar about the spot you are standing on. A free runner on
+   * home base gets their shelter on the same meter for the same reason — how
+   * much of this spot's protection is left — and the two can never collide,
+   * because sheltering requires being someone It can still chase.
    */
   selfHud(actorId: number): ModeSelfHud {
     const runner = this.runners.get(actorId);
@@ -605,8 +692,19 @@ export class TagMode implements GameMode {
       charge: null,
       wetness: runner?.frozen === true ? 1 : null,
       ammo: null,
-      refill: runner?.frozen === true ? runner.thaw : null,
+      refill: runner?.frozen === true ? runner.thaw : this.shelterShown(actorId),
     };
+  }
+
+  /** The shelter meter, shown only while standing on a base. */
+  private shelterShown(actorId: number): number | null {
+    const runner = this.runners.get(actorId);
+    if (runner === undefined || runner.frozen) return null;
+    const body = this.currentActors.find((who) => who.id === actorId);
+    if (body === undefined || !this.onBase(body)) return null;
+    // Shown even at zero: an empty bar on base is the game saying "this spot
+    // is spent", which is the exact moment a player needs telling.
+    return runner.shelter / BASE_TIME;
   }
 
   /** Frozen is a full stop, and it is the only thing in this mode that is. */

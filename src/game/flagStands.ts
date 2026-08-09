@@ -19,7 +19,7 @@
  * action rather than find-and-demolish-the-old-one.
  */
 
-import type { BuildSystem } from '../build/buildSystem.ts';
+import type { BuildSystem, PlacementRecord } from '../build/buildSystem.ts';
 import {
   FLAG_POLE_KIND, LEFT_STAND_COLORWAY, RIGHT_STAND_COLORWAY, worldAabb,
 } from '../build/partKit.ts';
@@ -56,7 +56,7 @@ export function flagStands(build: BuildSystem): FlagStands {
           : null;
     if (claims === null) continue;
 
-    const home = { x: record.x, y: worldAabb(record).minY, z: record.z };
+    const home = footOf(record);
     if (claims === 'left') {
       if (left === null || id > left.id) left = { id, home };
     } else if (right === null || id > right.id) {
@@ -65,4 +65,26 @@ export function flagStands(build: BuildSystem): FlagStands {
   }
 
   return { left: left?.home ?? null, right: right?.home ?? null };
+}
+
+/**
+ * Every stand in the yard, whatever it is painted.
+ *
+ * For the modes without sides. In Capture the Flag the paint *is* the claim;
+ * Tag has no teams to claim for, so a stand there is a place rather than an
+ * allegiance — home base, exactly as the playground rule has it — and
+ * excluding the unclaimed colours would make four of the six paints quietly
+ * mean nothing in the one mode where they could all mean the same thing.
+ */
+export function allStands(build: BuildSystem): StandHome[] {
+  const out: StandHome[] = [];
+  for (const [, record] of build.serializeWithIds()) {
+    if (record.kind === FLAG_POLE_KIND) out.push(footOf(record));
+  }
+  return out;
+}
+
+/** The foot of a pole: its centre in the flat, its lowest point in height. */
+function footOf(record: PlacementRecord): StandHome {
+  return { x: record.x, y: worldAabb(record).minY, z: record.z };
 }

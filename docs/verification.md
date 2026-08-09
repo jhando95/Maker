@@ -1438,3 +1438,25 @@ would otherwise ship in.
 The "both stands land" assertion needed no plant: its first honest run
 failed on a real refusal — (6, 10) is inside the garden's tyre stack — and
 the spots were probed against the real map before being written down.
+
+## Home base in Tag
+
+Seven plants, and a fixture correction before any of them: the rooftop test's
+first tower was two metres tall, which is inside the tag's own 1.7m height
+band — the base *should* cover the ground beside a knee-high platform, for
+the same reason a tag reaches that far up — so the test was asserting against
+the rule rather than past it. The tower went to three metres and the plant
+(the height band deleted from `atBase`) then failed exactly one test.
+
+The rest of the set: the tag guard deleted (It froze a kid standing on base
+with a full meter — caught twice, because the recovery test re-shelters at
+the end); the meter never draining (the squatter was never freezable, and
+the HUD meter test caught it too, reading a full bar after a second on
+base); the meter never recovering; `allStands` quietly narrowed to the two
+claiming colorways — which failed all four raw-pine fixtures at once, the
+exact silent rule this scan's comment warns about, since a stand painted
+anything but team colours would mean nothing in the one mode where every
+stand should; the bases dropped from `markers()`, caught at both levels in
+one plant — the unit compass test and the hud scenario's Tag assertion, run
+against the same planted build; and the shelter meter never reaching the
+refill channel.
