@@ -884,28 +884,6 @@ export class Menu {
     // House rules, above the modes: pick how the yard behaves, then what you
     // play in it. Solo only — in a session the host's defaults rule, so the
     // row simply is not offered rather than offered and ignored.
-    if (blocked === null) {
-      const rules = this.callbacks.listHouseRules();
-      if (rules.length > 0) {
-        const row = document.createElement('div');
-        row.className = 'mk-actions';
-        for (const r of rules) {
-          const b = document.createElement('button');
-          b.className = 'mk-btn mk-secondary';
-          if (r.picked) b.classList.add('mk-held');
-          b.textContent = r.name;
-          b.title = r.blurb;
-          b.dataset.houseRules = r.id;
-          b.addEventListener('click', (e) => {
-            e.stopPropagation();
-            this.callbacks.onPickHouseRules(r.id);
-            this.render();
-          });
-          row.appendChild(b);
-        }
-        this.card.appendChild(row);
-      }
-    }
     for (const m of this.callbacks.listModes()) {
       const card = document.createElement('button');
       card.className = 'mk-mode-card';
@@ -1351,6 +1329,28 @@ export class Menu {
    */
   private renderSettings(): void {
     this.heading('Settings');
+
+    // House rules: named rule presets for the next solo round — the rules as
+    // a toy, Halo-custom-games style. A cycling button, because the title
+    // card is full and the settings card has room; hidden in a session, where
+    // the host's defaults rule.
+    {
+      const rules = this.callbacks.listHouseRules();
+      const picked = rules.find((r) => r.picked);
+      if (picked !== undefined) {
+        const b = document.createElement('button');
+        b.className = 'mk-btn mk-secondary';
+        b.dataset.houseRules = picked.id;
+        b.textContent = `House rules: ${picked.name} — ${picked.blurb}`;
+        b.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const i2 = rules.findIndex((r) => r.picked);
+          this.callbacks.onPickHouseRules(rules[(i2 + 1) % rules.length]!.id);
+          this.render();
+        });
+        this.card.appendChild(b);
+      }
+    }
     const s = this.settings.current;
 
     this.section('Picture');

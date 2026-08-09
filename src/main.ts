@@ -1665,6 +1665,9 @@ const buildStore = new BuildStore();
  * would pass with the screen disconnected, which is the failure that matters
  * for a screen that did not exist until now.
  */
+/** Which house-rules preset the next solo round starts under. */
+let houseRuleIndex = 0;
+
 const menuCallbacks: MenuCallbacks = {
   listModes: () => MODES,
   onPlayMode: (id: string) => {
@@ -2107,8 +2110,6 @@ let layState: LayState | null = null;
  * Rounds force it off: flight in a scored mode is a cheat, not a tool.
  */
 let flying = false;
-/** Which house-rules preset the next solo round starts under. */
-let houseRuleIndex = 0;
 
 /**
  * Commit one laid part. Silent on refusal, deliberately: the lay runs eight
