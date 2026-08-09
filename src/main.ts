@@ -55,6 +55,7 @@ import {
   blueprintCost, connectedFrom, normalize, stampAt, type Blueprint,
 } from './build/blueprint.ts';
 import { encodeBlueprint, decodeBlueprint } from './build/shareCode.ts';
+import { beginLay, layStep, type LayState } from './build/pathLayer.ts';
 import { VoiceChat } from './voice/voiceChat.ts';
 import { transmitting } from './voice/voiceRules.ts';
 import { IdentityStore } from './app/identity.ts';
@@ -2072,6 +2073,37 @@ function doRepeat(): void {
   ears.placed(placed.x, placed.y, placed.z);
 }
 
+// ── The path layer ───────────────────────────────────────────────────────────
+//
+// Hold H and the selected part lays itself along your run — under you first,
+// then cell by cell as you cross into each next one, at the height your feet
+// were at when the key went down. The decisions live in build/pathLayer.ts;
+// what belongs here is the commit, which is a one-record stamp so a laid part
+// takes exactly the road a blueprint part does: same overlap and bounds
+// checks, same lumber, same wire for a guest.
+
+let layState: LayState | null = null;
+
+/**
+ * Commit one laid part. Silent on refusal, deliberately: the lay runs eight
+ * times a second while the player is looking somewhere else, and a refusal
+ * beep repeated down a whole sprint is an alarm, not feedback. The missing
+ * plank — and the absent placement knock — already say it.
+ */
+function layRecord(record: PlacementRecord): void {
+  if (net instanceof NetClient) {
+    if (!build.canStamp([record])) return;
+    net.stampBlueprint([record]);
+    ears.placed(record.x, record.y, record.z);
+    return;
+  }
+  const ids = build.stamp([record]);
+  if (ids.length === 0) return;
+  if (net instanceof NetHost) net.announcePlacement(ids[0]!, record);
+  worldChanged();
+  ears.placed(record.x, record.y, record.z);
+}
+
 // ── Blueprints ───────────────────────────────────────────────────────────────
 //
 // A blueprint takes over the place button when one is selected. That is the
@@ -2645,6 +2677,30 @@ function simulateBody(dt: number): void {
         lines: [...s.lines, { label: 'parts placed', value: String(build.placedCount) }],
       });
     }
+  }
+
+  // Lay a path under the run. Starts on press (locking the height to the feet
+  // that pressed it), ends the moment the key lifts or anything else claims
+  // the hands — a held blueprint stamps, the spray can sprays, and a wave that
+  // forbids building forbids this the same way, because it *is* placing.
+  if (canBuild && heldBlueprint === null && !canOut) {
+    // Only from the ground: a press mid-jump would lock the path at air
+    // height, where every cell refuses, and the key would feel dead. Jumping
+    // *during* a gesture keeps the lock — that is the bridge move.
+    if (input.wasPressed('layPath') && player.onGround) layState = beginLay(player.y);
+    if (layState !== null && !input.isDown('layPath')) layState = null;
+    if (layState !== null) {
+      const record = layStep(
+        layState, player.x, player.z, player.vx, player.vz,
+        build.selectedKind, build.selectedColorway,
+      );
+      // The layer stops at the support edge rather than pouring wood into a
+      // gap it cannot bridge — see wouldStandAt for why placement itself does
+      // not refuse this.
+      if (record !== null && build.wouldStandAt(record)) layRecord(record);
+    }
+  } else {
+    layState = null;
   }
 
   // Repeat the last step. Held, it runs a chain — two rungs become a ladder.

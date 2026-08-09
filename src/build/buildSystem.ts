@@ -797,6 +797,20 @@ export class BuildSystem {
   }
 
   /**
+   * Would this record hold if placed right now?
+   *
+   * Placement deliberately does *not* refuse a part that will not stand — the
+   * pulsing ghost warns, the wood is yours to waste — but the path layer asks
+   * first, because it places on the player's behalf while they are looking
+   * somewhere else entirely. An assistant that runs a player's lumber into a
+   * gap one clattering plank at a time is worse than one that stops at the
+   * edge.
+   */
+  wouldStandAt(record: PlacementRecord): boolean {
+    return wouldStand(this.structure, worldAabb(record));
+  }
+
+  /**
    * Put a whole blueprint down, or none of it.
    *
    * All or nothing, and that is the decision worth defending. Placing whichever
