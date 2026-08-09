@@ -57,6 +57,8 @@ export class PartStore {
   colorway: Uint8Array;
   /** 1 when the slot holds a live part. */
   alive: Uint8Array;
+  /** 1 when the slot's collision shape came through a proxy — see add(). */
+  hasProxy: Uint8Array;
   /** Bumped whenever a slot is reused, so stale handles can be spotted. */
   generation: Uint32Array;
   /**
@@ -86,6 +88,7 @@ export class PartStore {
     this.kind = new Uint8Array(initialCapacity);
     this.colorway = new Uint8Array(initialCapacity);
     this.alive = new Uint8Array(initialCapacity);
+    this.hasProxy = new Uint8Array(initialCapacity);
     this.generation = new Uint32Array(initialCapacity);
     this.visualQuat = new Float64Array(initialCapacity * 4);
   }
@@ -105,6 +108,7 @@ export class PartStore {
     this.kind = copy(this.kind, 1);
     this.colorway = copy(this.colorway, 1);
     this.alive = copy(this.alive, 1);
+    this.hasProxy = copy(this.hasProxy, 1);
     this.generation = copy(this.generation, 1);
     this.visualQuat = copy(this.visualQuat, 4);
     this.capacity = next;
@@ -170,10 +174,39 @@ export class PartStore {
     this.kind[id] = kind;
     this.colorway[id] = colorway;
     this.alive[id] = 1;
+    this.hasProxy[id] = proxy == null ? 0 : 1;
     this.count++;
 
     this.recomputeAabb(id);
     return { id, generation: this.generation[id]! };
+  }
+
+  /**
+   * Move a live part to a new transform, in place.
+   *
+   * The kinematic seam: a see-saw plank is the same box every tick, somewhere
+   * slightly different, and remove-plus-add would mint a new id per tick for
+   * a part whose identity never changed. Refuses proxy parts — their collision
+   * shape was composed with the proxy at insert, this writes as if there were
+   * none, and a wedge silently colliding as its drawn box is exactly the bug
+   * the proxy exists to prevent.
+   */
+  updateTransform(
+    id: PartId,
+    cx: number, cy: number, cz: number,
+    qx: number, qy: number, qz: number, qw: number,
+  ): boolean {
+    if (!this.isAlive(id) || this.hasProxy[id] === 1) return false;
+    this.visualQuat[id * 4] = qx;
+    this.visualQuat[id * 4 + 1] = qy;
+    this.visualQuat[id * 4 + 2] = qz;
+    this.visualQuat[id * 4 + 3] = qw;
+    this.center[id * 3] = cx;
+    this.center[id * 3 + 1] = cy;
+    this.center[id * 3 + 2] = cz;
+    this.setAxesFromQuaternion(id, qx, qy, qz, qw);
+    this.recomputeAabb(id);
+    return true;
   }
 
   remove(id: PartId): boolean {

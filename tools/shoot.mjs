@@ -139,9 +139,21 @@ try {
       '--enable-unsafe-swiftshader',
       '--disable-gpu-sandbox',
       '--no-sandbox',
+      // A synthetic microphone, and permission granted without a prompt.
+      //
+      // Chromium's fake device is a real audio track carrying a tone, which is
+      // what makes voice testable at all here: a container has no microphone,
+      // and a mocked getUserMedia would exercise the mock rather than WebRTC.
+      // With this, two pages negotiate a genuine peer connection and genuine
+      // Opus packets cross it — the only version of the check worth running.
+      '--use-fake-ui-for-media-stream',
+      '--use-fake-device-for-media-stream',
     ],
   });
-  const page = await browser.newPage({ viewport: { width, height } });
+  const page = await browser.newPage({
+    viewport: { width, height },
+    permissions: ['microphone'],
+  });
 
   const consoleErrors = [];
   const pageErrors = [];

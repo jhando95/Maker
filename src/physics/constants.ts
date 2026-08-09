@@ -93,6 +93,65 @@ export const AIR_ACCEL = 14;
 export const AIR_FRICTION = 0.6;
 
 export const GRAVITY = 23.0;
+
+/**
+ * The movement feel, as live multipliers on the constants around them.
+ *
+ * Mutable, and that is the point: these are the developer panel's motion knobs,
+ * and the panel's whole reason to exist is changing how the game feels without
+ * a reload. Everything reads them at use rather than at import, so a knob turn
+ * lands on the very next tick.
+ *
+ * The defaults are the shipped feel and the only values CI ever sees — replay
+ * hashes and the loopback session both run on them. A knob turned mid-session
+ * on a networked host is a knob the guests are not predicting with, which costs
+ * a correction per snapshot until it is put back; that is acceptable in a tool
+ * that exists only in the developer build, and is why these are multipliers
+ * with a definite home rather than a config file anybody ships.
+ *
+ * `fallScale` is the one with an opinion. Symmetric gravity reads as floaty
+ * because the descent takes exactly as long as the ascent — the oldest trick in
+ * the platformer book is extra gravity on the way down, which keeps the apex
+ * where the jump promised it and makes the landing arrive with some weight.
+ */
+export const MOTION = {
+  /** On GRAVITY, everywhere. Jump speed compensates, so the apex holds. */
+  gravityScale: 1,
+  /**
+   * Extra, only while falling. 1 is symmetric, which is the shipped feel —
+   * and not because symmetric is better. Setting this to 1.25 moved three
+   * balance tests that simulate whole bot rounds: a wall's worth in Water War
+   * is measured in jump arcs, so a feel change is an economy change, and the
+   * economy's claims have to be re-derived with it rather than under it. The
+   * knob is how the heavier fall gets auditioned; the default moves when the
+   * balance moves with it.
+   */
+  fallScale: 1,
+  /** On JUMP_HEIGHT. */
+  jumpScale: 1,
+};
+/**
+ * The shove a soaking delivers, in the same mutable-knob shape as MOTION.
+ *
+ * Water in this game is a weight, not a tap on the shoulder: the kid a
+ * soaking lands on is knocked off their feet *away from the water*, which is
+ * what sells the hit — the knockdown rotation was already there, but a body
+ * that folds up exactly where it stood reads as a power cut, not a hit.
+ *
+ * Speed is horizontal m/s, lift is the upward pop that keeps the shove alive
+ * (see `CharacterController.launch` for why grounded shoves die). Small on
+ * purpose, and *measured* rather than eyeballed: at these values an unsteered
+ * body lands 1.09m from where it was hit — enough to knock somebody off a
+ * plank they were defending, never across the yard. (4.5/2.4 measured 0.69m,
+ * which read as a stumble; 7/3 measured 1.28m and started to feel like a
+ * cannon.) The developer panel gets both as knobs; the defaults are the
+ * shipped feel and the only values CI sees.
+ */
+export const KNOCKBACK = {
+  speed: 6.5,
+  lift: 2.8,
+};
+
 /**
  * Apex height of a standing jump.
  *
@@ -117,8 +176,42 @@ export const CLIMB_REACH = 0.6;
 export const CLIMB_MAX_TILT_DEG = 30;
 
 // ── Mantle ───────────────────────────────────────────────────────────────────
-/** Ledges between STEP_HEIGHT and this are mantled over. */
+/**
+ * The tallest ledge a kid can haul themselves over.
+ *
+ * This constant spent a long time here describing a mechanic nobody had
+ * written — the note that replaced it said so, because the lumber budget had
+ * been sized against it and the README published a table of measurements
+ * explaining the design in terms of it. It is real now, and the reason to build
+ * it was the same reason it was tempting to fake: **a wall wants more than one
+ * meaningful height.**
+ *
+ * With only a step-up, every obstacle is either ankle-high or a wall, and the
+ * whole of a player's decision about how tall to build is a single yes/no at
+ * 0.55m. Three thresholds is a curve somebody can learn and play against:
+ *
+ * | height | what it costs to get past |
+ * |---|---|
+ * | up to `STEP_HEIGHT` | nothing; you walk over it |
+ * | up to this | a jump press and `MANTLE_DURATION` of being a stationary target |
+ * | above this | you go round, or you build |
+ *
+ * Chest height on a kid, which is the honest answer to "could you pull yourself
+ * up that" and — not by accident — a course and a half of planks above the step.
+ */
 export const MANTLE_MAX_HEIGHT = 1.6;
+/**
+ * How long the pull-up takes.
+ *
+ * The cost, and the whole reason mantling does not simply delete walls. For
+ * this long the player moves on a rail: no steering, no jump, no throwing, and
+ * a soaker pointed at them cannot miss. Long enough to be a real decision in
+ * front of somebody's fort, short enough not to feel like a cutscene.
+ */
 export const MANTLE_DURATION = 0.42;
 /** Clearance required above a ledge before a mantle is allowed. */
 export const MANTLE_CLEARANCE = CAP_HEIGHT * 0.9;
+/** How far in front of the chest to look for something worth climbing. */
+export const MANTLE_REACH = 0.75;
+/** How far past the ledge edge the pull-up lands, so nobody ends on the lip. */
+export const MANTLE_OVERSHOOT = CAP_RADIUS * 1.6;

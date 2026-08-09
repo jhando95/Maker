@@ -19,6 +19,8 @@ export type SoundName =
   | 'snap'
   | 'invalid'
   | 'remove'
+  | 'collapse'
+  | 'spray'
   | 'jump'
   | 'land'
   | 'throw'
@@ -27,7 +29,10 @@ export type SoundName =
   | 'roundStart'
   | 'roundWin'
   | 'roundLose'
-  | 'uiClick';
+  | 'uiClick'
+  | 'ping'
+  | 'emote'
+  | 'chat';
 
 export interface PlayOptions {
   /** 0..1, multiplied into the category gain. */
@@ -55,11 +60,27 @@ interface Voice {
   stop(): void;
 }
 
+/** A sound that keeps going, and moves. */
+export interface AmbientLoop {
+  /** Gain 0..1 and pan -1..1. Safe to call every frame; both are ramped. */
+  set(volume: number, pan: number): void;
+  stop(): void;
+}
+
 export class AudioBus {
   private ctx: AudioContext | null = null;
   private master: GainNode | null = null;
   private sfx: GainNode | null = null;
   private ambientGain: GainNode | null = null;
+  /**
+   * Where other people's voices arrive.
+   *
+   * Under `master` and beside `sfx` rather than under it, which is the whole of
+   * the decision: a player turning the game's effects down to hear their
+   * friends must not turn their friends down too, and the mute button has to
+   * silence everything including them.
+   */
+  private voiceGain: GainNode | null = null;
 
   /** Reused white-noise buffer — regenerating it per sound is pure waste. */
   private noiseBuffer: AudioBuffer | null = null;
@@ -69,7 +90,28 @@ export class AudioBus {
 
   masterVolume = 0.7;
   sfxVolume = 1.0;
+  voiceVolume = 1.0;
   muted = false;
+
+  /**
+   * The context, for anything that has to build its own graph.
+   *
+   * Voice is the one such thing and probably the only one there will ever be: a
+   * `MediaStreamAudioSourceNode` cannot be created by anything in this file
+   * because the stream arrives from a peer connection. Handing out the context
+   * rather than growing a `playRemoteStream` method keeps the WebRTC types out
+   * of the audio layer entirely.
+   *
+   * Null until somebody has clicked, like everything else here.
+   */
+  get context(): AudioContext | null {
+    return this.ctx;
+  }
+
+  /** What voice should connect to. Null until the context exists. */
+  get voiceDestination(): AudioNode | null {
+    return this.voiceGain;
+  }
 
   /** True once a user gesture has actually started the context. */
   get running(): boolean {
@@ -110,6 +152,10 @@ export class AudioBus {
     this.ambientGain.gain.value = 0.0;
     this.ambientGain.connect(this.master);
 
+    this.voiceGain = ctx.createGain();
+    this.voiceGain.gain.value = this.voiceVolume;
+    this.voiceGain.connect(this.master);
+
     // Two seconds of white noise, looped and re-windowed per use. Long enough
     // that consecutive footsteps do not audibly repeat the same grains.
     const length = Math.floor(ctx.sampleRate * 2);
@@ -129,6 +175,11 @@ export class AudioBus {
   setSfxVolume(v: number): void {
     this.sfxVolume = Math.max(0, Math.min(1, v));
     if (this.sfx !== null) this.sfx.gain.value = this.sfxVolume;
+  }
+
+  setVoiceVolume(v: number): void {
+    this.voiceVolume = Math.max(0, Math.min(1, v));
+    if (this.voiceGain !== null) this.voiceGain.gain.value = this.voiceVolume;
   }
 
   setMuted(muted: boolean): void {
@@ -355,6 +406,42 @@ export class AudioBus {
         }, options);
         break;
 
+      // ── The three comms sounds ────────────────────────────────────────────
+      //
+      // Deliberately unlike anything the world makes. A ping shares a corner of
+      // the screen with a hit marker and a balloon splash, and a cue that could
+      // be mistaken for either is worse than no cue: two clean tones a fifth
+      // apart is a sound nothing in a garden makes, which is exactly why it
+      // reads as somebody talking to you.
+      case 'ping':
+        this.tone(t, {
+          type: 'triangle', freqStart: 1180 * p, freqEnd: 1180 * p,
+          duration: 0.09, peak: 0.3, attack: 0.004,
+        }, options);
+        this.tone(t + 0.075, {
+          type: 'triangle', freqStart: 1760 * p, freqEnd: 1760 * p,
+          duration: 0.16, peak: 0.26, attack: 0.004,
+        }, options);
+        break;
+
+      case 'emote':
+        // One note, up. Lighter than a ping and shorter than a chat blip,
+        // because an emote is the least urgent thing anybody can send.
+        this.tone(t, {
+          type: 'sine', freqStart: 700 * p, freqEnd: 1050 * p,
+          duration: 0.13, peak: 0.2, attack: 0.006,
+        }, options);
+        break;
+
+      case 'chat':
+        // Quiet and low. It fires once per line and a chatty lobby would
+        // otherwise be a metronome over the top of the game.
+        this.tone(t, {
+          type: 'sine', freqStart: 520 * p, freqEnd: 620 * p,
+          duration: 0.07, peak: 0.13, attack: 0.004,
+        }, options);
+        break;
+
       case 'hit':
         this.tone(t, {
           type: 'square',
@@ -376,6 +463,67 @@ export class AudioBus {
         break;
       case 'roundLose':
         this.arpeggio(t, [440, 392, 349.23, 261.63], 0.14, 0.24, options);
+        break;
+
+      // A structure coming down: four or five wooden knocks falling over about
+      // a third of a second, each lower and softer than the last, over one dull
+      // thump for the mass of it.
+      //
+      // Composed here rather than by playing `remove` several times from the
+      // caller, and the reason is the voice cap: a thirty-part collapse firing
+      // thirty removals would spend every voice the bus has on one event and
+      // silence the footsteps, the water and everybody's chat along with it.
+      // One sound, however much came down.
+      case 'collapse': {
+        // Deterministic offsets rather than random ones. The recipe is played
+        // from the simulation's own removal path, and a sound is the one place
+        // in this codebase where `Math.random` is fine — but a fixed rhythm
+        // reads as *one thing falling apart* and a scattered one reads as
+        // several unrelated noises.
+        const knocks = [0, 0.075, 0.155, 0.25, 0.33];
+        for (let i = 0; i < knocks.length; i++) {
+          this.noiseBurst(t + knocks[i]!, {
+            duration: 0.09,
+            filter: 'bandpass',
+            freqStart: (620 - i * 70) * p,
+            freqEnd: (260 - i * 30) * p,
+            q: 2.4,
+            peak: 0.2 * (1 - i * 0.14),
+            attack: 0.002,
+          }, options);
+        }
+        this.tone(t, {
+          type: 'triangle',
+          freqStart: 110 * p,
+          freqEnd: 48 * p,
+          duration: 0.42,
+          peak: 0.16,
+          attack: 0.004,
+        }, options);
+        break;
+      }
+
+      // A can of paint: a short hiss of high noise, with the barest tick of a
+      // valve at the front. Two things rather than one, because pure noise
+      // reads as static and the tick is what makes it an object.
+      case 'spray':
+        this.noiseBurst(t, {
+          duration: 0.13,
+          filter: 'highpass',
+          freqStart: 2600 * p,
+          freqEnd: 5200 * p,
+          q: 0.6,
+          peak: 0.1,
+          attack: 0.008,
+        }, options);
+        this.tone(t, {
+          type: 'square',
+          freqStart: 1500 * p,
+          freqEnd: 900 * p,
+          duration: 0.02,
+          peak: 0.03,
+          attack: 0.001,
+        }, options);
         break;
 
       case 'uiClick':
@@ -571,6 +719,184 @@ export class AudioBus {
       }
     }
     this.ambientNodes = [];
+  }
+
+  /**
+   * A positioned loop that keeps running: a tap, a stream, a fire.
+   *
+   * Different from `startAmbient`, which is one bed for the whole world at a
+   * fixed level. This is a sound that has somewhere to be, so the caller moves
+   * it every frame — which means the gain has to be *ramped* rather than set.
+   * Assigning `gain.value` sixty times a second produces a click on every
+   * change, and sixty clicks a second is a buzz at the frame rate. That is the
+   * single most common way procedural audio goes wrong and it sounds like a
+   * broken speaker rather than like a bug.
+   */
+  /**
+   * A sound that keeps going, in one of the two shapes this game needs.
+   *
+   * `water` is a tap or a pool: broadband with the low end taken out. `evening`
+   * is the garden after the lamps come on — crickets and a hum of traffic three
+   * streets away — and it exists because the dusk this project built was
+   * completely silent. A sky that goes orange while the soundscape stays at
+   * midday is half an evening, and it is the half you notice with your eyes
+   * shut.
+   */
+  openLoop(kind: 'water' | 'evening' = 'water'): AmbientLoop | null {
+    if (!this.running) return null;
+    const ctx = this.ctx!;
+    const src = this.noiseSource(0);
+    if (src === null) return null;
+
+    if (kind === 'evening') return this.eveningLoop(ctx, src);
+
+    // Water is broadband with the low end taken out: a bandpass around 1.6kHz
+    // reads as running rather than as wind, which is the same noise through a
+    // lowpass.
+    const filter = ctx.createBiquadFilter();
+    filter.type = 'bandpass';
+    filter.frequency.value = 1600;
+    filter.Q.value = 0.7;
+
+    // A second, slower band under it, so it burbles instead of hissing. One
+    // band alone is a hiss however it is tuned — running water is two things
+    // at once, a rush and a chatter.
+    const body = ctx.createBiquadFilter();
+    body.type = 'lowpass';
+    body.frequency.value = 700;
+    body.Q.value = 1.4;
+
+    const lfo = ctx.createOscillator();
+    lfo.type = 'sine';
+    lfo.frequency.value = 0.7;
+    const lfoGain = ctx.createGain();
+    lfoGain.gain.value = 220;
+    lfo.connect(lfoGain);
+    lfoGain.connect(filter.frequency);
+
+    const gain = ctx.createGain();
+    gain.gain.value = 0.0001;
+    const panner = ctx.createStereoPanner();
+
+    src.connect(filter);
+    filter.connect(gain);
+    src.connect(body);
+    body.connect(gain);
+    gain.connect(panner);
+    panner.connect(this.ambientGain!);
+    src.start();
+    lfo.start();
+
+    let stopped = false;
+    return {
+      set: (volume: number, pan: number): void => {
+        if (stopped || this.ctx === null) return;
+        const now = this.ctx.currentTime;
+        // Ramped over a frame and a half, so a value that changes every frame
+        // is a continuous curve rather than a staircase of discontinuities.
+        gain.gain.setTargetAtTime(Math.max(0.0001, volume), now, 0.05);
+        panner.pan.setTargetAtTime(Math.max(-1, Math.min(1, pan)), now, 0.05);
+      },
+      stop: (): void => {
+        if (stopped) return;
+        stopped = true;
+        try {
+          src.stop();
+          lfo.stop();
+        } catch {
+          /* already stopped */
+        }
+      },
+    };
+  }
+
+  /**
+   * Crickets, and something driving a long way off.
+   *
+   * A cricket is a **trill inside a chirp**: a fast tremolo somewhere near
+   * twenty a second, whose depth itself waxes and wanes about once every two
+   * seconds. One LFO alone gives a buzz — an insect rather than a garden full
+   * of them — so the slow one modulates the fast one's depth, which is the
+   * cheapest thing that sounds like several of them not quite in time.
+   *
+   * Under it, noise through a very low lowpass: no engine, no tyres, nothing
+   * you could point at. What distant traffic actually contributes to a back
+   * garden is a floor under the silence, and the silence is what makes a
+   * synthesised night sound like a broken speaker.
+   */
+  private eveningLoop(ctx: AudioContext, src: AudioBufferSourceNode): AmbientLoop {
+    const chirps = ctx.createBiquadFilter();
+    chirps.type = 'bandpass';
+    chirps.frequency.value = 4800;
+    chirps.Q.value = 11;
+
+    // Swings between silent and full: the base gain and the tremolo depth are
+    // the same number, so the trough is zero rather than merely quieter.
+    const tremolo = ctx.createGain();
+    tremolo.gain.value = 0.5;
+
+    const fast = ctx.createOscillator();
+    fast.type = 'sine';
+    fast.frequency.value = 23;
+    const fastDepth = ctx.createGain();
+    fastDepth.gain.value = 0.5;
+    fast.connect(fastDepth);
+    fastDepth.connect(tremolo.gain);
+
+    const slow = ctx.createOscillator();
+    slow.type = 'sine';
+    slow.frequency.value = 0.42;
+    const slowDepth = ctx.createGain();
+    slowDepth.gain.value = 0.36;
+    slow.connect(slowDepth);
+    slowDepth.connect(fastDepth.gain);
+
+    const traffic = ctx.createBiquadFilter();
+    traffic.type = 'lowpass';
+    traffic.frequency.value = 110;
+    traffic.Q.value = 0.5;
+    const trafficGain = ctx.createGain();
+    trafficGain.gain.value = 0.55;
+
+    const gain = ctx.createGain();
+    gain.gain.value = 0.0001;
+    const panner = ctx.createStereoPanner();
+
+    src.connect(chirps);
+    chirps.connect(tremolo);
+    tremolo.connect(gain);
+    src.connect(traffic);
+    traffic.connect(trafficGain);
+    trafficGain.connect(gain);
+    gain.connect(panner);
+    panner.connect(this.ambientGain!);
+    src.start();
+    fast.start();
+    slow.start();
+
+    let stopped = false;
+    return {
+      set: (volume: number, pan: number): void => {
+        if (stopped || this.ctx === null) return;
+        const now = this.ctx.currentTime;
+        // Slower than the water loop's ramp. Evening comes on over minutes and
+        // a soundscape that tracked it at a twentieth of a second would swell
+        // audibly every time the day clock ticked a hundredth.
+        gain.gain.setTargetAtTime(Math.max(0.0001, volume), now, 0.4);
+        panner.pan.setTargetAtTime(Math.max(-1, Math.min(1, pan)), now, 0.4);
+      },
+      stop: (): void => {
+        if (stopped) return;
+        stopped = true;
+        try {
+          src.stop();
+          fast.stop();
+          slow.stop();
+        } catch {
+          /* already stopped */
+        }
+      },
+    };
   }
 
   /**

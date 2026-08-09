@@ -21,7 +21,7 @@ import { ProjectileSystem } from '../src/game/projectiles.ts';
 import { NavField } from '../src/game/navField.ts';
 import { Bot, BOT_TIERS } from '../src/game/bot.ts';
 import { FortDefenseMode } from '../src/game/fortDefense.ts';
-import type { ModeContext } from '../src/game/gameMode.ts';
+import { sameForEveryone, type ModeContext } from '../src/game/gameMode.ts';
 import { ActorRoster, LOCAL_ACTOR_ID } from '../src/game/actor.ts';
 import { CameraRig } from '../src/player/cameraRig.ts';
 import { Rng } from '../src/core/rng.ts';
@@ -171,12 +171,12 @@ const mode = new FortDefenseMode();
 mode.start(ctx);
 // Skip to a live wave.
 for (let i = 0; i < 60 * 80; i++) {
-  mode.fixedUpdate(DT, ctx, { fire: false, firePressed: false, fireReleased: false });
+  mode.fixedUpdate(DT, ctx, sameForEveryone());
   if (mode.phase === 'wave' && mode.bots.length > 0) break;
 }
 
 bench('fortDefense.fixedUpdate', 3000, () => {
-  mode.fixedUpdate(DT, ctx, { fire: false, firePressed: false, fireReleased: false });
+  mode.fixedUpdate(DT, ctx, sameForEveryone());
 }, 1, `whole mode, ${mode.bots.length} bots`);
 
 // ── Report ───────────────────────────────────────────────────────────────────

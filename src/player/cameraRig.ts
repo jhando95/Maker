@@ -41,6 +41,8 @@ export class CameraRig {
    */
   boomLength = 4.5;
   shoulder = 0.75;
+  /** Where the boom sits when nobody has moved it. See `frame`. */
+  private readonly restBoom = { length: 4.5, shoulder: 0.75, rise: 0.35 };
   /** Lifted slightly so the view clears the player's own head. */
   boomRise = 0.35;
   private currentBoom = 4.5;
@@ -79,6 +81,29 @@ export class CameraRig {
     // Keep yaw bounded so it never loses float precision in a long session.
     if (this.yaw > Math.PI) this.yaw -= Math.PI * 2;
     else if (this.yaw < -Math.PI) this.yaw += Math.PI * 2;
+  }
+
+  /**
+   * Stand the camera in front of somebody and look at them.
+   *
+   * For the locker, which previews an outfit on the real character in the real
+   * yard rather than on a model in a panel — so the only thing that has to
+   * change is where the camera is standing. The offset pushes the subject to
+   * one side, because the card that is being used to dress them covers the
+   * other, and a preview behind a menu is not a preview.
+   *
+   * The boom keeps its collision, which matters more here than anywhere: a
+   * player opens this from the pause screen, and where they were standing when
+   * they did is very often inside something they built.
+   */
+  frame(on: boolean): void {
+    this.boomLength = on ? 3.4 : this.restBoom.length;
+    // Negative, so the camera steps to the subject's left and they land on the
+    // right of the screen — the half the locker card does not cover.
+    this.shoulder = on ? -1.15 : this.restBoom.shoulder;
+    this.boomRise = on ? 0.5 : this.restBoom.rise;
+    this.mode = on ? 'third' : 'first';
+    this.pitch = on ? 0 : this.pitch;
   }
 
   toggleMode(): void {

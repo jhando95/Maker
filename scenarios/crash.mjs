@@ -16,9 +16,35 @@ const assert = (cond, message) => {
   if (!cond) throw new Error(`crash scenario: ${message}`);
 };
 
+/**
+ * Wait for the game to be in a state, never for a number of milliseconds.
+ *
+ * This scenario used three `waitForTimeout`s and CI eventually collected on
+ * them. Throwing from inside the loop takes exactly **one frame** — measured at
+ * 8ms on a warm machine and 236ms on a cold one — and one frame is not a
+ * bounded quantity of wall clock. Under software GL at full resolution it can
+ * be most of a second, so a fixed 500ms wait was a coin flip that had simply
+ * been landing the same way.
+ *
+ * Same root cause as `wheel.mjs` waiting 250ms for a keypress, and the same
+ * root cause as every scenario failure on this project: asserting on state that
+ * had not been established. The timeout here is a *bound*, not a schedule — a
+ * genuinely hung loop still fails, and fails saying so.
+ */
+const until = (page, fn, what, timeout = 20000) =>
+  page.waitForFunction(fn, undefined, { timeout, polling: 'raf' })
+    .catch(() => { throw new Error(`crash scenario: ${what}`); });
+
+/** Let a given number of frames actually render. */
+const frames = (page, n) => page.evaluate((count) => new Promise((resolve) => {
+  let seen = 0;
+  const step = () => { if (++seen >= count) resolve(); else requestAnimationFrame(step); };
+  requestAnimationFrame(step);
+}), n);
+
 export default async function (page) {
   await page.evaluate(() => window.__maker.hideOverlay());
-  await page.waitForTimeout(300);
+  await until(page, () => window.__maker.isRunning() === true, 'the loop never started');
 
   const before = await page.evaluate(() => ({
     running: window.__maker.isRunning(),
@@ -34,7 +60,13 @@ export default async function (page) {
   await page.evaluate(() => {
     window.__maker.crashNextTick();
   });
-  await page.waitForTimeout(500);
+  await until(
+    page,
+    () => window.__maker.crash.hasCrashed === true,
+    'the handler should have recorded the crash',
+  );
+  // One more frame, so the overlay this asserts on has been through a paint.
+  await frames(page, 1);
 
   const after = await page.evaluate(() => {
     const el = document.querySelector('.mk-crash');
@@ -75,7 +107,11 @@ export default async function (page) {
 
   // A second crash must not stack a second dialog over the first.
   await page.evaluate(() => window.__maker.crash.report(new Error('second'), 'test'));
-  await page.waitForTimeout(150);
+  // Frames rather than milliseconds again — and here the claim is that nothing
+  // appears, which is a thing you can only fail to observe. Waiting for renders
+  // rather than for a clock at least makes the observation window real work
+  // instead of an arbitrary slice of a slow machine's single frame.
+  await frames(page, 2);
   const stacked = await page.evaluate(() => document.querySelectorAll('.mk-crash').length);
   assert(stacked === 1, `a second crash stacked ${stacked} overlays`);
 

@@ -14,6 +14,9 @@
  * heights instead of drifting off the grid.
  */
 
+import * as THREE from 'three';
+import type { PlacementRecord } from './buildSystem.ts';
+
 /** Base grid. Stair rise, ladder rung pitch, and snap lattice all equal this. */
 export const MODULE = 0.25;
 /** Fine grid, for deliberate off-module placement. Also the board thickness. */
@@ -65,12 +68,20 @@ function part(
 }
 
 /**
- * Eight kinds, one per hotbar slot.
+ * Eight building kinds, one per hotbar slot — and then the flag stand.
  *
  * Every length is a whole number of modules, so parts butt end to end and stack
  * without accumulating error. Plank width is exactly one module, which means
  * four planks laid side by side span a metre with no seam left over — the
  * difference between a wall that looks built and one that looks approximated.
+ *
+ * The flag stand is a part on purpose, not a separate marker system. Being a
+ * part buys it everything at once: placement and removal, the support rules
+ * (a flag on a tower falls with the tower), blueprints, share codes, and the
+ * network — a guest's stand travels as an ordinary `build` message. What makes
+ * it a *marker* is that Capture the Flag reads the placed stands at round
+ * start and plays from them. It has no number key — the spray can owns Digit9
+ * — so it is picked from the wheel, which is where parts are picked anyway.
  */
 export const PART_KINDS: readonly PartKind[] = [
   part(0, 'plank', 'Plank', 1.0, BOARD_THICKNESS, MODULE),
@@ -81,11 +92,26 @@ export const PART_KINDS: readonly PartKind[] = [
   part(5, 'panel', 'Panel', 1.0, BOARD_THICKNESS, 1.0, { chamfer: 0.006, material: 'ply' }),
   part(6, 'ramp', 'Ramp', 1.0, 0.5, MODULE, { isWedge: true, chamfer: 0.01 }),
   part(7, 'block', 'Block', MODULE, MODULE, MODULE, { chamfer: 0.015 }),
+  part(8, 'flag_pole', 'Flag Stand', 2.0, 0.08, 0.08, { chamfer: 0.012, material: 'metal' }),
 ];
 
 export const PART_BY_KEY: ReadonlyMap<string, PartKind> = new Map(
   PART_KINDS.map((k) => [k.key, k]),
 );
+
+/** The flag stand's kind id, derived so a reordered kit cannot silently break it. */
+export const FLAG_POLE_KIND: PartKindId = PART_BY_KEY.get('flag_pole')!.id;
+
+/**
+ * Which paint claims a stand for which side.
+ *
+ * These are not new constants — they are the colorways Capture the Flag has
+ * always drawn its bases in: `COLORWAYS[5]` is the painted blue of the left
+ * team's stand marker and `COLORWAYS[4]` the painted red of the right's. A
+ * stand in any other colorway is decoration and claims nothing.
+ */
+export const LEFT_STAND_COLORWAY = 5;
+export const RIGHT_STAND_COLORWAY = 4;
 
 export function getPartKind(id: PartKindId): PartKind {
   const kind = PART_KINDS[id];
@@ -187,3 +213,33 @@ export const OUTLINE_COLORS: Record<PartKind['material'], number> = {
   ply: 0x5a4432,
   metal: 0x3a2c2a,
 };
+
+/**
+ * World-axis bounding box of a part at a given placement.
+ *
+ * Lives here rather than in `buildSystem.ts`, where it started, because
+ * `blueprint.ts` needs it to find the bottom face of a structure and importing
+ * the build system for it would be a cycle. It only ever needed the kit anyway:
+ * a placement and a set of half-extents.
+ *
+ * A rotated box's world extent is the rotation matrix's absolute values applied
+ * to its half-extents — the same arithmetic the collision world does when a part
+ * is added, done here for parts that do not exist yet.
+ */
+export function worldAabb(record: PlacementRecord): {
+  minX: number; minY: number; minZ: number;
+  maxX: number; maxY: number; maxZ: number;
+} {
+  const h = halfExtents(getPartKind(record.kind));
+  const q = new THREE.Quaternion(record.qx, record.qy, record.qz, record.qw).normalize();
+  const e = new THREE.Matrix4().makeRotationFromQuaternion(q).elements;
+
+  const ex = Math.abs(e[0]!) * h.hx + Math.abs(e[4]!) * h.hy + Math.abs(e[8]!) * h.hz;
+  const ey = Math.abs(e[1]!) * h.hx + Math.abs(e[5]!) * h.hy + Math.abs(e[9]!) * h.hz;
+  const ez = Math.abs(e[2]!) * h.hx + Math.abs(e[6]!) * h.hy + Math.abs(e[10]!) * h.hz;
+
+  return {
+    minX: record.x - ex, minY: record.y - ey, minZ: record.z - ez,
+    maxX: record.x + ex, maxY: record.y + ey, maxZ: record.z + ez,
+  };
+}

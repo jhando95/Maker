@@ -11,18 +11,27 @@
  * was built. Walls are planks stood on edge, ringing each tap at two metres:
  *
  *   nothing built                            0 planks   keeps   0% of the water
- *   rings 1.0m high — a kid vaults them     60 planks   keeps   0%
- *   rings 1.75m high                       120 planks   keeps  51%
- *   the same rings taken to 4m             313 planks   keeps  51%
- *   rings at 4.2m out instead of 2m        682 planks   keeps  20%
+ *   rings 0.50m high — a kid steps over them   27 planks   keeps   0%
+ *   rings 0.75m high, two metres out          46 planks   keeps   9%
+ *   rings 1.25m high, two metres out          86 planks   keeps  51%
+ *   the same rings taken to 2m               149 planks   keeps  51%
+ *   rings 1.25m built 4.2m out instead       204 planks   keeps  20%
  *
  * Three things fall out of that. Building is worth doing — nothing to fifty-one
- * per cent is the difference between losing and winning. Height stops mattering
- * the moment a kid can no longer scramble up (MANTLE_MAX_HEIGHT is 1.6m), so
- * the pile is sized to reach exactly that and no further. And more wood is not
- * better wood: the six-hundred-plank version does worse than the
- * hundred-and-twenty-plank one, because what stops a kid is a closed ring near
- * the tap and not a bigger wall further from it.
+ * per cent is the difference between losing and winning. A wall pays from the
+ * first course a kid cannot step over (STEP_HEIGHT, 0.55m) and stops paying the
+ * moment they cannot see the tap over it, so the sixty planks between 1.25m and
+ * 2m buy nothing. And more wood is not better wood: rings built further out
+ * cost twice as much and do worse, because what stops a kid is something solid
+ * between them and the water rather than a bigger wall further from it.
+ *
+ * This table used to read very differently, and the reason is worth keeping.
+ * Draining a tap needed nothing but standing within 3.2m of it, which is
+ * *outside* the ring a player would naturally build — so kids emptied taps
+ * through finished walls and the payoff was a cliff: everything up to a metre
+ * kept exactly nothing, and the next twenty planks won the round. The old note
+ * here explained the budget in terms of MANTLE_MAX_HEIGHT, which no code reads
+ * and which describes a mechanic this game does not have.
  *
  * With free lumber none of that is a decision. You build the maximum
  * everywhere, and the only thing separating two players is how fast they can

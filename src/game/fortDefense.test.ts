@@ -9,12 +9,13 @@ import {
   FortDefenseMode, BUILD_TIME, STASH_SUPPLIES, WAVE_COUNT,
   BUCKETS, BUCKET_DISTANCE, BUCKET_RADIUS, PLAYER_AMMO_MAX, REFILL_TIME, STASH_POSITION,
 } from './fortDefense.ts';
-import type { GameEvent, ModeContext, ModeInput } from './gameMode.ts';
+import { sameForEveryone } from './gameMode.ts';
+import type { GameEvent, ModeContext } from './gameMode.ts';
 import { Rng } from '../core/rng.ts';
 import { ActorRoster, LOCAL_ACTOR_ID } from './actor.ts';
 import { DT, CAP_HEIGHT, CAP_RADIUS } from '../physics/constants.ts';
 
-const noInput: ModeInput = { fire: false, firePressed: false, fireReleased: false };
+const noInput = sameForEveryone();
 
 function makeContext(): { ctx: ModeContext; events: GameEvent[]; world: CollisionWorld } {
   const world = new CollisionWorld();
@@ -354,8 +355,8 @@ describe('FortDefenseMode', () => {
     run(mode, ctx, BUILD_TIME + 0.2);
     // Spend the magazine.
     for (let i = 0; i < PLAYER_AMMO_MAX; i++) {
-      mode.fixedUpdate(DT, ctx, { fire: true, firePressed: true, fireReleased: false });
-      mode.fixedUpdate(DT, ctx, { fire: false, firePressed: false, fireReleased: true });
+      mode.fixedUpdate(DT, ctx, sameForEveryone({ fire: true, firePressed: true, fireReleased: false }));
+      mode.fixedUpdate(DT, ctx, sameForEveryone({ fire: false, firePressed: false, fireReleased: true }));
     }
     expect(mode.ammoCount).toBeLessThan(PLAYER_AMMO_MAX);
 
@@ -368,8 +369,8 @@ describe('FortDefenseMode', () => {
   it('standing at a bucket refills after the channel completes', () => {
     run(mode, ctx, BUILD_TIME + 0.2);
     for (let i = 0; i < PLAYER_AMMO_MAX; i++) {
-      mode.fixedUpdate(DT, ctx, { fire: true, firePressed: true, fireReleased: false });
-      mode.fixedUpdate(DT, ctx, { fire: false, firePressed: false, fireReleased: true });
+      mode.fixedUpdate(DT, ctx, sameForEveryone({ fire: true, firePressed: true, fireReleased: false }));
+      mode.fixedUpdate(DT, ctx, sameForEveryone({ fire: false, firePressed: false, fireReleased: true }));
     }
     const spent = mode.ammoCount;
     expect(spent).toBeLessThan(PLAYER_AMMO_MAX);
@@ -391,8 +392,8 @@ describe('FortDefenseMode', () => {
   it('walking away abandons the channel rather than banking it', () => {
     run(mode, ctx, BUILD_TIME + 0.2);
     for (let i = 0; i < PLAYER_AMMO_MAX; i++) {
-      mode.fixedUpdate(DT, ctx, { fire: true, firePressed: true, fireReleased: false });
-      mode.fixedUpdate(DT, ctx, { fire: false, firePressed: false, fireReleased: true });
+      mode.fixedUpdate(DT, ctx, sameForEveryone({ fire: true, firePressed: true, fireReleased: false }));
+      mode.fixedUpdate(DT, ctx, sameForEveryone({ fire: false, firePressed: false, fireReleased: true }));
     }
 
     const b = BUCKETS[0]!;
@@ -435,5 +436,125 @@ describe('FortDefenseMode', () => {
       expect(ma.bots[i]!.x).toBeCloseTo(mb.bots[i]!.x, 9);
       expect(ma.bots[i]!.z).toBeCloseTo(mb.bots[i]!.z, 9);
     }
+  });
+});
+
+describe('a kid who has run out of ways round', () => {
+  /**
+   * A sealed box round the stash, out of the player's own parts.
+   *
+   * Tall enough that nobody steps over it and closed on every side, so the
+   * diversion search really does fail — which is the only condition under
+   * which a bot starts pulling at all. A wall with a gap in it is beaten by
+   * walking through the gap and this never fires, which is the design.
+   */
+  const wallOff = (ctx: ModeContext, radius = 2.2): number[] => {
+    const records = [];
+    const kind = 4; // Post: 1.5m long, stood on end.
+    const upright = { qx: 0, qy: 0, qz: Math.SQRT1_2, qw: Math.SQRT1_2 };
+    for (let i = 0; i < 40; i++) {
+      const a = (i / 40) * Math.PI * 2;
+      for (const level of [0.75, 2.25]) {
+        records.push({
+          kind, colorway: 0,
+          x: STASH_POSITION.x + Math.sin(a) * radius,
+          y: level,
+          z: STASH_POSITION.z + Math.cos(a) * radius,
+          ...upright,
+        });
+      }
+    }
+    const ids: number[] = [];
+    for (const r of records) {
+      if (ctx.build.canStamp([r])) ids.push(...ctx.build.stamp([r]));
+    }
+    return ids;
+  };
+
+  it('pulls the wall apart rather than standing at it forever', () => {
+    const { ctx, events } = makeContext();
+    const mode = new FortDefenseMode();
+    mode.start(ctx);
+    const built = wallOff(ctx);
+    expect(built.length).toBeGreaterThan(30);
+
+    const before = ctx.world.partCount;
+    // Past the build phase and well into the first wave, which is the only
+    // time there is anybody outside the wall to pull at it.
+    run(mode, ctx, BUILD_TIME + 60);
+
+    const pulled = events.filter((e) => e.type === 'partPulled');
+    expect(pulled.length, 'nobody ever laid a hand on the wall').toBeGreaterThan(0);
+    expect(ctx.world.partCount).toBeLessThan(before);
+  });
+
+  it('says how much came down, because one plank and eleven are different news', () => {
+    const { ctx, events } = makeContext();
+    const mode = new FortDefenseMode();
+    mode.start(ctx);
+    wallOff(ctx);
+    run(mode, ctx, BUILD_TIME + 60);
+
+    for (const e of events) {
+      if (e.type !== 'partPulled') continue;
+      expect(e.brought).toBeGreaterThanOrEqual(1);
+      expect(Number.isFinite(e.x) && Number.isFinite(e.y) && Number.isFinite(e.z)).toBe(true);
+    }
+  });
+
+  it('walks through a gap rather than pulling at the wall beside it', () => {
+    // The balance claim, and the reason the trigger is "cannot get closer"
+    // rather than "cannot move". A fort with a door is beaten by the door: a
+    // kid that pulled at a wall it could have walked round would turn every
+    // fort into a pile of hit points, and the answer to that is more planks
+    // rather than a better shape.
+    const { ctx, events } = makeContext();
+    const mode = new FortDefenseMode();
+    mode.start(ctx);
+    const ids = wallOff(ctx);
+    // Take a quarter of the ring out, which is a doorway nobody can miss.
+    for (const id of ids.slice(0, Math.floor(ids.length / 4))) {
+      if (ctx.world.store.isAlive(id)) ctx.build.applyRemove(id);
+    }
+    const standing = ctx.world.partCount;
+
+    run(mode, ctx, BUILD_TIME + 60);
+
+    expect(events.some((e) => e.type === 'partPulled')).toBe(false);
+    expect(ctx.world.partCount).toBe(standing);
+  });
+
+  it('leaves the map alone, however long it is stuck against it', () => {
+    // The same sealed ring, built out of *map* instead of out of planks. The
+    // kids are as thwarted as they were in the first test and have been at it
+    // just as long — and a kid who could take the fence apart would eventually
+    // take the house apart, and the level would have a hole in it nobody put
+    // there.
+    //
+    // The first version of this test surrounded nothing at all, so the bots
+    // walked happily to the stash and never reached for anything: it passed
+    // with the fixture guard deleted, which is a check proving that a rule it
+    // never reached was being followed.
+    const { ctx, events } = makeContext();
+    const mode = new FortDefenseMode();
+    mode.start(ctx);
+
+    const ids: number[] = [];
+    for (let i = 0; i < 40; i++) {
+      const a = (i / 40) * Math.PI * 2;
+      for (const y of [0.75, 2.25]) {
+        ids.push(ctx.world.addFixture(
+          STASH_POSITION.x + Math.sin(a) * 2.2, y, STASH_POSITION.z + Math.cos(a) * 2.2,
+          1, 0, 0, 0, 0, 1, 0.2, 0.75, 0.2, null, {},
+        ).id);
+      }
+    }
+    const standing = ctx.world.partCount;
+
+    run(mode, ctx, BUILD_TIME + 60);
+
+    expect(events.some((e) => e.type === 'partPulled')).toBe(false);
+    expect(ctx.world.partCount).toBe(standing);
+    for (const id of ids) expect(ctx.world.store.isAlive(id)).toBe(true);
   });
 });

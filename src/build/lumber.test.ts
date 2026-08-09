@@ -136,7 +136,7 @@ describe('building against a budget', () => {
     const id = [...world.store.live()][0]!;
     const box = world.store.readAabb(id);
     aim(build, [(box.minX + box.maxX) / 2, 2.0, (box.minZ + box.maxZ) / 2], [0, -1, 0]);
-    expect(build.removeAimed()).toBe(true);
+    expect(build.removeAimed()).toEqual([id]);
     expect(build.lumber.available).toBe(10);
   });
 

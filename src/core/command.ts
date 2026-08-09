@@ -49,10 +49,36 @@ export interface Command {
   yaw: number;
   pitch: number;
   buttons: number;
+  /**
+   * Which entry of the mode's loadout is held.
+   *
+   * Here rather than as a separate "I picked the balloon" message, because a
+   * held weapon is a *state* and a message is an event: one dropped packet and
+   * the two machines disagree about what is in somebody's hands until the next
+   * time they touch the wheel. Repeating it every tick costs one number and
+   * cannot drift.
+   */
+  slot: number;
 }
 
 export function makeCommand(tick = 0): Command {
-  return { tick, moveX: 0, moveZ: 0, climb: 0, yaw: 0, pitch: 0, buttons: 0 };
+  return { tick, moveX: 0, moveZ: 0, climb: 0, yaw: 0, pitch: 0, buttons: 0, slot: 0 };
+}
+
+/**
+ * The unit vector an actor is looking along.
+ *
+ * The same expression as `CameraRig.getLookDirection`, restated here because
+ * this has to work for somebody whose camera is in another house. The two are
+ * held together by a test rather than by a comment.
+ */
+export function aimOf(command: Command): { x: number; y: number; z: number } {
+  const cp = Math.cos(command.pitch);
+  return {
+    x: -Math.sin(command.yaw) * cp,
+    y: Math.sin(command.pitch),
+    z: -Math.cos(command.yaw) * cp,
+  };
 }
 
 export function pressed(command: Command, button: ButtonName): boolean {
@@ -101,15 +127,16 @@ export type PackedCommand = [
   yaw: number,
   pitch: number,
   buttons: number,
+  slot: number,
 ];
 
 export function packCommand(c: Command): PackedCommand {
-  return [c.tick, c.moveX, c.moveZ, c.climb, c.yaw, c.pitch, c.buttons];
+  return [c.tick, c.moveX, c.moveZ, c.climb, c.yaw, c.pitch, c.buttons, c.slot];
 }
 
 export function unpackCommand(p: PackedCommand): Command {
   return {
     tick: p[0], moveX: p[1], moveZ: p[2], climb: p[3],
-    yaw: p[4], pitch: p[5], buttons: p[6],
+    yaw: p[4], pitch: p[5], buttons: p[6], slot: p[7] ?? 0,
   };
 }

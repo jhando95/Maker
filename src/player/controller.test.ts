@@ -1,7 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import { CharacterController, type MoveIntent } from './controller.ts';
 import { CollisionWorld } from '../physics/collisionWorld.ts';
-import { DT, JUMP_HEIGHT, STEP_HEIGHT, WALK_SPEED, SPRINT_SPEED } from '../physics/constants.ts';
+import {
+  DT, JUMP_HEIGHT, KNOCKBACK, MOTION, STEP_HEIGHT, WALK_SPEED, SPRINT_SPEED,
+  MANTLE_MAX_HEIGHT, MANTLE_DURATION,
+} from '../physics/constants.ts';
 import { MODULE, STAIR_RUN } from '../build/partKit.ts';
 import { BuildSystem } from '../build/buildSystem.ts';
 import { PartRenderer } from '../render/partRenderer.ts';
@@ -518,5 +521,348 @@ describe('a ladder you nailed together yourself', () => {
     // 1.67m against a guessed 1.6m, which was the character jumping and nothing
     // else. The eaves are at 5m, so a real climb fails this by miles.
     expect(highest).toBeLessThan(0.5 + JUMP_HEIGHT + STEP_HEIGHT);
+  });
+});
+
+describe('CharacterController — mantling', () => {
+  /**
+   * A ledge of a given height, wide enough not to be a balance beam, with a
+   * standing surface behind it.
+   */
+  function ledge(w: CollisionWorld, height: number): void {
+    platform(w, 0, 0, 0, 6, 6);
+    w.addPart(0, 0, 0, height / 2, -3.2, ...I, 3, height / 2, 2);
+  }
+
+  /**
+   * Walk up to a ledge, ask for a pull-up, and stop the moment it resolves.
+   *
+   * Stopping is the part that matters. The first version of this held forward
+   * for two seconds after the mantle, so the player strolled off the far side
+   * of the block and every assertion measured where they had wandered to
+   * rather than where the pull-up had put them — a test asserting on state it
+   * had not established, which is the way nearly every check in this project
+   * has managed to be wrong.
+   */
+  function pullUp(c: CharacterController): { mantled: boolean; ticks: number } {
+    run(c, 0.9, intent({ forward: -1 }));
+    let mantled = false;
+    let ticks = 0;
+    for (let i = 0; i < 240; i++) {
+      c.step(DT, intent({ forward: -1, jump: true }));
+      if (c.mantling) { mantled = true; ticks++; continue; }
+      if (mantled) break;
+    }
+    return { mantled, ticks };
+  }
+
+  it('hauls the player over a ledge too tall to step onto', () => {
+    // The whole point. Between the step-up's reach and chest height there used
+    // to be nothing but a wall, so every obstacle was either ankle-high or
+    // final.
+    const w = new CollisionWorld();
+    ledge(w, 1.2);
+    const c = new CharacterController(w, 0, 0.05, 0);
+    run(c, 0.3);
+
+    expect(pullUp(c).mantled).toBe(true);
+    expect(c.y, `ended at ${c.y.toFixed(2)}m, not on top of a 1.2m ledge`)
+      .toBeGreaterThan(1.15);
+    expect(c.z, 'ended on the near side of the ledge').toBeLessThan(-1.2);
+    expect(c.onGround).toBe(true);
+  });
+
+  it('refuses a ledge above chest height, so a wall is still a wall', () => {
+    // The threshold that makes building worth anything. Without it, mantling
+    // would delete every fort in the game rather than pricing them.
+    //
+    // Asserted on whether a pull-up ever started rather than on where the
+    // player ended up: they are holding jump against a wall, so they will be
+    // somewhere between the floor and a jump apex, and that number says
+    // nothing about the rule under test.
+    const w = new CollisionWorld();
+    ledge(w, MANTLE_MAX_HEIGHT + 0.5);
+    const c = new CharacterController(w, 0, 0.05, 0);
+    run(c, 0.3);
+    expect(pullUp(c).mantled, 'climbed something that should have stopped them').toBe(false);
+  });
+
+  it('leaves a low step to the step-up rather than animating it', () => {
+    // A half-second pull-up over a kerb would replace something free with
+    // something slow.
+    //
+    // Asked from a standstill against the step rather than after walking in,
+    // and that is the whole difficulty of the test: walking in means the
+    // step-up has already carried the player over before jump is ever pressed,
+    // so there is no ledge left to refuse and the check passes whatever the
+    // rule says. Starting adjacent is the only way the question gets asked.
+    const w = new CollisionWorld();
+    ledge(w, STEP_HEIGHT - 0.1);
+    const c = new CharacterController(w, 0, 0.05, 0);
+    c.teleport(0, 0.05, -0.9);
+    run(c, 0.3);
+
+    let mantled = false;
+    for (let i = 0; i < 8; i++) {
+      c.step(DT, intent({ forward: -1, jump: true }));
+      if (c.mantling) mantled = true;
+    }
+    expect(mantled, 'a step the player can walk over became a pull-up').toBe(false);
+  });
+
+  it('still gets a player up a low step, the free way', () => {
+    // The other half of the claim above: refusing to animate it is only right
+    // because walking over it already works. Its own controller, because the
+    // test above leaves the player bouncing off a wall with jump held.
+    const w = new CollisionWorld();
+    ledge(w, STEP_HEIGHT - 0.1);
+    const c = new CharacterController(w, 0, 0.05, 0);
+    run(c, 0.3);
+    run(c, 1.6, intent({ forward: -1 }));
+    expect(c.y).toBeGreaterThan(STEP_HEIGHT - 0.2);
+  });
+
+  it('will not start without the jump, so walking into a fence is not a vault', () => {
+    // Deliberate rather than automatic: being teleported over an obstacle you
+    // walked into makes every low fence a suggestion.
+    const w = new CollisionWorld();
+    ledge(w, 1.2);
+    const c = new CharacterController(w, 0, 0.05, 0);
+    run(c, 0.3);
+
+    let mantled = false;
+    for (let i = 0; i < 180; i++) {
+      c.step(DT, intent({ forward: -1 }));
+      if (c.mantling) mantled = true;
+    }
+    expect(mantled, 'a mantle happened with no jump pressed').toBe(false);
+    expect(c.y).toBeLessThan(0.5);
+  });
+
+  it('refuses a ledge with no room to stand on it', () => {
+    // The check that makes a collisionless rail safe. The landing is proved
+    // clear before the pull-up starts rather than discovered afterwards, or a
+    // player ends up inside whatever is over the ledge.
+    const w = new CollisionWorld();
+    ledge(w, 1.2);
+    // A lid over the ledge, high enough that the search still finds the ledge
+    // below it and low enough that nobody could stand up there.
+    //
+    // The first version put it 350mm up and the mantle simply took the lid
+    // instead — which was the right answer to a badly built question: a shelf
+    // you can reach and stand on is a ledge, and the search finds the topmost
+    // surface for exactly that reason.
+    w.addPart(0, 0, 0, 1.9, -3.2, ...I, 3, 0.05, 2);
+    const c = new CharacterController(w, 0, 0.05, 0);
+    run(c, 0.3);
+    expect(pullUp(c).mantled, 'pulled up into a gap too small to stand in').toBe(false);
+  });
+
+  it('takes the time it says it takes', () => {
+    // The cost, and the reason mantling does not simply delete walls: for this
+    // long the player is on a rail, and a soaker pointed at them cannot miss.
+    const w = new CollisionWorld();
+    ledge(w, 1.2);
+    const c = new CharacterController(w, 0, 0.05, 0);
+    run(c, 0.3);
+
+    const { mantled, ticks } = pullUp(c);
+    expect(mantled, 'never mantled at all').toBe(true);
+    const seconds = ticks * DT;
+    expect(seconds).toBeGreaterThan(MANTLE_DURATION * 0.8);
+    expect(seconds).toBeLessThan(MANTLE_DURATION * 1.3);
+  });
+
+  it('arrives standing rather than launched', () => {
+    const w = new CollisionWorld();
+    ledge(w, 1.2);
+    const c = new CharacterController(w, 0, 0.05, 0);
+    run(c, 0.3);
+    // Sampled during the pull-up as well as after it. The rail sets position
+    // directly and never integrates velocity, so the only way speed survives
+    // into it is by not being cleared when it starts — which is the line this
+    // is really about.
+    run(c, 0.9, intent({ forward: -1, sprint: true }));
+    let worst = 0;
+    let was = false;
+    for (let i = 0; i < 240; i++) {
+      c.step(DT, intent({ forward: -1, jump: true }));
+      if (c.mantling) { was = true; worst = Math.max(worst, Math.hypot(c.vx, c.vy, c.vz)); }
+      else if (was) break;
+    }
+    expect(was, 'never mantled').toBe(true);
+    expect(worst, 'carried speed onto the rail').toBeLessThan(0.5);
+    expect(Math.abs(c.vy), 'left the ledge with vertical speed').toBeLessThan(0.6);
+  });
+
+  it('survives being rewound mid-pull, which is what a guest does every snapshot', () => {
+    // A mantle is the one movement that ignores gravity and input for several
+    // ticks. A rewind that dropped it would replay those ticks as an ordinary
+    // fall and put a guest somewhere the host never was — the largest possible
+    // disagreement, out of the shortest possible gap.
+    const w = new CollisionWorld();
+    ledge(w, 1.2);
+    const c = new CharacterController(w, 0, 0.05, 0);
+    run(c, 0.3);
+    run(c, 0.9, intent({ forward: -1 }));
+
+    let saved = null;
+    for (let i = 0; i < 240 && saved === null; i++) {
+      c.step(DT, intent({ forward: -1, jump: true }));
+      if (c.mantling) saved = c.capture();
+    }
+    expect(saved, 'never got into a pull-up to rewind').not.toBeNull();
+
+    const finish = (): { x: number; y: number; z: number } => {
+      for (let i = 0; i < 60; i++) c.step(DT, intent({ forward: -1, jump: true }));
+      return { x: c.x, y: c.y, z: c.z };
+    };
+    const first = finish();
+    c.restore(saved!);
+    const second = finish();
+
+    expect(second.x).toBeCloseTo(first.x, 6);
+    expect(second.y).toBeCloseTo(first.y, 6);
+    expect(second.z).toBeCloseTo(first.z, 6);
+  });
+});
+
+describe('the motion knobs', () => {
+  /** Whatever a test sets, put back — the defaults are the shipped feel. */
+  function withMotion(over: Partial<typeof MOTION>, body: () => void): void {
+    const before = { ...MOTION };
+    Object.assign(MOTION, over);
+    try {
+      body();
+    } finally {
+      Object.assign(MOTION, before);
+    }
+  }
+
+  /** Jump on flat ground; return the apex and the ticks up and down. */
+  function measureJump(): { apex: number; up: number; down: number } {
+    const world = new CollisionWorld();
+    const c = new CharacterController(world, 0, 0.5, 0);
+    for (let i = 0; i < 60; i++) c.step(DT, intent());
+    const floor = c.y;
+    c.step(DT, intent({ jump: true }));
+    let apex = c.y;
+    let up = 0;
+    let ticks = 0;
+    for (; ticks < 600; ticks++) {
+      c.step(DT, intent());
+      if (c.y > apex) { apex = c.y; up = ticks; }
+      if (c.onGround && ticks > up + 1) break;
+    }
+    return { apex: apex - floor, up, down: ticks - up };
+  }
+
+  it('holds the apex where JUMP_HEIGHT promises it, whatever the gravity', () => {
+    // The whole reason jump speed is derived live: "gravity" should change how
+    // fast the arc happens, never how far it reaches. A baked JUMP_VELOCITY
+    // under doubled gravity is a jump that quietly loses half its height.
+    const normal = measureJump().apex;
+    withMotion({ gravityScale: 2 }, () => {
+      expect(measureJump().apex).toBeCloseTo(normal, 1);
+    });
+    expect(normal).toBeGreaterThan(JUMP_HEIGHT * 0.85);
+    expect(normal).toBeLessThan(JUMP_HEIGHT * 1.15);
+  });
+
+  it('makes the fall heavier than the rise only when asked', () => {
+    // Symmetric by default — the balance tests measure whole bot rounds under
+    // this and a change here is an economy change, not a constant change.
+    // Asserted on the acceleration, not the trip time. Two tick-counting
+    // versions of this could not fail: landing slop makes even a symmetric
+    // descent measure three ticks longer than the rise, so the one or two
+    // ticks a fallScale of 1.25 removes drown in it. The gravity applied in a
+    // single tick has no slop to hide in.
+    const world = new CollisionWorld();
+    const c = new CharacterController(world, 0, 0.5, 0);
+    for (let i = 0; i < 60; i++) c.step(DT, intent());
+    c.step(DT, intent({ jump: true }));
+    let rise = 0;
+    let fall = 0;
+    let vyBefore = c.vy;
+    for (let i = 0; i < 200 && (rise === 0 || fall === 0); i++) {
+      c.step(DT, intent());
+      const dv = vyBefore - c.vy;
+      if (vyBefore > 0.5 && c.vy > 0.5) rise = dv;
+      if (vyBefore < -0.5 && !c.onGround) fall = dv;
+      vyBefore = c.vy;
+    }
+    expect(rise).toBeGreaterThan(0);
+    expect(fall).toBeCloseTo(rise, 4);
+
+    const even = measureJump();
+    withMotion({ fallScale: 1.5 }, () => {
+      const heavy = measureJump();
+      expect(heavy.down).toBeLessThan(even.down * 0.95);
+      // And the apex does not move: the asymmetry is on the way down only.
+      expect(heavy.apex).toBeCloseTo(even.apex, 1);
+    });
+  });
+
+  it('scales the jump when asked to', () => {
+    const normal = measureJump().apex;
+    withMotion({ jumpScale: 1.4 }, () => {
+      const higher = measureJump().apex;
+      expect(higher).toBeGreaterThan(normal * 1.2);
+      expect(higher).toBeCloseTo(normal * 1.4, 0);
+    });
+  });
+});
+
+describe('CharacterController — launch', () => {
+  it('shoves a standing body up and along, and the slide lands elsewhere', () => {
+    const w = new CollisionWorld();
+    const c = new CharacterController(w, 0, 2, 0);
+    run(c, 2);
+    expect(c.onGround).toBe(true);
+
+    // The rule is max(vy, 0) + lift — asserted as the rule, because a body
+    // standing on the ground carries a few ten-thousandths of residual vy
+    // from the snap that keeps it there, and demanding a bare 2.4 fails on
+    // exactly that honesty.
+    const rest = Math.max(c.vy, 0);
+    c.launch(0, -1, KNOCKBACK.speed, KNOCKBACK.lift);
+    // Airborne immediately — the lift is what keeps the shove from dying
+    // under ground steering, so it must actually leave the ground.
+    expect(c.onGround).toBe(false);
+    expect(c.vy).toBeCloseTo(rest + KNOCKBACK.lift, 5);
+    expect(c.vz).toBeCloseTo(-KNOCKBACK.speed, 5);
+
+    // Idle intent all the way down: the victim is not steering. The body must
+    // come down visibly elsewhere, which is the whole point of the shove —
+    // KNOCKBACK's own comment quotes 1.09m for the shipped values, and this
+    // holds the feel above a metre without pinning the last centimetre.
+    run(c, 1.5);
+    expect(c.onGround).toBe(true);
+    expect(c.z).toBeLessThan(-1.0);
+    expect(c.z).toBeGreaterThan(-2.0);
+  });
+
+  it('still pops a falling body, and normalizes whatever direction it is given', () => {
+    const w = new CollisionWorld();
+    const c = new CharacterController(w, 0, 6, 0);
+    run(c, 0.4);
+    expect(c.vy).toBeLessThan(-1);
+
+    // A long unnormalized direction must not become a bigger shove.
+    c.launch(30, 40, 5, 2);
+    expect(Math.hypot(c.vx, c.vz)).toBeCloseTo(5, 5);
+    // max(vy, 0) + lift: the fall does not swallow the pop.
+    expect(c.vy).toBeCloseTo(2, 5);
+  });
+
+  it('does not produce NaN from a zero direction', () => {
+    const w = new CollisionWorld();
+    const c = new CharacterController(w, 0, 2, 0);
+    run(c, 2);
+    const rest = Math.max(c.vy, 0);
+    c.launch(0, 0, 5, 2);
+    expect(Number.isFinite(c.vx)).toBe(true);
+    expect(Number.isFinite(c.vz)).toBe(true);
+    expect(c.vy).toBeCloseTo(rest + 2, 5);
   });
 });
