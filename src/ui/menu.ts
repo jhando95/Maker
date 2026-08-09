@@ -910,7 +910,11 @@ export class Menu {
     row.className = 'mk-actions';
     this.card.appendChild(row);
     for (const [label, go] of [
-      ['Free Build', () => this.callbacks.onPlaySandbox()],
+      // Shed Day: the day you got the key to Dad's shed. Every other mode is
+      // a real kid-game name — the creative mode deserved one too, and the
+      // map already has the locked shed this one unlocks: unlimited lumber,
+      // the fly camera, mirrored stamps, no score and no clock.
+      ['Shed Day', () => this.callbacks.onPlaySandbox()],
       ['Locker', () => { this.returnTo = 'title'; this.show('locker'); }],
       ['Saved Builds', () => { this.returnTo = 'title'; this.show('builds'); }],
       ['Blueprints', () => { this.returnTo = 'title'; this.show('blueprints'); }],

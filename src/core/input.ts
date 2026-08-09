@@ -246,7 +246,7 @@ export const BINDING_GROUPS: ReadonlyArray<{
       { action: 'cycleSnap', label: 'Next snap' },
       { action: 'repeatPlace', label: 'Repeat step' },
       { action: 'layPath', label: 'Lay a path (hold)' },
-      { action: 'fly', label: 'Fly (Free Build only)' },
+      { action: 'fly', label: 'Fly (Shed Day only)' },
       { action: 'rotateCCW', label: 'Turn left' },
       { action: 'rotateCW', label: 'Turn right' },
       { action: 'rotatePitch', label: 'Tilt' },

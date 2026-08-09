@@ -2498,7 +2498,7 @@ function simulateBody(dt: number): void {
   }
 
   if (input.wasPressed('fly')) {
-    if (mode !== null) hud.notice('Flying is for Free Build.');
+    if (mode !== null) hud.notice('Flying is for Shed Day.');
     else {
       flying = !flying;
       hud.notice(flying ? 'Flying — press J to land.' : 'Back on your feet.');

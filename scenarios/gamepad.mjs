@@ -421,7 +421,7 @@ export default async function (page) {
     `pushing the stick down should mean what pressing Down means: key gave "${viaKey}", stick gave "${viaStick}"`,
   );
 
-  assert(await walkTo('ArrowDown', 'Free Build', 20), 'down should reach the bottom row');
+  assert(await walkTo('ArrowDown', 'Shed Day', 20), 'down should reach the bottom row');
   assert(await walkTo('ArrowRight', 'Settings', 8), 'and right should run along it to Settings');
 
   await setPad(page, { buttons: { 0: 1 } });
