@@ -56,6 +56,7 @@ import {
 } from './build/blueprint.ts';
 import { encodeBlueprint, decodeBlueprint } from './build/shareCode.ts';
 import { beginLay, layStep, type LayState } from './build/pathLayer.ts';
+import { HOUSE_RULES, applyHouseRules, resetHouseRules } from './game/houseRules.ts';
 import { VoiceChat } from './voice/voiceChat.ts';
 import { transmitting } from './voice/voiceRules.ts';
 import { IdentityStore } from './app/identity.ts';
@@ -1329,6 +1330,9 @@ function adoptRound(round: PackedRound | null): void {
     if (remoteMode !== null) {
       remoteMode = null;
       mode = null;
+  resetHouseRules();
+    resetHouseRules();
+      resetHouseRules();
       build.setLumber(undefined);
     }
     return;
@@ -1664,8 +1668,19 @@ const buildStore = new BuildStore();
 const menuCallbacks: MenuCallbacks = {
   listModes: () => MODES,
   onPlayMode: (id: string) => {
+    // House rules are solo-only until the preset rides the wire beside the
+    // seed — a guest predicting under different gravity corrects on every
+    // snapshot. The menu hides the picker in a session; this is the backstop.
+    if (net === null) applyHouseRules(HOUSE_RULES[houseRuleIndex] ?? HOUSE_RULES[0]!);
     startRound(id as ModeId);
     enterPlay();
+  },
+  listHouseRules: () => (net !== null ? [] : HOUSE_RULES.map((r, i) => ({
+    id: r.id, name: r.name, blurb: r.blurb, picked: i === houseRuleIndex,
+  }))),
+  onPickHouseRules: (id: string) => {
+    const i = HOUSE_RULES.findIndex((r) => r.id === id);
+    if (i >= 0) houseRuleIndex = i;
   },
   // Two buttons rather than one and a flag. The relay makes the first tab in a
   // room the host, but the *game* has to be told which it is, because hosting
@@ -2092,6 +2107,8 @@ let layState: LayState | null = null;
  * Rounds force it off: flight in a scored mode is a cheat, not a tool.
  */
 let flying = false;
+/** Which house-rules preset the next solo round starts under. */
+let houseRuleIndex = 0;
 
 /**
  * Commit one laid part. Silent on refusal, deliberately: the lay runs eight

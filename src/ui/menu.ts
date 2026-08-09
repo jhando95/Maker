@@ -415,6 +415,9 @@ export interface MenuCallbacks {
   clearBinding(action: string, slot: number): void;
   resetBindings(): void;
   onPlayMode(id: string): void;
+  /** House rules: named rule presets for solo rounds. Empty in a session. */
+  listHouseRules(): Array<{ id: string; name: string; blurb: string; picked: boolean }>;
+  onPickHouseRules(id: string): void;
   /** The modes the title screen should offer, in the order to show them. */
   listModes(): ReadonlyArray<{ id: string; name: string; blurb: string }>;
   onPlaySandbox(): void;
@@ -878,6 +881,31 @@ export class Menu {
     const blocked = this.callbacks.modesBlocked();
     const grid = document.createElement('div');
     grid.className = 'mk-modes';
+    // House rules, above the modes: pick how the yard behaves, then what you
+    // play in it. Solo only — in a session the host's defaults rule, so the
+    // row simply is not offered rather than offered and ignored.
+    if (blocked === null) {
+      const rules = this.callbacks.listHouseRules();
+      if (rules.length > 0) {
+        const row = document.createElement('div');
+        row.className = 'mk-actions';
+        for (const r of rules) {
+          const b = document.createElement('button');
+          b.className = 'mk-btn mk-secondary';
+          if (r.picked) b.classList.add('mk-held');
+          b.textContent = r.name;
+          b.title = r.blurb;
+          b.dataset.houseRules = r.id;
+          b.addEventListener('click', (e) => {
+            e.stopPropagation();
+            this.callbacks.onPickHouseRules(r.id);
+            this.render();
+          });
+          row.appendChild(b);
+        }
+        this.card.appendChild(row);
+      }
+    }
     for (const m of this.callbacks.listModes()) {
       const card = document.createElement('button');
       card.className = 'mk-mode-card';
