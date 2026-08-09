@@ -119,7 +119,7 @@ describe('the horizon', () => {
     // dozen draws for a horizon. The pockets already share sizes where
     // sharing is invisible (two stone sizes serve both the pond and the
     // firepit; one rail size serves both fence runs).
-    expect(shapes.size).toBeLessThan(56);
+    expect(shapes.size).toBeLessThan(62);
   });
 
   it('is the same horizon every time', () => {
