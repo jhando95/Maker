@@ -14,7 +14,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { Rng } from '../core/rng.ts';
-import { surroundsSlabs, SITE } from './surrounds.ts';
+import { surroundsSlabs, POCKETS, pocketSlabs } from './surrounds.ts';
 import { culDeSacSlabs } from './culDeSac.ts';
 import { neighborhoodSlabs, LEFT_SPAWN, RIGHT_SPAWN } from './neighborhood.ts';
 import { YARD_HALF, LAWN_EXTENT } from './scene.ts';
@@ -113,7 +113,13 @@ describe('the horizon', () => {
       around.map((s) => `${s.w.toFixed(3)}:${s.h.toFixed(3)}:${s.d.toFixed(3)}`),
     );
     expect(around.length).toBeGreaterThan(250);
-    expect(shapes.size).toBeLessThan(40);
+    // Raised from 40 when the pockets went in, with the trade stated: the
+    // wood is still three sizes for 170 trees, and what the extra sizes buy
+    // is four one-off landmarks — a dozen draws for a dozen objects, not a
+    // dozen draws for a horizon. The pockets already share sizes where
+    // sharing is invisible (two stone sizes serve both the pond and the
+    // firepit; one rail size serves both fence runs).
+    expect(shapes.size).toBeLessThan(56);
   });
 
   it('is the same horizon every time', () => {
@@ -139,40 +145,55 @@ describe('the horizon', () => {
   });
 });
 
-describe('the building site', () => {
-  const inSite = (s: { x: number; z: number }): boolean =>
-    Math.abs(s.x - SITE.x) <= SITE.halfW && Math.abs(s.z - SITE.z) <= SITE.halfD;
+describe('the pockets outside the fence', () => {
+  const inBox = (p: { x: number; z: number; halfW: number; halfD: number },
+    s: { x: number; z: number }): boolean =>
+    Math.abs(s.x - p.x) <= p.halfW && Math.abs(s.z - p.z) <= p.halfD;
 
-  it('is there, and is enough of a place to play on', () => {
-    const site = around.filter(inSite);
-    // Pallets, skip, five studs and two plates, a three-step heap, clutter:
-    // fewer than twelve means something was dropped.
-    expect(site.length).toBeGreaterThanOrEqual(12);
-    // Something to climb: the heap tops out above a metre, the frame above two.
-    const tops = site.map((s) => s.y + s.h / 2);
-    expect(Math.max(...tops)).toBeGreaterThan(2);
-    // And all of it solid — the site is furniture, not backdrop.
-    expect(site.every((s) => s.ghost !== true)).toBe(true);
+  it('builds every pocket, solid enough to play on', () => {
+    for (const p of POCKETS) {
+      const inside = around.filter((s) => inBox(p, s));
+      expect(inside.length, p.name).toBeGreaterThanOrEqual(6);
+      expect(inside.some((s) => s.ghost !== true), `${p.name} is all backdrop`).toBe(true);
+    }
+    // The site keeps its climb; the pond keeps its ring of nine stones.
+    const site = around.filter((s) => inBox(POCKETS[0], s));
+    expect(Math.max(...site.map((s) => s.y + s.h / 2))).toBeGreaterThan(2);
+    const stones = around.filter((s) => inBox(POCKETS[1], s) && s.ghost !== true);
+    expect(stones.length).toBeGreaterThanOrEqual(9);
   });
 
-  it('shares its footprint with nothing else', () => {
-    // Everything low and solid inside the site box must be the site's own.
-    // The site is deterministic, so its slabs can be identified by rebuilding
-    // it alone via a second seed: whatever appears in the box for every seed
-    // is the site; anything that appears for one seed is an intruder. Ghost
-    // canopies overhead are exempt — a branch four metres up shades the skip
-    // and blocks nothing.
+  it('shares no pocket footprint with anything else on the map', () => {
+    // Swept against the whole solid world — neighbourhood (which folds the
+    // surrounds in) and the street — across seeds, because the trees wander
+    // per match while the pockets do not. Low and solid only: a ghost canopy
+    // metres overhead shades a pocket and blocks nothing. Each pocket's own
+    // slabs are recognised by position, from the single fixed seed the module
+    // builds them with — they take no randomness, so any low solid slab in a
+    // box that is not in that set came from something else.
+    // The reference comes from building the pockets ALONE — not from the
+    // assembled world, which is the bug the first version had: deriving "own"
+    // from the world under test meant an intruder in the box was counted as
+    // own, and the sweep compared the world to itself. Planting the pond on
+    // a neighbour's house passed. This version fails it.
     const own = new Set(
-      around.filter((s) => inSite(s) && s.ghost !== true && s.y < 3)
+      pocketSlabs()
+        .filter((s) => s.ghost !== true && s.y < 3)
         .map((s) => `${s.x.toFixed(2)},${s.y.toFixed(2)},${s.z.toFixed(2)}`),
     );
     for (const seed of ['surrounds', 'b', 'match-991', 'x7']) {
-      const slabs = surroundsSlabs(new Rng(seed));
-      for (const s of slabs) {
-        if (!inSite(s) || s.ghost === true || s.y >= 3) continue;
+      const world = [
+        ...neighborhoodSlabs(new Rng(seed)),
+        ...culDeSacSlabs(),
+      ];
+      for (const s of world) {
+        if (s.ghost === true || s.y >= 3) continue;
+        const pocket = POCKETS.find((p) => inBox(p, s));
+        if (pocket === undefined) continue;
         expect(
           own.has(`${s.x.toFixed(2)},${s.y.toFixed(2)},${s.z.toFixed(2)}`),
-          `seed ${seed} put a foreign slab in the site at (${s.x.toFixed(1)}, ${s.z.toFixed(1)})`,
+          `seed ${seed}: a foreign slab stands in the ${pocket.name} at `
+            + `(${s.x.toFixed(1)}, ${s.z.toFixed(1)})`,
         ).toBe(true);
       }
     }

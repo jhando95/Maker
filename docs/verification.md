@@ -1358,3 +1358,13 @@ holding the real key through the real input path and counting the boards.
 And on the building site, two: the site never built, and the site moved under
 the neighbour's house at (39, 4) — caught by the foreign-slab sweep that had
 just been written to hold its footprint clear.
+
+And on the pockets, the roll's oldest species wearing map clothes: the
+footprint sweep derived "the pocket's own slabs" from the assembled world it
+was validating, so a pond planted on a neighbour's house absorbed the house
+into its own reference set and the sweep compared the world to itself. Caught
+by the plant, fixed by building the pockets alone as the reference —
+pocketSlabs() exists for that one reason. The dropped-pocket plant was caught
+first time, and the horizon's draw-budget test caught the pockets honestly at
+61 distinct box sizes against its cap of 40; the sizes were rationalised and
+the cap raised to 56 with the trade written down.

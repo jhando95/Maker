@@ -160,6 +160,20 @@ function woods(out: Slab[], rng: Rng): void {
 export const SITE = { x: 36.5, z: -9, halfW: 4.2, halfD: 3.6 } as const;
 
 /**
+ * Every dressed pocket outside the fence, footprint by footprint, exported so
+ * one sweep can hold them all clear. The bands around the lot are where Tag
+ * actually runs, and a pocket is a landmark before it is cover: "behind the
+ * pond", "at the coop", "round the firepit" are callouts, and callouts are
+ * what a chase is made of.
+ */
+export const POCKETS = [
+  { name: 'site', ...SITE },
+  { name: 'pond', x: -35, z: -7, halfW: 3.6, halfD: 3.2 },
+  { name: 'coop', x: 10, z: 27.2, halfW: 3.2, halfD: 2.4 },
+  { name: 'firepit', x: -35, z: 16, halfW: 2.9, halfD: 2.9 },
+] as const;
+
+/**
  * The building site: the one corner of the neighbourhood that is *about* the
  * thing this game is about.
  *
@@ -210,6 +224,102 @@ function buildingSite(out: Slab[]): void {
 }
 
 /**
+ * The pond: a ring of stepping rocks round a coin of still water, and a stand
+ * of cattails. The rocks are solid — the ring is a parkour circle and the
+ * water is ankle-deep decoration you can wade through, because a ghost sheet
+ * five centimetres up reads as shallow water and blocks nothing.
+ */
+function pond(out: Slab[]): void {
+  const p = POCKETS[1];
+  const stone = 0x9a958c;
+  // Two stone sizes only, spun for variety — the draw-budget rule: a unique
+  // box size is a draw call, and a ring does not need six of them.
+  for (let i = 0; i < 9; i++) {
+    const a = (i / 9) * Math.PI * 2;
+    const r = 2.5 + (i % 3) * 0.18;
+    const big = i % 2 === 0;
+    out.push({
+      w: big ? 0.72 : 0.52, h: big ? 0.46 : 0.34, d: big ? 0.62 : 0.46,
+      x: p.x + Math.sin(a) * r, y: big ? 0.23 : 0.17, z: p.z + Math.cos(a) * r,
+      ry: a * 0.7, color: stone, outline: 0x6a665e, chamfer: 0.09,
+    });
+  }
+  out.push({ w: 4.4, h: 0.05, d: 4.1, x: p.x, y: 0.045, z: p.z, color: 0x5f9fc4, outline: 0x3d7a9e, chamfer: 0.02, ghost: true });
+  for (const [dx, dz] of [[-1.2, 1.6], [-0.9, 1.9], [1.5, -1.3]] as const) {
+    out.push({ w: 0.06, h: 1.0, d: 0.06, x: p.x + dx, y: 0.54, z: p.z + dz, color: 0x5f7a3a, ghost: true });
+    out.push({ w: 0.1, h: 0.22, d: 0.1, x: p.x + dx, y: 1.14, z: p.z + dz, color: 0x6a4a2a, chamfer: 0.03, ghost: true });
+  }
+}
+
+/**
+ * The chicken coop on the back strip, between the lot's fence and the
+ * neighbours' hedge — the lane every suburban kid knows. A hutch with a
+ * pitched lid and a gangplank, a corner of wire run, and two hens who are
+ * ghosts in the collision sense only.
+ */
+function coop(out: Slab[]): void {
+  const p = POCKETS[2];
+  const wood = 0x9a6a4a;
+  out.push({ w: 1.6, h: 1.1, d: 1.2, x: p.x - 1.2, y: 0.75, z: p.z, color: wood, outline: 0x5a3a26, chamfer: 0.03 });
+  out.push({ w: 1.9, h: 0.08, d: 1.5, x: p.x - 1.2, y: 1.38, z: p.z, rz: -0.16, color: 0x6a5548, outline: 0x3a2c2a, chamfer: 0.02 });
+  out.push({ w: 0.34, h: 0.05, d: 1.1, x: p.x - 0.25, y: 0.42, z: p.z + 0.15, ry: 0.5, rz: 0.6, color: 0xc9a06a, outline: 0x8a6a42, chamfer: 0.01 });
+  // The run: three posts and two rails, open toward the lane.
+  for (const [dx, dz] of [[0.2, -1.4], [2.4, -1.4], [2.4, 0.8]] as const) {
+    out.push({ w: 0.08, h: 0.9, d: 0.08, x: p.x + dx, y: 0.45, z: p.z + dz, color: wood, chamfer: 0.01 });
+  }
+  // One rail size, turned for the second run — a size used once is a draw
+  // call, and a fence corner does not need two of them.
+  out.push({ w: 2.2, h: 0.05, d: 0.05, x: p.x + 1.3, y: 0.82, z: p.z - 1.4, color: 0xc9a06a, chamfer: 0.01 });
+  out.push({ w: 2.2, h: 0.05, d: 0.05, x: p.x + 2.4, y: 0.82, z: p.z - 0.3, ry: Math.PI / 2, color: 0xc9a06a, chamfer: 0.01 });
+  // Hens. Body, head, comb; ghost, because a chicken is not a wall.
+  for (const [dx, dz, ry] of [[1.3, -0.3, 0.7], [1.9, 0.6, 2.4]] as const) {
+    out.push({ w: 0.3, h: 0.26, d: 0.22, x: p.x + dx, y: 0.13, z: p.z + dz, ry, color: 0xf2ede2, outline: 0xb9b4a8, chamfer: 0.07, ghost: true });
+    out.push({ w: 0.12, h: 0.14, d: 0.12, x: p.x + dx + Math.cos(ry) * 0.17, y: 0.32, z: p.z + dz - Math.sin(ry) * 0.17, color: 0xf2ede2, chamfer: 0.03, ghost: true });
+    out.push({ w: 0.05, h: 0.06, d: 0.08, x: p.x + dx + Math.cos(ry) * 0.17, y: 0.42, z: p.z + dz - Math.sin(ry) * 0.17, color: 0xd8564f, chamfer: 0.01, ghost: true });
+  }
+}
+
+/**
+ * The firepit: a stone circle round cold embers, with two log benches. The
+ * logs are solid seats and low cover; the embers are a dark coin nobody
+ * trips over.
+ */
+function firepit(out: Slab[]): void {
+  const p = POCKETS[3];
+  for (let i = 0; i < 7; i++) {
+    const a = (i / 7) * Math.PI * 2;
+    // The pond's small stone, re-dressed — same box, same draw.
+    out.push({
+      w: 0.52, h: 0.34, d: 0.46, x: p.x + Math.sin(a) * 0.98, y: 0.17, z: p.z + Math.cos(a) * 0.98,
+      ry: a, color: 0x8a8578, outline: 0x5a564e, chamfer: 0.09,
+    });
+  }
+  out.push({ w: 1.2, h: 0.12, d: 1.2, x: p.x, y: 0.06, z: p.z, color: 0x2e2a28, outline: 0x1a1816, chamfer: 0.04, ghost: true });
+  out.push({ w: 1.9, h: 0.4, d: 0.4, x: p.x - 0.4, y: 0.2, z: p.z + 1.9, ry: 0.25, color: 0x8a6242, outline: 0x4a3122, chamfer: 0.1 });
+  out.push({ w: 1.9, h: 0.4, d: 0.4, x: p.x + 1.7, y: 0.2, z: p.z - 0.7, ry: 1.75, color: 0x8a6242, outline: 0x4a3122, chamfer: 0.1 });
+}
+
+/**
+ * The pockets alone, with nothing else of the world in them.
+ *
+ * Exported for exactly one reason: the sweep that keeps their footprints
+ * clear needs a reference that is *not* the world it validates. Its first
+ * version derived "the pocket's own slabs" from the assembled surrounds — so
+ * a pocket parked on a neighbour's house simply absorbed the house into its
+ * reference set, and the sweep, comparing the world to itself, could not
+ * fail. The pockets take no randomness, so this list is the same on every
+ * call and every machine.
+ */
+export function pocketSlabs(): Slab[] {
+  const out: Slab[] = [];
+  buildingSite(out);
+  pond(out);
+  coop(out);
+  firepit(out);
+  return out;
+}
+
+/**
  * Everything beyond the fence that is not the cul-de-sac.
  *
  * Takes an Rng because the woods are scattered, and a seeded one because two
@@ -220,7 +330,7 @@ export function surroundsSlabs(rng: Rng): Slab[] {
 
   for (const n of AROUND) neighbourHouse(out, n);
   for (const [x, z, ry, roof] of BEYOND) farRoof(out, x, z, ry, roof);
-  buildingSite(out);
+  out.push(...pocketSlabs());
 
   // The hedge along the back, which is the boundary the lot's own back fence
   // looks across. Two runs with a gap, because an unbroken thirty-metre hedge
