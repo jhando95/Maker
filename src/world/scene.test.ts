@@ -215,3 +215,21 @@ describe('the time of day, wired into the scene', () => {
     expect(fill.intensity).toBeGreaterThan(dayFill);
   });
 });
+
+describe('the shed door', () => {
+  it('swings open for Shed Day and shut for a round, easing between', () => {
+    const built = createScene('shed-check');
+    const hinge = built.scene.children.find(
+      (o) => o instanceof THREE.Group && Math.abs(o.position.x - 13.05) < 0.01,
+    ) as THREE.Group;
+    expect(hinge, 'no hinge group at the shed doorway').toBeDefined();
+
+    built.setShedOpen(true);
+    for (let i = 0; i < 120; i++) built.setDaylight(0.3 + i * 1e-6);
+    expect(hinge.rotation.y).toBeLessThan(-1.5);
+
+    built.setShedOpen(false);
+    for (let i = 0; i < 120; i++) built.setDaylight(0.31 + i * 1e-6);
+    expect(Math.abs(hinge.rotation.y)).toBeLessThan(0.1);
+  });
+});

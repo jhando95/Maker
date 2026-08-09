@@ -79,6 +79,8 @@ export interface SceneBuild {
    * disagree.
    */
   slabs: Slab[];
+  /** Shed Day's statement: the shed door swings open when no round is scored. */
+  setShedOpen(open: boolean): void;
   /** Call after placing or removing parts so the static shadow map refreshes. */
   invalidateShadows(): void;
 }
@@ -190,6 +192,7 @@ export function createScene(seed: string | number = 'backyard-01'): SceneBuild {
   addTrees(scene, props, cache, rng.fork(), theme);
   addGarden(scene, rng.fork());
   const flames = addCampfire(scene);
+  const shedDoor = addShedDoor(scene);
   addPondWater(scene);
   scene.add(props.build());
 
@@ -205,8 +208,10 @@ export function createScene(seed: string | number = 'backyard-01'): SceneBuild {
     props,
     slabs,
     lights,
+    setShedOpen: (open: boolean) => shedDoor.setOpen(open),
     setDaylight(t: DayTime): boolean {
       const want = clampDay(t);
+      shedDoor.ease();
       // The fire flickers off the same continuous clock, before the quantize
       // gate below — the gate exists to spare the shadow map, and a flame is
       // three small meshes that cost nothing to move. The day fraction runs
@@ -546,6 +551,40 @@ function jitter(hex: number, rng: Rng, amount: number): number {
  * All ghost scenery: nothing here blocks movement or aim, so it can be walked
  * through exactly like the grass tufts — decoration has no collision opinions.
  */
+/**
+ * The shed door, on a hinge. Open is Shed Day's statement — the mode is named
+ * for the day you got the key, so the world shows the door standing wide —
+ * and closed is every scored round. The swing eases a little each frame from
+ * wherever it is toward where it should be, so entering a mode mid-look does
+ * not teleport a door in the corner of your eye.
+ */
+function addShedDoor(scene: THREE.Scene): { setOpen(open: boolean): void; ease(): void } {
+  const hinge = new THREE.Group();
+  // The shed's doorway: door is 0.9 wide on the front face at z 13.05; the
+  // hinge post is its west edge.
+  hinge.position.set(13.05, 0, 13.05);
+  scene.add(hinge);
+  const door = new THREE.Mesh(
+    chamferedBox(0.9, 1.8, 0.08, 0.01),
+    createToonMaterial({ color: 0xd8564f }),
+  );
+  door.position.set(0.45, 0.9, 0);
+  door.castShadow = true;
+  hinge.add(door);
+  const shell = new THREE.Mesh(door.geometry, createOutlineMaterial(0x6a2320, 0.012));
+  shell.position.copy(door.position);
+  hinge.add(shell);
+  let target = 0;
+  return {
+    setOpen(open: boolean): void {
+      target = open ? -1.9 : 0;
+    },
+    ease(): void {
+      hinge.rotation.y += (target - hinge.rotation.y) * 0.08;
+    },
+  };
+}
+
 /**
  * The firepit's fire: three turned cones of flame over the embers, scaled and
  * swayed every frame. Emissive rather than toon — fire is the one thing here

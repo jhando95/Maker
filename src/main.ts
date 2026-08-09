@@ -195,7 +195,7 @@ app.appendChild(renderer.domElement);
 
 // ── World ────────────────────────────────────────────────────────────────────
 const {
-  scene, invalidateShadows, setDaylight, props: scenery, slabs, lights: nightLights,
+  scene, invalidateShadows, setDaylight, setShedOpen, props: scenery, slabs, lights: nightLights,
 } = createScene('backyard-01');
 const world = new CollisionWorld(1.0, 4096);
 // The map's solid geometry, from the same numbers the scenery was drawn with.
@@ -2505,6 +2505,9 @@ function simulateBody(dt: number): void {
     }
   }
   if (mode !== null) flying = false;
+  // The world says which day it is: the shed stands open when nothing is
+  // scored, and swings shut when a round begins.
+  setShedOpen(mode === null);
 
   // Being soaked slows the player. Applied here rather than baked into the
   // command because it is a rule the mode applies to your intent, not part of

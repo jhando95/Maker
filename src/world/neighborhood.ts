@@ -869,7 +869,9 @@ function clutter(rng: Rng): void {
     rz: -0.18,
     color: LOT.roofDark, outline: 0x3a2c2a, chamfer: 0.02,
   });
-  timber(0.9, 1.8, 0.1, 13.5, 0.9, 13.05, LOT.trim, { outline: 0x6a2320, ghost: true });
+  // The shed door lives in scene.ts now, on a hinge: it stands open on Shed
+  // Day and closed for every scored round. The name of the mode is the day
+  // you got the key, and the world should say so.
   // A crate against the shed: the step onto its roof, and onto the roof beyond.
   crate(11.4, 13.6);
   crate(11.5, 14.6, 1.35);
