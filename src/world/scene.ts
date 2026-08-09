@@ -17,6 +17,8 @@ import { createOutlineMaterial } from '../render/toonMaterial.ts';
 import { PropBatch, chunkInstanced } from '../render/propBatch.ts';
 import { NightLights } from '../render/nightLights.ts';
 import { neighborhoodSlabs, wearPoints, TREEHOUSE, type Slab } from './neighborhood.ts';
+import { POCKETS } from './surrounds.ts';
+import { themeOf, type MapTheme } from './themes.ts';
 import { buildGround, buildTufts, averageLawnColor, type Paved } from './ground.ts';
 
 /**
@@ -148,6 +150,8 @@ const GATE_HALF = 1.4;
 export const LAWN_EXTENT = 132;
 
 export function createScene(seed: string | number = 'backyard-01'): SceneBuild {
+  // The map is the season, and the season rides in the seed — see themes.ts.
+  const theme = themeOf(seed);
   const rng = new Rng(seed);
   const scene = new THREE.Scene();
   scene.fog = new THREE.Fog(PALETTE.fog, 45, 190);
@@ -168,12 +172,12 @@ export function createScene(seed: string | number = 'backyard-01'): SceneBuild {
   // The map is described once and drawn here. The same list becomes the
   // collision fixtures, which is the only way the house you see and the house
   // you walk into stay the same house.
-  const slabs = neighborhoodSlabs(rng.fork());
+  const slabs = neighborhoodSlabs(rng.fork(), theme.canopy);
 
   // Built before the scenery is queued but after the map is described, because
   // the grass has to know where the paving is. Its own Rng, so the order here
   // does not change what anything else draws.
-  addGround(scene, new Rng(`${seed}-ground`), slabs);
+  addGround(scene, new Rng(`${seed}-ground`), slabs, theme);
 
   for (const s of slabs) {
     box(props, cache, s.w, s.h, s.d, s.x, s.y, s.z, s.color, {
@@ -183,8 +187,9 @@ export function createScene(seed: string | number = 'backyard-01'): SceneBuild {
     });
   }
 
-  addTrees(scene, props, cache, rng.fork());
+  addTrees(scene, props, cache, rng.fork(), theme);
   addGarden(scene, rng.fork());
+  const flames = addCampfire(scene);
   scene.add(props.build());
 
   // Read off the same list that was just drawn, so a lamp and its light cannot
@@ -201,6 +206,13 @@ export function createScene(seed: string | number = 'backyard-01'): SceneBuild {
     lights,
     setDaylight(t: DayTime): boolean {
       const want = clampDay(t);
+      // The fire flickers off the same continuous clock, before the quantize
+      // gate below — the gate exists to spare the shadow map, and a flame is
+      // three small meshes that cost nothing to move. The day fraction runs
+      // 0..1 over a whole afternoon, so it is scaled hard to get flame-rate
+      // motion, and it is the *simulation's* clock: two machines at the same
+      // moment of the afternoon see the same fire.
+      flames.flicker(want);
       // Quantised, because this is called every frame and every change costs a
       // shadow-map rebuild. A hundredth of an afternoon is finer than anybody
       // can see move and coarse enough that a five-minute round pays for a
@@ -386,7 +398,7 @@ function pavedFootprints(slabs: readonly Slab[]): Paved[] {
   return out;
 }
 
-function addGround(scene: THREE.Scene, rng: Rng, slabs: readonly Slab[]): void {
+function addGround(scene: THREE.Scene, rng: Rng, slabs: readonly Slab[], theme: MapTheme): void {
   // The lot's own lawn, with tone variation and the paths worn into it. Laid
   // over the far plane rather than replacing it: the horizon still needs
   // something to be, and subdividing four hundred metres to get it would be
@@ -398,8 +410,8 @@ function addGround(scene: THREE.Scene, rng: Rng, slabs: readonly Slab[]): void {
     // lattice starts showing as triangular banding on open ground, which is
     // worse than the flat colour it replaced.
     extent: LAWN_EXTENT,
-    grass: PALETTE.grass,
-    grassDark: PALETTE.grassDark,
+    grass: theme.grass,
+    grassDark: theme.grassDark,
     dirt: PALETTE.dirt,
     wear: wearPoints(),
     paved: pavedFootprints(slabs),
@@ -422,7 +434,7 @@ function addGround(scene: THREE.Scene, rng: Rng, slabs: readonly Slab[]): void {
   // this wrong and the lot is a visibly different shade from the world around
   // it — a rug thrown over the ground, with a straight edge where it stops.
   const material = createToonMaterial({ color: 0xffffff });
-  material.color.copy(averageLawnColor(PALETTE.grass, PALETTE.grassDark));
+  material.color.copy(averageLawnColor(theme.grass, theme.grassDark));
   const ground = new THREE.Mesh(geometry, material);
   ground.name = 'ground';
   ground.receiveShadow = true;
@@ -533,6 +545,41 @@ function jitter(hex: number, rng: Rng, amount: number): number {
  * All ghost scenery: nothing here blocks movement or aim, so it can be walked
  * through exactly like the grass tufts — decoration has no collision opinions.
  */
+/**
+ * The firepit's fire: three turned cones of flame over the embers, scaled and
+ * swayed every frame. Emissive rather than toon — fire is the one thing here
+ * that is its own light source, and running it through the sun's ramp would
+ * put a shadow side on a flame.
+ */
+function addCampfire(scene: THREE.Scene): { flicker(t: number): void } {
+  const pit = POCKETS[3];
+  const tones = [0xff7a26, 0xffb43c, 0xffe08a];
+  const cones: THREE.Mesh[] = [];
+  for (let i = 0; i < 3; i++) {
+    const cone = new THREE.Mesh(
+      lathe([
+        { r: 0, y: 0 }, { r: 0.22 - i * 0.055, y: 0.04 },
+        { r: 0.1 - i * 0.02, y: 0.34 - i * 0.03 }, { r: 0, y: 0.52 - i * 0.07 },
+      ], 7),
+      new THREE.MeshBasicMaterial({ color: tones[i]! }),
+    );
+    cone.position.set(pit.x + (i - 1) * 0.09, 0.1 + i * 0.05, pit.z + (i === 2 ? 0.07 : -0.04 * i));
+    scene.add(cone);
+    cones.push(cone);
+  }
+  return {
+    flicker(t: number): void {
+      for (let i = 0; i < cones.length; i++) {
+        const c = cones[i]!;
+        const phase = t * 2600 + i * 2.1;
+        c.scale.y = 0.82 + 0.24 * Math.sin(phase) * Math.sin(phase * 0.37 + i);
+        c.scale.x = c.scale.z = 1 + 0.1 * Math.sin(phase * 0.61 + i * 1.7);
+        c.rotation.y = phase * 0.05;
+      }
+    },
+  };
+}
+
 function addGarden(scene: THREE.Scene, rng: Rng): void {
   // One named group, so a test can find the garden — and find it *gone*.
   const garden = new THREE.Group();
@@ -596,7 +643,7 @@ function addGarden(scene: THREE.Scene, rng: Rng): void {
   }
 }
 
-function addTrees(scene: THREE.Scene, props: PropBatch, cache: GeometryCache, rng: Rng): void {
+function addTrees(scene: THREE.Scene, props: PropBatch, cache: GeometryCache, rng: Rng, theme: MapTheme): void {
   const spots: Array<[number, number, number]> = [
     [-16, -14, 1.35],
     [17, -13, 1.1],
@@ -649,7 +696,7 @@ function addTrees(scene: THREE.Scene, props: PropBatch, cache: GeometryCache, rn
       const dark = i % 2 === 1;
       const mesh = new THREE.Mesh(
         geometry,
-        createToonMaterial({ color: dark ? PALETTE.foliageDark : PALETTE.foliage }),
+        createToonMaterial({ color: dark ? theme.foliageDark : theme.foliage }),
       );
       mesh.castShadow = true;
       mesh.receiveShadow = true;

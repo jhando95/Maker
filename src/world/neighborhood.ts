@@ -237,7 +237,7 @@ function timber(
  * structural piece — house, roof, porch, treehouse, flag surrounds — is fixed.
  * A map whose walls move with the seed is a map you cannot design around.
  */
-export function neighborhoodSlabs(rng: Rng): Slab[] {
+export function neighborhoodSlabs(rng: Rng, canopy?: readonly [number, number, number]): Slab[] {
   slabs.length = 0;
 
   house();
@@ -272,7 +272,7 @@ export function neighborhoodSlabs(rng: Rng): Slab[] {
   // interact with the lot at all. The cost is that the horizon does not vary
   // with the map seed, and the horizon is the last thing in this world that
   // needs to.
-  for (const s of surroundsSlabs(new Rng('surrounds'))) put(s);
+  for (const s of surroundsSlabs(new Rng('surrounds'), canopy)) put(s);
 
   return slabs.map((s) => ({ ...s }));
 }
@@ -932,6 +932,31 @@ function clutter(rng: Rng): void {
   gnome(-6.4, -6.0, LOT.trim);
   gnome(6.4, 6.0, LOT.door);
   gnome(-17.0, -6.5, LOT.binGreen);
+
+  // ── Life on the house itself ──────────────────────────────────────────────
+  //
+  // A chimney, because a roofline with no vertical reads as a warehouse; two
+  // window boxes in bloom on the front wall; a doormat; and the cat, who is a
+  // ghost in the collision sense and in no other sense, sitting where cats
+  // sit — by the door, facing the street, unimpressed.
+  timber(0.7, 1.7, 0.7, 2.2, HOUSE.ridge - 0.4, 1.4, 0x9a5a4a, { outline: 0x6a3a30, chamfer: 0.03 });
+  timber(0.85, 0.14, 0.85, 2.2, HOUSE.ridge + 0.5, 1.4, 0x7a4438, { chamfer: 0.02 });
+  for (const wx of [-2.4, 2.6]) {
+    timber(1.15, 0.22, 0.26, wx, 1.32, -(HOUSE.halfDepth + 0.16), LOT.soil, { outline: 0x6a4a2a, chamfer: 0.03, ghost: true });
+    timber(1.0, 0.18, 0.2, wx, 1.5, -(HOUSE.halfDepth + 0.16), LOT.hedge, { chamfer: 0.06, ghost: true });
+    for (let f = 0; f < 3; f++) {
+      timber(0.09, 0.09, 0.09, wx - 0.3 + f * 0.3, 1.62, -(HOUSE.halfDepth + 0.16),
+        f === 1 ? 0xe8b03c : 0xd8564f, { chamfer: 0.02, ghost: true });
+    }
+  }
+  timber(0.9, 0.03, 0.6, 1.5, 0.015, -(HOUSE.halfDepth + 0.55), 0x8a6a52, { ghost: true });
+  // The cat: body, head, two ears, tail curled round the feet.
+  timber(0.34, 0.22, 0.16, 3.1, 0.11, -(HOUSE.halfDepth + 0.4), 0xd98a4a, { ry: 0.3, outline: 0x8a5228, chamfer: 0.06, ghost: true });
+  timber(0.15, 0.15, 0.13, 3.24, 0.28, -(HOUSE.halfDepth + 0.46), 0xd98a4a, { ry: 0.3, chamfer: 0.04, ghost: true });
+  for (const ex of [-0.04, 0.04]) {
+    timber(0.04, 0.06, 0.03, 3.24 + ex, 0.38, -(HOUSE.halfDepth + 0.46), 0xd98a4a, { ry: 0.3, ghost: true });
+  }
+  timber(0.3, 0.05, 0.05, 2.92, 0.05, -(HOUSE.halfDepth + 0.32), 0xc97838, { ry: 1.1, chamfer: 0.02, ghost: true });
 
   // ── A lamp post out front, because the street needed a vertical ───────────
   timber(0.22, 4.4, 0.22, 8.5, 2.2, -17.5, LOT.metal, { outline: 0x4a4f54 });

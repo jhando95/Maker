@@ -131,7 +131,7 @@ function occupied(x: number, z: number): boolean {
  * like woods is depth — some trees in front of others — and that needs a band
  * rather than a line.
  */
-function woods(out: Slab[], rng: Rng): void {
+function woods(out: Slab[], rng: Rng, canopy: readonly [number, number, number]): void {
   let placed = 0;
   for (let tries = 0; tries < 2400 && placed < 170; tries++) {
     const angle = rng.next() * Math.PI * 2;
@@ -142,7 +142,7 @@ function woods(out: Slab[], rng: Rng): void {
     // Bigger further out, so the near edge of the wood does not tower over the
     // houses in front of it.
     const size = radius > 56 ? 2 : radius > 50 ? rng.int(1, 2) : rng.int(0, 1);
-    woodTree(out, x, z, size, CANOPY[rng.int(0, 2)]!, rng.next() * Math.PI);
+    woodTree(out, x, z, size, canopy[rng.int(0, 2)]!, rng.next() * Math.PI);
     placed++;
   }
 }
@@ -168,7 +168,7 @@ export const SITE = { x: 36.5, z: -9, halfW: 4.2, halfD: 3.6 } as const;
  */
 export const POCKETS = [
   { name: 'site', ...SITE },
-  { name: 'pond', x: -35, z: -7, halfW: 3.6, halfD: 3.2 },
+  { name: 'pond', x: -35, z: -7, halfW: 4.6, halfD: 4.2 },
   { name: 'coop', x: 10, z: 27.2, halfW: 3.2, halfD: 2.4 },
   { name: 'firepit', x: -35, z: 16, halfW: 2.9, halfD: 2.9 },
 ] as const;
@@ -234,9 +234,11 @@ function pond(out: Slab[]): void {
   const stone = 0x9a958c;
   // Two stone sizes only, spun for variety — the draw-budget rule: a unique
   // box size is a draw call, and a ring does not need six of them.
-  for (let i = 0; i < 9; i++) {
-    const a = (i / 9) * Math.PI * 2;
-    const r = 2.5 + (i % 3) * 0.18;
+  for (let i = 0; i < 13; i++) {
+    const a = (i / 13) * Math.PI * 2;
+    // The radius follows the sheets' union, so the ring hugs the waterline
+    // instead of circling a square: widest on the two lobes' diagonals.
+    const r = 3.0 + 0.7 * Math.abs(Math.sin(a + 0.85)) + (i % 3) * 0.16;
     const big = i % 2 === 0;
     out.push({
       w: big ? 0.72 : 0.52, h: big ? 0.46 : 0.34, d: big ? 0.62 : 0.46,
@@ -244,7 +246,11 @@ function pond(out: Slab[]): void {
       ry: a * 0.7, color: stone, outline: 0x6a665e, chamfer: 0.09,
     });
   }
-  out.push({ w: 4.4, h: 0.05, d: 4.1, x: p.x, y: 0.045, z: p.z, color: 0x5f9fc4, outline: 0x3d7a9e, chamfer: 0.02, ghost: true });
+  // Not a square: three sheets at three angles, overlapped. The eye reads
+  // the union outline — an irregular lobed shape — and never the rectangles.
+  out.push({ w: 5.4, h: 0.05, d: 4.6, x: p.x, y: 0.045, z: p.z, ry: 0.18, color: 0x5f9fc4, outline: 0x3d7a9e, chamfer: 0.02, ghost: true });
+  out.push({ w: 4.2, h: 0.05, d: 3.6, x: p.x - 1.4, y: 0.04, z: p.z + 1.5, ry: 0.85, color: 0x5f9fc4, chamfer: 0.02, ghost: true });
+  out.push({ w: 3.6, h: 0.05, d: 3.2, x: p.x + 1.7, y: 0.035, z: p.z - 1.4, ry: 1.35, color: 0x66a8cc, chamfer: 0.02, ghost: true });
   for (const [dx, dz] of [[-1.2, 1.6], [-0.9, 1.9], [1.5, -1.3]] as const) {
     out.push({ w: 0.06, h: 1.0, d: 0.06, x: p.x + dx, y: 0.54, z: p.z + dz, color: 0x5f7a3a, ghost: true });
     out.push({ w: 0.1, h: 0.22, d: 0.1, x: p.x + dx, y: 1.14, z: p.z + dz, color: 0x6a4a2a, chamfer: 0.03, ghost: true });
@@ -294,7 +300,13 @@ function firepit(out: Slab[]): void {
       ry: a, color: 0x8a8578, outline: 0x5a564e, chamfer: 0.09,
     });
   }
-  out.push({ w: 1.2, h: 0.12, d: 1.2, x: p.x, y: 0.06, z: p.z, color: 0x2e2a28, outline: 0x1a1816, chamfer: 0.04, ghost: true });
+  out.push({
+    w: 1.2, h: 0.12, d: 1.2, x: p.x, y: 0.06, z: p.z, color: 0x2e2a28,
+    outline: 0x1a1816, chamfer: 0.04, ghost: true,
+    // The pit is lit: embers glow through the night lights pipeline, and the
+    // flames themselves are live geometry the scene animates — see addCampfire.
+    lit: { color: 0xff9a3c, bloom: 0.9 },
+  });
   out.push({ w: 1.9, h: 0.4, d: 0.4, x: p.x - 0.4, y: 0.2, z: p.z + 1.9, ry: 0.25, color: 0x8a6242, outline: 0x4a3122, chamfer: 0.1 });
   out.push({ w: 1.9, h: 0.4, d: 0.4, x: p.x + 1.7, y: 0.2, z: p.z - 0.7, ry: 1.75, color: 0x8a6242, outline: 0x4a3122, chamfer: 0.1 });
 }
@@ -325,7 +337,11 @@ export function pocketSlabs(): Slab[] {
  * Takes an Rng because the woods are scattered, and a seeded one because two
  * players have to be looking at the same horizon and none of it is sent.
  */
-export function surroundsSlabs(rng: Rng): Slab[] {
+export function surroundsSlabs(
+  rng: Rng,
+  /** Canopy tones for the woods — the season's, or summer's. See themes.ts. */
+  canopy: readonly [number, number, number] = CANOPY,
+): Slab[] {
   const out: Slab[] = [];
 
   for (const n of AROUND) neighbourHouse(out, n);
@@ -345,6 +361,6 @@ export function surroundsSlabs(rng: Rng): Slab[] {
   hedgeRun(out, -30, -18, -30, 2, 1.7);
   hedgeRun(out, 30, -18, 30, 2, 1.7);
 
-  woods(out, rng);
+  woods(out, rng, canopy);
   return out;
 }
