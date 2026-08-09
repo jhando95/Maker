@@ -299,9 +299,19 @@ export function pocketSlabs(): Slab[] {
   place(out, 'firepit', POCKETS[3].x, POCKETS[3].z);
   place(out, 'ropeSwing', POCKETS[1].x + 4.6, POCKETS[1].z + 1.2, 1);
   place(out, 'sandpit', SITE.x - 3.1, SITE.z + 2.2);
-  place(out, 'seesaw', 16, 27.2, 1);
+  for (const s of SEESAWS) place(out, 'seesaw', s.x, s.z, s.turns);
   return out;
 }
+
+/**
+ * Where the see-saws stand, exported because each needs two halves: the
+ * prefab places the tyre with the map, and the shell builds a live `Seesaw`
+ * runtime at the same spot for the plank that actually moves. One list, so
+ * the two cannot drift apart.
+ */
+export const SEESAWS = [
+  { x: 16, z: 27.2, turns: 1 },
+] as const;
 
 /**
  * Everything beyond the fence that is not the cul-de-sac.

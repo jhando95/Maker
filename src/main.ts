@@ -23,6 +23,9 @@ import {
 } from './game/spray.ts';
 import { PartRenderer } from './render/partRenderer.ts';
 import { Pennants } from './render/pennants.ts';
+import { SeesawView } from './render/seesawView.ts';
+import { Seesaw } from './world/seesaw.ts';
+import { SEESAWS } from './world/surrounds.ts';
 import { chamferedBox } from './render/geometry.ts';
 import { BuildSystem, type PlacementRecord } from './build/buildSystem.ts';
 import { CharacterController, type MoveIntent } from './player/controller.ts';
@@ -369,6 +372,20 @@ function mapColor(rgb: number): string {
 // nothing draws them, and the slab list is a description of what the yard looks
 // like rather than of where it ends.
 installBarrier(world);
+
+// The first moving platforms: a live plank per see-saw spot, ticking its
+// tilt from whoever stands on it and pushing the collision box and the drawn
+// board from the same state. The tyre under each is ordinary map scenery.
+const seesaws = SEESAWS.map((s) => new Seesaw(world, s.x, s.z, s.turns));
+const seesawViews = seesaws.map((s) => {
+  const view = new SeesawView();
+  view.follow(s.pose());
+  scene.add(view.group);
+  return view;
+});
+/** Reused each tick for the see-saw riders, so the loop allocates nothing. */
+const riderScratch: { x: number; y: number; z: number }[] = [];
+
 const parts = new PartRenderer();
 scene.add(parts.group);
 
@@ -2596,6 +2613,16 @@ function simulateBody(dt: number): void {
   }
 
   simTicks++;
+  // The see-saws ride under whoever is standing on them, host and guest
+  // alike: the tick is a pure function of the bodies each machine knows
+  // about, so nothing about it travels. Before the characters step, so the
+  // plank a body lands on this tick is the plank it stands on.
+  riderScratch.length = 0;
+  for (const who of actors.all) riderScratch.push(who.controller);
+  for (let i = 0; i < seesaws.length; i++) {
+    seesaws[i]!.tick(DT, riderScratch);
+    seesawViews[i]!.follow(seesaws[i]!.pose());
+  }
   if (input.wasPressed('fly')) {
     if (mode !== null) hud.notice('Flying is for Shed Day.');
     else {
@@ -3310,6 +3337,8 @@ window.__maker = {
      */
     gravityScale: MOTION.gravityScale,
   }),
+  /** Each see-saw's live tilt, for the scenario that rides one. */
+  seesaws: () => seesaws.map((s) => ({ x: s.x, z: s.z, angle: s.angle })),
   teleport: (x: number, y: number, z: number) => player.teleport(x, y, z),
   lookAt: (yaw: number, pitch: number) => {
     camera.yaw = yaw;

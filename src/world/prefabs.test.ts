@@ -7,7 +7,10 @@ describe('the prefab catalogue', () => {
     for (const name of Object.keys(PREFABS) as Array<keyof typeof PREFABS>) {
       const out: Slab[] = [];
       place(out, name, 100, -200);
-      expect(out.length, name).toBeGreaterThan(3);
+      // The see-saw's static half is just the tyre: its plank and handles
+      // moved into the live `Seesaw` runtime the day it started tilting, and
+      // demanding four slabs of it here would demand the frozen copy back.
+      expect(out.length, name).toBeGreaterThanOrEqual(name === 'seesaw' ? 1 : 4);
       for (const s of out) {
         expect(Math.abs(s.x - 100), `${name} strayed in x`).toBeLessThan(6);
         expect(Math.abs(s.z - -200), `${name} strayed in z`).toBeLessThan(6);

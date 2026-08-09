@@ -95,6 +95,32 @@ export default async function (page) {
     `and along its own length rather than sideways, drifted to x=${slid.x.toFixed(2)}`,
   );
 
+  // ── The see-saw actually see-saws ──────────────────────────────────────────
+  //
+  // The ride itself — a real body carried down with the plank — is unit-tested
+  // with a real controller, tick-exact. What only the browser can prove is the
+  // wiring: that main.ts ticks the see-saws at all, with the real roster as
+  // the riders. The angle moving is that proof — it moves only if the tick
+  // runs and sees the player standing there. Waited on as a condition rather
+  // than a frame count, because a SwiftShader frame is many sim ticks and a
+  // kid parked on a grounded tip eventually toboggans off the end.
+  const restAngle = await page.evaluate(() => {
+    const m = window.__maker;
+    const spot = m.seesaws()[0];
+    // The map's see-saw, turned once: the raised +along end is toward -z.
+    m.teleport(spot.x, 1.35, spot.z - 1.6);
+    return spot.angle;
+  });
+  assert(
+    restAngle > 0.15,
+    `the unridden see-saw should rest with its far end up, angle ${restAngle.toFixed(3)}`,
+  );
+  await page
+    .waitForFunction(() => window.__maker.seesaws()[0].angle < -0.1, null, { timeout: 20_000 })
+    .catch(() => {
+      throw new Error('items scenario: standing on the high end never rode the see-saw down');
+    });
+
   // Park where a person can see whether any of this looks like what it is:
   // back on the lawn, with the trampoline in the middle distance and the porch
   // roof it launches onto behind it. Every check above is a number, and a

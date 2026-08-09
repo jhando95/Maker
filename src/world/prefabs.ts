@@ -126,12 +126,12 @@ function firepit(out: Slab[]): void {
  * point of the catalogue.
  */
 function seesaw(out: Slab[]): void {
+  // Only the tyre. The plank and its handles used to be authored here at a
+  // frozen 0.2-radian tilt; they are alive now — a `Seesaw` runtime owns the
+  // moving plank's collision and drawing both (see world/seesaw.ts), and a
+  // second, painted copy of it here would stand still inside the real one.
+  // A map that places this prefab without wiring a runtime gets a tyre.
   out.push({ w: 0.5, h: 0.55, d: 0.9, x: 0, y: 0.27, z: 0, color: 0x2a2a30, outline: 0x1a1a1e, chamfer: 0.12 });
-  out.push({ w: 3.8, h: 0.16, d: 0.5, x: 0, y: 0.62, z: 0, rz: 0.2, color: 0xd8564f, outline: 0x8a3226, chamfer: 0.02 });
-  // Handles at both ends, the detail that says see-saw rather than plank.
-  for (const dx of [-1.55, 1.55]) {
-    out.push({ w: 0.06, h: 0.3, d: 0.06, x: dx, y: 0.62 + dx * 0.2 + 0.22, z: 0, color: 0x4a4f54, chamfer: 0.01, ghost: true });
-  }
 }
 
 /**

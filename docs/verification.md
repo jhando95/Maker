@@ -1490,3 +1490,35 @@ the refusal sentence belongs; the copy button handing out a blueprint-prefixed
 string; and the import decoding successfully and applying nothing — one part
 over the count it should have restored to, which is exactly how it would
 have shipped: a button that says "loaded" and loads nothing.
+
+## The see-saw moves
+
+Eight plants across store, world, runtime and shell — and before any of
+them, a sign error caught at the desk: writing the tests forced the surface
+equation into words ("positive angle raises the +X end"), at which point the
+rider torque was visibly adding when it should subtract. As committed it
+would have been a see-saw that lifts whoever steps on it; the sign got a
+comment, the tests got the claim, and the formal plant then failed four of
+them at once.
+
+The plants: the torque sign itself; the gravity bias removed (an empty
+see-saw balancing level on its tyre, the coin standing on its edge); the
+re-hash dropped from updatePart — planted at the world layer and caught by
+the translation test, because a tilt barely changes the plank's AABB and a
+plant only the see-saw exercised might never leave its broadphase cells;
+the push to the collision world dropped from the tick (pose and plank
+drift apart, caught by raycast); `hasProxy` never recorded (a wedge moved
+as its drawn box); the rider's across-check dropped (a kid standing beside
+the plank rides it); the clamp removed (five tests fail as the plank spins);
+and main.ts never ticking the fleet, which only the browser can notice and
+the items scenario did.
+
+And one honest failure that reshaped a test rather than the code: the first
+browser assertion sampled the rider's height after forty rAF frames, which
+on SwiftShader is many seconds of simulation — long enough for the kid to
+ride down, then toboggan off the grounded tip, then be standing on the lawn
+at y = 0. The probe that diagnosed it showed the ride itself was perfect,
+so the ride became a unit test with a real CharacterController (tick-exact,
+ninety ticks, still on their feet at the bottom), and the browser now waits
+on the tilt as a condition and claims only the wiring. Wall time is not sim
+time; this roll has said so before and will apparently say it again.

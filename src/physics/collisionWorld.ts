@@ -241,6 +241,33 @@ export class CollisionWorld {
     return this.store.remove(id);
   }
 
+  /**
+   * Move a live part in place — the kinematic seam.
+   *
+   * The see-saw plank is the same box every tick, somewhere slightly
+   * different, and this is everything "somewhere different" requires: the
+   * transform rewritten and the broadphase told, so the plank collides where
+   * it is rather than where it started. A stale hash here is the worst kind
+   * of wrong — the plank *looks* moved and bodies still stand on the air
+   * where it used to be.
+   *
+   * Deliberately no `version++`. Version feeds the caches that describe the
+   * world's *structure* — support, routing, static shadows — and a platform
+   * mid-swing is not new structure, it is old structure in motion. Those
+   * systems read the rest pose and are honest about it; bumping the version
+   * sixty times a second would rebuild them for nothing.
+   */
+  updatePart(
+    id: PartId,
+    cx: number, cy: number, cz: number,
+    qx: number, qy: number, qz: number, qw: number,
+  ): boolean {
+    if (!this.store.updateTransform(id, cx, cy, cz, qx, qy, qz, qw)) return false;
+    this.hash.remove(id);
+    this.hash.insert(id, this.store.readAabb(id));
+    return true;
+  }
+
   get partCount(): number {
     return this.store.count;
   }
