@@ -166,6 +166,14 @@ export const SITE = { x: 36.5, z: -9, halfW: 4.2, halfD: 3.6 } as const;
  * pond", "at the coop", "round the firepit" are callouts, and callouts are
  * what a chase is made of.
  */
+/**
+ * The pond's shoreline: radius by angle, three low-frequency lobes. One
+ * function serves the water polygon and the stone ring, which is what keeps
+ * the stones on the shore however the shape is tuned.
+ */
+export const POND_EDGE = (a: number): number =>
+  2.7 + 0.85 * Math.abs(Math.sin(a + 0.85)) + 0.4 * Math.sin(a * 3 + 1.2);
+
 export const POCKETS = [
   { name: 'site', ...SITE },
   { name: 'pond', x: -35, z: -7, halfW: 4.6, halfD: 4.2 },
@@ -236,9 +244,8 @@ function pond(out: Slab[]): void {
   // box size is a draw call, and a ring does not need six of them.
   for (let i = 0; i < 13; i++) {
     const a = (i / 13) * Math.PI * 2;
-    // The radius follows the sheets' union, so the ring hugs the waterline
-    // instead of circling a square: widest on the two lobes' diagonals.
-    const r = 3.0 + 0.7 * Math.abs(Math.sin(a + 0.85)) + (i % 3) * 0.16;
+    // The ring hugs the waterline: the shared edge, plus half a stone.
+    const r = POND_EDGE(a) + 0.42 + (i % 3) * 0.12;
     const big = i % 2 === 0;
     out.push({
       w: big ? 0.72 : 0.52, h: big ? 0.46 : 0.34, d: big ? 0.62 : 0.46,
@@ -246,11 +253,10 @@ function pond(out: Slab[]): void {
       ry: a * 0.7, color: stone, outline: 0x6a665e, chamfer: 0.09,
     });
   }
-  // Not a square: three sheets at three angles, overlapped. The eye reads
-  // the union outline — an irregular lobed shape — and never the rectangles.
-  out.push({ w: 5.4, h: 0.05, d: 4.6, x: p.x, y: 0.045, z: p.z, ry: 0.18, color: 0x5f9fc4, outline: 0x3d7a9e, chamfer: 0.02, ghost: true });
-  out.push({ w: 4.2, h: 0.05, d: 3.6, x: p.x - 1.4, y: 0.04, z: p.z + 1.5, ry: 0.85, color: 0x5f9fc4, chamfer: 0.02, ghost: true });
-  out.push({ w: 3.6, h: 0.05, d: 3.2, x: p.x + 1.7, y: 0.035, z: p.z - 1.4, ry: 1.35, color: 0x66a8cc, chamfer: 0.02, ghost: true });
+  // The water itself is not a slab at all — boxes make squares however they
+  // overlap, and the first two versions proved it. The scene draws the sheet
+  // as a real polygon from POND_EDGE (see addPondWater); the stones below use
+  // the same edge, so ring and water cannot disagree about the shoreline.
   for (const [dx, dz] of [[-1.2, 1.6], [-0.9, 1.9], [1.5, -1.3]] as const) {
     out.push({ w: 0.06, h: 1.0, d: 0.06, x: p.x + dx, y: 0.54, z: p.z + dz, color: 0x5f7a3a, ghost: true });
     out.push({ w: 0.1, h: 0.22, d: 0.1, x: p.x + dx, y: 1.14, z: p.z + dz, color: 0x6a4a2a, chamfer: 0.03, ghost: true });

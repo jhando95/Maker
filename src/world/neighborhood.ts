@@ -445,6 +445,15 @@ function backDeck(): void {
  */
 function dividers(): void {
   const height = 1.7;
+
+  // The porch and back-deck railings on the centre line: solid, waist-high on
+  // their decks, wall to where the pickets take over. Without these the
+  // divider had a person-sized hole straight through both porches — or, in
+  // the first fix, pickets growing out of the deck boards.
+  timber(0.08, 1.1, 3.95, 0, 0.85, -8.25, LOT.plankPale, { chamfer: 0.01 });
+  timber(0.14, 0.06, 3.95, 0, 1.43, -8.25, LOT.porch, { chamfer: 0.01 });
+  timber(0.08, 1.1, 3.6, 0, 1.22, 8.0, LOT.plankPale, { chamfer: 0.01 });
+  timber(0.14, 0.06, 3.6, 0, 1.8, 8.0, LOT.porch, { chamfer: 0.01 });
   const gaps: ReadonlyArray<readonly [number, number]> = [
     [-19.5, -16.0],  // the driveway, out front
     [12.5, 15.5],    // the gap in the back fence everyone uses
@@ -453,7 +462,13 @@ function dividers(): void {
   const inGap = (z: number) => gaps.some(([a, b]) => z > a && z < b);
 
   for (const dir of [-1, 1]) {
-    const from = dir * (HOUSE.halfDepth + 0.1);
+    // Not from the house wall: both faces of the house have a deck across the
+    // centre line — the porch and its steps out front, the back deck behind —
+    // and a run started at the wall planted pickets straight through the
+    // decking, under the porch roof and across the doorway. The fence resumes
+    // where the decking ends; the decks themselves are sealed by the railings
+    // below, because this is a two-family house and each team gets a side.
+    const from = dir === -1 ? -10.2 : 9.8;
     const to = dir * 23.5;
     const span = Math.abs(to - from);
     const count = Math.round(span / 0.26);

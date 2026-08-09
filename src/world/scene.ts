@@ -17,7 +17,7 @@ import { createOutlineMaterial } from '../render/toonMaterial.ts';
 import { PropBatch, chunkInstanced } from '../render/propBatch.ts';
 import { NightLights } from '../render/nightLights.ts';
 import { neighborhoodSlabs, wearPoints, TREEHOUSE, type Slab } from './neighborhood.ts';
-import { POCKETS } from './surrounds.ts';
+import { POCKETS, POND_EDGE } from './surrounds.ts';
 import { themeOf, type MapTheme } from './themes.ts';
 import { buildGround, buildTufts, averageLawnColor, type Paved } from './ground.ts';
 
@@ -190,6 +190,7 @@ export function createScene(seed: string | number = 'backyard-01'): SceneBuild {
   addTrees(scene, props, cache, rng.fork(), theme);
   addGarden(scene, rng.fork());
   const flames = addCampfire(scene);
+  addPondWater(scene);
   scene.add(props.build());
 
   // Read off the same list that was just drawn, so a lamp and its light cannot
@@ -553,17 +554,21 @@ function jitter(hex: number, rng: Rng, amount: number): number {
  */
 function addCampfire(scene: THREE.Scene): { flicker(t: number): void } {
   const pit = POCKETS[3];
-  const tones = [0xff7a26, 0xffb43c, 0xffe08a];
+  const tones = [0xff6a1e, 0xff9232, 0xffb43c, 0xffe08a];
   const cones: THREE.Mesh[] = [];
-  for (let i = 0; i < 3; i++) {
+  for (let i = 0; i < 4; i++) {
     const cone = new THREE.Mesh(
       lathe([
-        { r: 0, y: 0 }, { r: 0.22 - i * 0.055, y: 0.04 },
-        { r: 0.1 - i * 0.02, y: 0.34 - i * 0.03 }, { r: 0, y: 0.52 - i * 0.07 },
+        { r: 0, y: 0 }, { r: 0.34 - i * 0.07, y: 0.06 },
+        { r: 0.16 - i * 0.03, y: 0.5 - i * 0.05 }, { r: 0, y: 0.95 - i * 0.16 },
       ], 7),
       new THREE.MeshBasicMaterial({ color: tones[i]! }),
     );
-    cone.position.set(pit.x + (i - 1) * 0.09, 0.1 + i * 0.05, pit.z + (i === 2 ? 0.07 : -0.04 * i));
+    cone.position.set(
+      pit.x + Math.sin(i * 2.4) * 0.11,
+      0.1 + i * 0.04,
+      pit.z + Math.cos(i * 2.4) * 0.1,
+    );
     scene.add(cone);
     cones.push(cone);
   }
@@ -571,13 +576,49 @@ function addCampfire(scene: THREE.Scene): { flicker(t: number): void } {
     flicker(t: number): void {
       for (let i = 0; i < cones.length; i++) {
         const c = cones[i]!;
-        const phase = t * 2600 + i * 2.1;
-        c.scale.y = 0.82 + 0.24 * Math.sin(phase) * Math.sin(phase * 0.37 + i);
-        c.scale.x = c.scale.z = 1 + 0.1 * Math.sin(phase * 0.61 + i * 1.7);
-        c.rotation.y = phase * 0.05;
+        const phase = t * 4200 + i * 2.1;
+        // Two incommensurate sines per axis: the beat between them is what
+        // reads as fire rather than as a shape on a spring.
+        c.scale.y = 0.62 + 0.5 * Math.abs(Math.sin(phase) * Math.sin(phase * 0.41 + i))
+          + 0.22 * Math.sin(phase * 1.7 + i * 3.1);
+        c.scale.x = c.scale.z = 0.9 + 0.2 * Math.sin(phase * 0.77 + i * 1.7);
+        c.position.y = 0.1 + i * 0.04 + 0.05 * Math.sin(phase * 1.3 + i);
+        c.rotation.y = phase * 0.09;
       }
     },
   };
+}
+
+/**
+ * The pond's water: a real polygon of the shoreline function, because a box
+ * is a square whatever you do to it. Sixteen points of POND_EDGE, fanned into
+ * a flat sheet a few centimetres up, with a slightly larger darker sheet
+ * beneath it as the wet margin.
+ */
+function addPondWater(scene: THREE.Scene): void {
+  const p = POCKETS[1];
+  const sheet = (grow: number, y: number, color: number): void => {
+    const shape = new THREE.Shape();
+    for (let i = 0; i <= 16; i++) {
+      const a = (i / 16) * Math.PI * 2;
+      const r = POND_EDGE(a) + grow;
+      const x = Math.sin(a) * r;
+      const z = Math.cos(a) * r;
+      if (i === 0) shape.moveTo(x, z);
+      else shape.lineTo(x, z);
+    }
+    const geometry = new THREE.ShapeGeometry(shape);
+    geometry.rotateX(Math.PI / 2);
+    // The fan's winding lands face-down after the rotation; a sheet of water
+    // is the one flat thing cheap enough to just draw from both sides.
+    const material = createToonMaterial({ color });
+    material.side = THREE.DoubleSide;
+    const mesh = new THREE.Mesh(geometry, material);
+    mesh.position.set(p.x, y, p.z);
+    scene.add(mesh);
+  };
+  sheet(0.35, 0.03, 0x8a7a5c);
+  sheet(0, 0.06, 0x5f9fc4);
 }
 
 function addGarden(scene: THREE.Scene, rng: Rng): void {
