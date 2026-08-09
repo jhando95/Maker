@@ -1382,6 +1382,9 @@ let netMessage: string | null = null;
  */
 function startHosting(url: string, room: string): NetHost {
   leaveSession();
+  // Guests predict under the shipped physics, so a session must never inherit
+  // a bent yard from a solo experiment that came before it.
+  resetHouseRules();
   const host = new NetHost(sessionContext);
   net = host;
   relayLink = new RelayHostLink(url, room, (transport) => host.accept(transport), (m) => {
@@ -1393,6 +1396,7 @@ function startHosting(url: string, room: string): NetHost {
 }
 
 function joinSession(url: string, room: string, name = 'kid', claim?: boolean): NetClient {
+  resetHouseRules();
   leaveSession();
   const client = new NetClient(
     sessionContext, new SocketTransport(relayUrl(url, room, claim)), name,
@@ -1699,6 +1703,10 @@ const menuCallbacks: MenuCallbacks = {
   onPlaySandbox: () => {
     stopRound();
     resetPlayerToSpawn();
+    // Shed Day plays under the house rules too — Moon Yard building is half
+    // the fun of having the preset, and nothing here is scored. Solo only,
+    // like everywhere else the rules apply.
+    if (net === null) applyHouseRules(HOUSE_RULES[houseRuleIndex] ?? HOUSE_RULES[0]!);
     enterPlay();
   },
   onResume: () => enterPlay(),
